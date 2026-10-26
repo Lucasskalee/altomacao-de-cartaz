@@ -53,11 +53,44 @@ function flatten(source: Layer[], depth: number, prefix: string, parentVisible: 
 function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
   const visible = layers.filter(layer => layer.visible);
   const byText = (pattern: RegExp) => visible.find(layer => pattern.test(layer.text?.trim() ?? ''))?.id;
+  const decimalId = byText(/^,$/);
+  const fractionRuleId = visible.find(layer => /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id;
+
+  const numericCandidates = visible.filter(layer => {
+    if (layer.id === decimalId || layer.id === fractionRuleId) return false;
+    const text = (layer.text ?? layer.name ?? '').trim();
+    return /^\d{1,3}$/.test(text);
+  });
+
+  if (numericCandidates.length >= 2) {
+    // Em cartazes A5, os Reais (parte inteira) ficam à esquerda e os Centavos (2 dígitos) ficam à direita
+    const sortedByLeft = [...numericCandidates].sort((a, b) => {
+      const centerA = (a.bounds.left + a.bounds.right) / 2;
+      const centerB = (b.bounds.left + b.bounds.right) / 2;
+      if (Math.abs(centerA - centerB) > 10) return centerA - centerB;
+      const heightA = a.bounds.bottom - a.bounds.top;
+      const heightB = b.bounds.bottom - b.bounds.top;
+      return heightB - heightA;
+    });
+    const wholeCandidate = sortedByLeft[0];
+    const fractionCandidate =
+      sortedByLeft.slice(1).find(layer => /^\d{2}$/.test((layer.text ?? layer.name ?? '').trim())) ??
+      sortedByLeft[1];
+    return {
+      whole: wholeCandidate?.id,
+      fraction: fractionCandidate?.id,
+      decimal: decimalId,
+      fractionRule: fractionRuleId,
+    };
+  }
+
   return {
     whole: byText(/^\d{1,3}$/),
-    fraction: visible.find(layer => /^\d{2}$/.test(layer.text?.trim() ?? '') && layer.id !== byText(/^\d{1,3}$/))?.id ?? visible.find(layer => /^\d{2}$/.test(layer.name))?.id,
-    decimal: byText(/^,$/),
-    fractionRule: visible.find(layer => /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id,
+    fraction:
+      visible.find(layer => /^\d{2}$/.test(layer.text?.trim() ?? '') && layer.id !== byText(/^\d{1,3}$/))?.id ??
+      visible.find(layer => /^\d{2}$/.test(layer.name))?.id,
+    decimal: decimalId,
+    fractionRule: fractionRuleId,
   };
 }
 
@@ -93,6 +126,15 @@ export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): Imported
   const staticBackground = composeStatic(analysis, selected);
   const priceParts = (Object.entries(roles) as [ImportedPriceRole,string | undefined][]).flatMap(([role,id]) => id ? [partFromLayer(role,id,analysis)] : []);
   const warnings = [...analysis.warnings], preparation: string[] = [];
+  const wholePart = priceParts.find(item => item.role === 'whole');
+  const fractionPart = priceParts.find(item => item.role === 'fraction');
+  if (wholePart && fractionPart) {
+    const wholeCenterX = (wholePart.bounds.left + wholePart.bounds.right) / 2;
+    const fractionCenterX = (fractionPart.bounds.left + fractionPart.bounds.right) / 2;
+    if (wholeCenterX > fractionCenterX + 8) {
+      preparation.push('As camadas de Reais e Centavos estão invertidas (Reais posicionado à direita dos Centavos). Inverta o mapeamento antes de salvar.');
+    }
+  }
   for (const id of selected) {
     const layer = analysis.runtime.get(id!);
     const role=(Object.entries(roles) as [ImportedPriceRole,string | undefined][]).find(([,value])=>value===id)?.[0];

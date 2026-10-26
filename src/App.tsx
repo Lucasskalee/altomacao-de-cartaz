@@ -10,7 +10,7 @@ import { useF7Matches } from './hooks/useF7Matches';
 import { posterFromDocument } from './features/cartazes/presentation';
 import { PriceImport } from './components/importacao/PriceImport';
 import { OfferFolders } from './components/ofertas/OfferFolders';
-import { importedPriceWarning } from './components/editor/importedRenderer';
+import { hasInvertedPsdPriceParts, importedPriceWarning, repairInvertedPsdArtwork } from './components/editor/importedRenderer';
 export default function App() {
   const editor = useCartaz();
   const editorGuard = { path: editor.path, dirty: editor.dirty };
@@ -27,7 +27,8 @@ export default function App() {
   const [batchPrintPosters, setBatchPrintPosters] = useState<Poster[] | null>(null);
   const poster: Poster = { ...posterFromDocument(editor.document), price: editor.price };
   const imported=editor.document.layout.template==='imported-psd';
-  const priceWarning=poster.artwork?importedPriceWarning(poster.artwork,poster.price):'';
+  const invertedLayers=poster.artwork?hasInvertedPsdPriceParts(poster.artwork):false;
+  const priceWarning=poster.artwork?(invertedLayers?'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.':importedPriceWarning(poster.artwork,poster.price)):'';
   const refresh = async () => { setData(await listFiles()); f7Matches.refresh(); };
   useEffect(() => { let active = true; listFiles().then(value => { if(active) setData(value); }).catch(ex => { if(active) setError(String(ex)); }); return () => { active = false; }; }, []);
   const handlePrintBatch = (posters: Poster[]) => {
@@ -56,7 +57,7 @@ export default function App() {
       {imported&&<p className="import-warning">Arte PSD: somente preço e F7 são dinâmicos. Nome, complemento e unidade pertencem à composição preservada.</p>}
       <label>Nome principal<input disabled={imported} value={poster.name} maxLength={32} onChange={e => editor.change('name',e.target.value.toUpperCase())}/></label>
       <label>Complemento<input disabled={imported} value={poster.detail} maxLength={28} onChange={e => editor.change('complement',e.target.value.toUpperCase())}/></label>
-      <div className="fields"><label>Preço (R$)<input inputMode="decimal" value={poster.price} onChange={e => editor.change('price',e.target.value)}/></label><label>Unidade<select disabled={imported} value={poster.unit} onChange={e => editor.change('unit',e.target.value)}>{Array.from(new Set(['KG','UN','PCT','CX','LT',poster.unit])).map(unit => <option key={unit}>{unit}</option>)}</select></label></div>{priceWarning&&<p className="error-text" role="alert">{priceWarning}</p>}
+      <div className="fields"><label>Preço (R$)<input inputMode="decimal" value={poster.price} onChange={e => editor.change('price',e.target.value)}/></label><label>Unidade<select disabled={imported} value={poster.unit} onChange={e => editor.change('unit',e.target.value)}>{Array.from(new Set(['KG','UN','PCT','CX','LT',poster.unit])).map(unit => <option key={unit}>{unit}</option>)}</select></label></div>{priceWarning&&<p className="error-text" role="alert">{priceWarning}</p>}{invertedLayers&&<button type="button" className="subtle" style={{marginBottom:14,width:'100%'}} onClick={()=>editor.fixInvertedPsdLayers()}>Corrigir inversão Reais/Centavos (restaurar preço original)</button>}
       <F7Field value={editor.document.product.productCode} onChange={value => editor.change('productCode',value)} matches={f7Matches.matches} checking={f7Matches.checking} error={f7Matches.error} onRefresh={f7Matches.refresh}/>
       <div className="actions"><button disabled={Boolean(priceWarning)} onClick={() => run(async () => { validPoster(); window.print(); })}>Imprimir A5</button><button disabled={Boolean(priceWarning)} className="secondary" onClick={() => run(async () => exportPng(validPoster()))}>Exportar PNG 300 DPI</button></div>
       <button className="outline" onClick={() => run(async () => { const p = validPoster(); setQueue(items => [...items,p]); })}>+ Adicionar à lista ({queue.length})</button>

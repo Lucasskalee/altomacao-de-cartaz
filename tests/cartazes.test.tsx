@@ -47,7 +47,7 @@ test('cartaz PSD é autocontido, preserva F7/zeros e duplica com outro UUID',()=
 });
 test('compositor PSD recebe somente preço e não projeta F7 na saída',()=>{
   const d=createDocument();d.product.productCode='001245';d.product.priceCents=349;d.layout={template:'imported-psd',paper:'A5',orientation:'portrait',artwork:importedArtwork()};
-  const poster=posterFromDocument(d);assert.equal(poster.price,'3.49');assert.equal(poster.artwork?.source.fileName,'repolho verde kg.psd');assert.ok(!JSON.stringify(poster).includes('001245'));
+  const poster=posterFromDocument(d);assert.equal(poster.price,'3,49');assert.equal(poster.artwork?.source.fileName,'repolho verde kg.psd');assert.ok(!JSON.stringify(poster).includes('001245'));
   assert.equal(importedPriceWarning(importedArtwork(),'2,99'),'');
   assert.equal(importedPriceWarning(importedArtwork(),'3,49'),'');
   assert.equal(importedPriceWarning(importedArtwork(),'12,99'),'');

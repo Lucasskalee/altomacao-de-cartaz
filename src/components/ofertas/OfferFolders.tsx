@@ -1,7 +1,9 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
+import { repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
+import { saveDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
@@ -223,6 +225,29 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
   };
 
+  const handleRepairInvertedPoster = async (cartazPath: string, doc: Cartaz) => {
+    if (doc.layout.template !== 'imported-psd') return;
+    const { artwork, correctedPriceCents } = repairInvertedPsdArtwork(doc.layout.artwork);
+    const now = new Date().toISOString();
+    const updatedDoc: Cartaz = {
+      ...doc,
+      product: {
+        ...doc.product,
+        priceCents: correctedPriceCents ?? doc.product.priceCents,
+      },
+      layout: {
+        ...doc.layout,
+        artwork,
+      },
+      metadata: {
+        ...doc.metadata,
+        updatedAt: now,
+      },
+    };
+    await saveDocument(cartazPath, updatedDoc, true);
+    if (onRefreshLibrary) await onRefreshLibrary();
+  };
+
   const matchViews = useMemo(() => {
     if (!activeCampaign) return [];
     return buildCampaignMatchViews(activeCampaign, libraryIndex);
@@ -252,6 +277,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
             item: v.item,
             posterState: m.state,
             currentPriceCents: m.currentPriceCents,
+            priceMismatchReason: m.priceMismatchReason,
             poster: posterFromDocument(m.scheduledDocument),
           };
         }
@@ -264,6 +290,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
             item: v.item,
             posterState: m.state,
             currentPriceCents: m.currentPriceCents,
+            priceMismatchReason: m.priceMismatchReason,
             poster: posterFromDocument(m.scheduledDocument),
           };
         }
@@ -278,28 +305,35 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     let pending = 0;
     let prepared = 0;
     let printed = 0;
+    let divergent = 0;
     for (const v of matchViews) {
       if (v.missingPoster) missing++;
       for (const m of v.matchedPosters) {
         if (!m.libraryCartaz) continue;
+        if (m.priceMismatchReason) divergent++;
         if (m.state.status === 'pendente') pending++;
         else if (m.state.status === 'preparado') prepared++;
         else if (m.state.status === 'impresso') printed++;
       }
     }
-    return { totalItems, missing, pending, prepared, printed };
+    return { totalItems, missing, pending, prepared, printed, divergent };
   }, [matchViews]);
 
   const handleTriggerPartialPrint = (reprintPrinted = false) => {
     if (!activeCampaign) return;
     const queue: Poster[] = [];
     const keys = new Set<string>();
+    const blockedProducts: string[] = [];
     const limit = Math.max(1, Math.min(200, batchSize));
     let distinctPostersCount = 0;
     for (const v of matchViews) {
       for (const m of v.matchedPosters) {
         if (!m.state.selected || !m.scheduledDocument) continue;
         if (!reprintPrinted && m.state.status === 'impresso') continue;
+        if (m.priceMismatchReason) {
+          blockedProducts.push(`F7 ${v.item.f7} (${v.item.description}): ${m.priceMismatchReason}`);
+          continue;
+        }
         if (distinctPostersCount >= limit) break;
         const poster = posterFromDocument(m.scheduledDocument);
         for (let c = 0; c < m.state.copies; c++) {
@@ -310,6 +344,11 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
         distinctPostersCount++;
       }
       if (distinctPostersCount >= limit) break;
+    }
+    if (blockedProducts.length > 0 && queue.length === 0) {
+      throw new Error(
+        `Impressão bloqueada por divergência de preço/camadas: ${blockedProducts[0]}`
+      );
     }
     if (queue.length === 0) {
       throw new Error(
@@ -713,6 +752,33 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                                               </small>
                                             </span>
                                           </label>
+                                          {m.priceMismatchReason && (
+                                            <div
+                                              className="import-warning"
+                                              role="alert"
+                                              style={{ marginTop: 6, fontSize: 12 }}
+                                            >
+                                              <strong>Impressão bloqueada:</strong> {m.priceMismatchReason}
+                                              {m.hasInvertedLayers && m.libraryCartaz && (
+                                                <div style={{ marginTop: 6 }}>
+                                                  <button
+                                                    className="subtle"
+                                                    style={{ padding: '4px 10px', fontSize: 12 }}
+                                                    onClick={() =>
+                                                      run(() =>
+                                                        handleRepairInvertedPoster(
+                                                          m.libraryCartaz!.path,
+                                                          m.libraryCartaz!.document
+                                                        )
+                                                      )
+                                                    }
+                                                  >
+                                                    Corrigir inversão Reais/Centavos neste cartaz
+                                                  </button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
                                           <div className="toolbar" style={{ alignItems: 'center', marginTop: 6 }}>
                                             <label style={{ fontSize: 12 }}>
                                               Cópias:{' '}

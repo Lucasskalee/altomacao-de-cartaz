@@ -49,6 +49,9 @@ export type CampaignMatchView = {
     libraryCartaz: IndexedCartaz | null;
     currentPriceCents: number | null;
     scheduledDocument: Cartaz | null;
+    appliedPriceCents: number | null;
+    hasInvertedLayers: boolean;
+    priceMismatchReason: string | null;
   }[];
   unlinkedLibraryPosters: IndexedCartaz[];
   hasConflict: boolean;

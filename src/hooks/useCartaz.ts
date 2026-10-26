@@ -3,9 +3,11 @@ import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Cartaz } from '../features/cartazes/types';
 import { createDocument, duplicate } from '../features/cartazes/serialization';
+import { formatCentsBr } from '../features/cartazes/presentation';
 import { priceToCents, fileName } from '../features/cartazes/validation';
 import * as storage from '../features/cartazes/storage';
 import { digitsOnly } from '../features/cartazes/f7';
+import { repairInvertedPsdArtwork } from '../components/editor/importedRenderer';
 export function useCartaz() {
   const [document, setDocument] = useState(createDocument);
   const [price, setPrice] = useState('2,89');
@@ -29,11 +31,22 @@ export function useCartaz() {
     return () => window.removeEventListener('beforeunload', guard);
   }, [dirty]);
   const load = (d: Cartaz, p: string | null, changed = false) => {
-    setDocument(d); setPrice((d.product.priceCents / 100).toFixed(2).replace('.', ',')); setPath(p); setDirty(changed);
+    setDocument(d); setPrice(formatCentsBr(d.product.priceCents)); setPath(p); setDirty(changed);
   };
   const current = (): Cartaz => ({ ...document, product: { ...document.product, priceCents: priceToCents(price) } });
   return {
     document, price, path, dirty, current,
+    fixInvertedPsdLayers() {
+      if (document.layout.template !== 'imported-psd') return;
+      const { artwork, correctedPriceCents } = repairInvertedPsdArtwork(document.layout.artwork);
+      setDocument(d => d.layout.template === 'imported-psd' ? ({
+        ...d,
+        product: { ...d.product, priceCents: correctedPriceCents ?? d.product.priceCents },
+        layout: { ...d.layout, artwork },
+      }) : d);
+      if (correctedPriceCents !== null) setPrice(formatCentsBr(correctedPriceCents));
+      setDirty(true);
+    },
     async refreshSaved(paths: string[]) {
       const normalize = (value: string) => value.replace(/\//g, '\\').toLowerCase();
       if (!dirty && path && paths.some(value => normalize(value) === normalize(path))) load(await storage.openDocument(path), path);

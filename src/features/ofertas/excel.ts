@@ -291,8 +291,17 @@ export function suggestColumnMapping(headers: string[]): ColumnMapping {
   };
 }
 
+function roundFloatingNumberString(raw: string): string {
+  // Trata imprecisão IEEE-754 em células numéricas do Excel (ex.: "19.890000000000001", "8.9900000000000002", "1.99E+1")
+  if (!/^\d+\.\d{5,}$/.test(raw) && !/^\d+(?:\.\d+)?[eE][+-]?\d+$/.test(raw)) return raw;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0 || num > 999_999.9999) return raw;
+  // Arredonda para 4 casas decimais para eliminar ruído binário IEEE-754 mantendo subcentavos de milésimo
+  return num.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 export function parseExcelPriceToCents(raw: string): number {
-  const cleaned = raw.replace(/R\$/gi, '').replace(/\s+/g, '').trim();
+  const cleaned = roundFloatingNumberString(raw.replace(/R\$/gi, '').replace(/\s+/g, '').trim());
   if (!cleaned) throw new Error('Preço vazio');
   if (cleaned.startsWith('-')) throw new Error('Preço negativo não permitido');
   let normalized = cleaned;

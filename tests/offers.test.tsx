@@ -23,6 +23,7 @@ import {
   createCampaign,
   deleteCampaign,
   duplicateCampaign,
+  inspectScheduledPriceApplication,
   linkSavedPosterToCampaignItem,
   listCampaigns,
   renameCampaign,
@@ -35,6 +36,9 @@ import {
 import type { OfferCampaign, PsdImportOfferContext } from '../src/features/ofertas/types';
 import { OfferFolders } from '../src/components/ofertas/OfferFolders';
 import { PsdImport } from '../src/components/library/PsdImport';
+import { formatCentsBr, splitCentsToParts } from '../src/features/cartazes/presentation';
+import { hasInvertedPsdPriceParts, normalizePsdPriceParts, repairInvertedPsdArtwork } from '../src/components/editor/importedRenderer';
+import type { ImportedArtwork } from '../src/features/cartazes/types';
 
 function buildZip(files: Record<string, string>): ArrayBuffer {
   const encoder = new TextEncoder();
@@ -303,7 +307,7 @@ test('Pastas de Ofertas: criação, associação por F7 (múltiplos cartazes e s
   const scheduledDoc = buildScheduledDocument(docClassic, repolhoView.item.scheduledPriceCents);
   const scheduledPoster = buildScheduledPoster(docClassic, repolhoView.item.scheduledPriceCents);
   assert.equal(scheduledDoc.product.priceCents, 349);
-  assert.equal(scheduledPoster.price, '3.49');
+  assert.equal(scheduledPoster.price, '3,49');
   assert.equal(docClassic.product.priceCents, 289); // Biblioteca permanece intacta!
   assert.equal(docPsd.product.priceCents, 299); // Biblioteca permanece intacta!
 
@@ -519,4 +523,113 @@ test('Sprint 06.1: Importação PSD diretamente na Pasta de Ofertas (exemplo F7 
   const zeroAfter = buildCampaignMatchViews(campaign, indexCartazes(libraryEntries)).find(v => v.item.f7 === '0025037')!;
   assert.equal(zeroAfter.missingPoster, false);
   assert.equal(zeroAfter.matchedPosters[0].libraryCartaz?.document.product.productCode, '0025037');
+});
+
+test('Correção de preços decimais e camadas PSD: R$ 19,89 vs R$ 89,19 (F7 38340 — ARROZ RAMPINELLI 5KG), R$ 8,99, R$ 10,90 e R$ 0,99', () => {
+  // 1. Validar todos os casos exigidos de conversão de preços para centavos inteiros e formatação
+  const testCases: { inputs: string[]; expectedCents: number; expectedBr: string; expectedParts: { whole: string; fraction: string } }[] = [
+    {
+      inputs: ['19,89', 'R$ 19,89', '19.89', '19.890000000000001'],
+      expectedCents: 1989,
+      expectedBr: '19,89',
+      expectedParts: { whole: '19', fraction: '89' },
+    },
+    {
+      inputs: ['89,19', 'R$ 89,19', '89.19', '89.189999999999998'],
+      expectedCents: 8919,
+      expectedBr: '89,19',
+      expectedParts: { whole: '89', fraction: '19' },
+    },
+    {
+      inputs: ['8,99', 'R$ 8,99', '8.99', '8.9900000000000002'],
+      expectedCents: 899,
+      expectedBr: '8,99',
+      expectedParts: { whole: '8', fraction: '99' },
+    },
+    {
+      inputs: ['10,90', 'R$ 10,90', '10.9', '10.90'],
+      expectedCents: 1090,
+      expectedBr: '10,90',
+      expectedParts: { whole: '10', fraction: '90' },
+    },
+    {
+      inputs: ['0,99', 'R$ 0,99', '0.99', '0.98999999999999999'],
+      expectedCents: 99,
+      expectedBr: '0,99',
+      expectedParts: { whole: '0', fraction: '99' },
+    },
+  ];
+
+  for (const tc of testCases) {
+    for (const raw of tc.inputs) {
+      assert.equal(parseExcelPriceToCents(raw), tc.expectedCents, `Falha ao converter "${raw}"`);
+    }
+    assert.equal(formatCentsBr(tc.expectedCents), tc.expectedBr);
+    assert.deepEqual(splitCentsToParts(tc.expectedCents), tc.expectedParts);
+  }
+
+  // 2. Reproduzir exatamente o caso do F7 38340 (ARROZ RAMPINELLI 5KG) onde no PSD a camada "89" (centavos, direita, left=654)
+  // aparece na árvore antes da camada "19" (reais, esquerda, left=46)
+  const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+  const invertedArrozArtwork: ImportedArtwork = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'arroz rampinelli 5kg tipo1.psd', sha256: 'a'.repeat(64) },
+    canvas: { width: 1180, height: 1767, resolutionPpi: 150, fit: 'contain' },
+    staticBackground: pixel,
+    originalPreview: pixel,
+    priceParts: [
+      // Mapeamento invertido antigo: role='whole' na camada da direita (left: 654, originalText: '89')
+      { role: 'whole', layerId: '9', bounds: { left: 654, top: 853, right: 1120, bottom: 1388 }, fontFamily: 'Zullia', originalText: '89', color: '#c84724' },
+      // Mapeamento invertido antigo: role='fraction' na camada da esquerda (left: 46, originalText: '19')
+      { role: 'fraction', layerId: '10', bounds: { left: 46, top: 820, right: 631, bottom: 1701 }, fontFamily: 'Zullia', originalText: '19', color: '#c84724' },
+      { role: 'decimal', layerId: '8', bounds: { left: 657, top: 1448, right: 719, bottom: 1584 }, fontFamily: 'Zullia', originalText: ',', color: '#c84724' },
+      { role: 'fractionRule', layerId: '7', bounds: { left: 663, top: 1407, right: 1071, bottom: 1435 }, color: '#c84724' },
+    ],
+    layers: [
+      { id: '9', name: '89', type: 'text', visible: true, depth: 0, text: '89', font: 'Zullia', bounds: { left: 654, top: 853, right: 1120, bottom: 1388 } },
+      { id: '10', name: '19', type: 'text', visible: true, depth: 0, text: '19', font: 'Zullia', bounds: { left: 46, top: 820, right: 631, bottom: 1701 } },
+    ],
+    warnings: [],
+  };
+
+  // Detecta inversão geométrica entre Reais e Centavos
+  assert.equal(hasInvertedPsdPriceParts(invertedArrozArtwork), true);
+
+  // Documento com mapeamento invertido salvo anteriormente
+  const docArrozInvertido = createDocument();
+  docArrozInvertido.product.name = 'ARROZ';
+  docArrozInvertido.product.complement = 'RAMPINELLI';
+  docArrozInvertido.product.productCode = '38340';
+  docArrozInvertido.product.priceCents = 8919;
+  docArrozInvertido.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork: invertedArrozArtwork };
+
+  // Validação antes de imprimir detecta divergência (19,89 -> 89,19) e sinaliza o produto
+  const inspectionBefore = inspectScheduledPriceApplication(docArrozInvertido, 1989);
+  assert.equal(inspectionBefore.hasInvertedLayers, true);
+  assert.equal(inspectionBefore.appliedPriceCents, 8919);
+  assert.ok(inspectionBefore.priceMismatchReason?.includes('Reais e Centavos estão invertidos'));
+  assert.ok(inspectionBefore.priceMismatchReason?.includes('19,89'));
+  assert.ok(inspectionBefore.priceMismatchReason?.includes('89,19'));
+
+  // Normalização e reparo corrigem os papéis (layer 10 à esquerda vira 'whole', layer 9 à direita vira 'fraction') e restauram 1989 centavos (R$ 19,89)
+  const normalizedParts = normalizePsdPriceParts(invertedArrozArtwork);
+  assert.equal(normalizedParts.find(p => p.role === 'whole')?.layerId, '10');
+  assert.equal(normalizedParts.find(p => p.role === 'fraction')?.layerId, '9');
+
+  const repaired = repairInvertedPsdArtwork(invertedArrozArtwork);
+  assert.equal(repaired.correctedPriceCents, 1989);
+  assert.equal(hasInvertedPsdPriceParts(repaired.artwork), false);
+
+  const docArrozCorrigido = structuredClone(docArrozInvertido);
+  docArrozCorrigido.product.priceCents = repaired.correctedPriceCents!;
+  docArrozCorrigido.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork: repaired.artwork };
+
+  // Após a correção, todos os preços (R$ 19,89, R$ 89,19, R$ 8,99, R$ 10,90 e R$ 0,99) passam sem divergência
+  for (const tc of testCases) {
+    const check = inspectScheduledPriceApplication(docArrozCorrigido, tc.expectedCents);
+    assert.equal(check.hasInvertedLayers, false);
+    assert.equal(check.priceMismatchReason, null, `Erro inesperado para ${tc.expectedBr}: ${check.priceMismatchReason}`);
+    assert.equal(check.appliedPriceCents, tc.expectedCents);
+  }
 });

@@ -32,6 +32,12 @@ Integrar o importador de artes PSD existente (`PsdImport.tsx`, `importer.ts`, `s
    - **Camadas incompatíveis**: marca a arte como `Requer preparação` e bloqueia o salvamento.
    - **Cancelamento ou erro de gravação**: mantém a linha como `Sem cartaz`, sem criar associações incompletas nem duplicar registros por cliques repetidos (`savingRef`).
    - **Importação normal pela Biblioteca**: continua funcionando exatamente como na Sprint 05.0 quando aberta por *Meus Cartazes → Importar Arte · PSD*.
+5. **Prevenção e Correção de Inversão Reais/Centavos em Artes PSD (ex.: F7 38340 — `R$ 19,89` vs `R$ 89,19`)**:
+   - **Causa identificada**: em arquivos PSD com preço de 2 dígitos nos reais onde a camada dos centavos aparece antes da camada dos reais na árvore de camadas do Photoshop (ex.: `arroz rampinelli 5kg tipo1.psd`, camada `9` = `"89"` em `left: 654` e camada `10` = `"19"` em `left: 46`), o mapeamento automático por ordem de índice sugeria a camada da direita (`"89"`) como `whole` (Reais) e a da esquerda (`"19"`) como `fraction` (Centavos).
+   - **Correções aplicadas**:
+     - `suggest()` em `src/features/psd/importer.ts` agora ordena as camadas numéricas candidatas pela posição horizontal (`bounds.left`/`right`, esquerda → direita) e altura, mapeando sempre a camada da esquerda como **Reais** e a da direita como **Centavos**.
+     - `buildArtwork()` bloqueia o salvamento (`requires-preparation`) caso o usuário selecione manualmente uma camada de Reais posicionada à direita da camada de Centavos.
+     - `inspectScheduledPriceApplication()` em `src/features/ofertas/service.ts` valida a correspondência exata do preço em centavos inteiros e a ordem geométrica das camadas antes da impressão, **sinalizando o produto na Pasta de Ofertas e bloqueando sua impressão** até a correção, além de oferecer o botão **"Corrigir inversão Reais/Centavos neste cartaz"** na própria linha da oferta e no editor.
 
 ---
 

@@ -14,12 +14,56 @@ function loadImage(source: string) {
   return pending;
 }
 
+export function hasInvertedPsdPriceParts(artwork: ImportedArtwork): boolean {
+  const wholePart = artwork.priceParts.find(item => item.role === 'whole');
+  const fractionPart = artwork.priceParts.find(item => item.role === 'fraction');
+  if (!wholePart || !fractionPart) return false;
+  const wholeCenterX = (wholePart.bounds.left + wholePart.bounds.right) / 2;
+  const fractionCenterX = (fractionPart.bounds.left + fractionPart.bounds.right) / 2;
+  return wholeCenterX > fractionCenterX + 8;
+}
+
+export function normalizePsdPriceParts(artwork: ImportedArtwork): ImportedPricePart[] {
+  if (!hasInvertedPsdPriceParts(artwork)) return artwork.priceParts;
+  return artwork.priceParts.map(part => {
+    if (part.role === 'whole') return { ...part, role: 'fraction' };
+    if (part.role === 'fraction') return { ...part, role: 'whole' };
+    return part;
+  });
+}
+
+export function repairInvertedPsdArtwork(artwork: ImportedArtwork): {
+  artwork: ImportedArtwork;
+  correctedPriceCents: number | null;
+} {
+  const normalizedParts = normalizePsdPriceParts(artwork);
+  const wholePart = normalizedParts.find(item => item.role === 'whole');
+  const fractionPart = normalizedParts.find(item => item.role === 'fraction');
+  const wholeRaw = (wholePart?.originalText ?? '').trim();
+  const fractionRaw = (fractionPart?.originalText ?? '').trim();
+  let correctedPriceCents: number | null = null;
+  if (/^\d{1,6}$/.test(wholeRaw) && /^\d{1,2}$/.test(fractionRaw)) {
+    correctedPriceCents = Number(wholeRaw) * 100 + Number(fractionRaw.padEnd(2, '0'));
+  }
+  return {
+    artwork: {
+      ...artwork,
+      priceParts: normalizedParts,
+    },
+    correctedPriceCents,
+  };
+}
+
 export function importedPriceWarning(artwork: ImportedArtwork, price: string): string {
   const whole = sanitizePrice(price).whole;
-  const part = artwork.priceParts.find(item => item.role === 'whole');
+  const parts = normalizePsdPriceParts(artwork);
+  const part = parts.find(item => item.role === 'whole');
   if (!part) return 'Mapeamento de reais ausente.';
+  const origDigits = Math.max(1, (part.originalText ?? '').trim().length);
+  if (whole.length <= origDigits) return '';
   const available = Math.max(part.bounds.right - part.bounds.left, part.bounds.right - 24);
-  const estimated = whole.length * (part.bounds.bottom - part.bounds.top) * .62;
+  const perDigitWidth = (part.bounds.bottom - part.bounds.top) * (.62 / origDigits);
+  const estimated = whole.length * perDigitWidth;
   return estimated > available / .64 ? 'O valor é largo demais para a área mapeada. Reduza os dígitos ou prepare a arte.' : '';
 }
 
@@ -33,8 +77,9 @@ export async function drawImported(canvas: HTMLCanvasElement, artwork: ImportedA
   context.drawImage(background, offsetX, offsetY, artwork.canvas.width * scale, artwork.canvas.height * scale);
   if ('fonts' in document) await document.fonts.load(`${Math.max(12, 500 * scale)}px Zullia`).catch(() => []);
   const { whole, fraction } = sanitizePrice(price);
+  const parts = normalizePsdPriceParts(artwork);
   context.save(); context.translate(offsetX,offsetY); context.scale(scale,scale);
-  for (const part of artwork.priceParts) drawPart(context,part,whole,fraction,artwork.canvas.width);
+  for (const part of parts) drawPart(context,part,whole,fraction,artwork.canvas.width);
   context.restore();
 }
 

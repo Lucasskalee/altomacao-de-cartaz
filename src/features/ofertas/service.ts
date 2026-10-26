@@ -1,8 +1,10 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { findCartazesByF7, type IndexedCartaz } from '../cartazes/f7';
 import type { Cartaz } from '../cartazes/types';
-import { posterFromDocument } from '../cartazes/presentation';
-import type { Poster } from '../../components/editor/PosterView';
+import { formatCentsBr, posterFromDocument } from '../cartazes/presentation';
+import { priceToCents } from '../cartazes/validation';
+import { sanitizePrice, type Poster } from '../../components/editor/PosterView';
+import { hasInvertedPsdPriceParts, importedPriceWarning } from '../../components/editor/importedRenderer';
 import type { ColumnMapping, ExcelExtractionResult } from './excel';
 import type { CampaignItem, CampaignMatchView, CampaignPosterState, OfferCampaign, PrintStatus } from './types';
 
@@ -311,6 +313,75 @@ export function buildScheduledPoster(libraryDocument: Cartaz, scheduledPriceCent
   return posterFromDocument(buildScheduledDocument(libraryDocument, scheduledPriceCents));
 }
 
+export function inspectScheduledPriceApplication(
+  libraryDocument: Cartaz,
+  scheduledPriceCents: number
+): {
+  scheduledDocument: Cartaz;
+  appliedPriceCents: number | null;
+  hasInvertedLayers: boolean;
+  priceMismatchReason: string | null;
+} {
+  const scheduledDocument = buildScheduledDocument(libraryDocument, scheduledPriceCents);
+  if (!Number.isSafeInteger(scheduledPriceCents) || scheduledPriceCents <= 0 || scheduledPriceCents > 99_999_999) {
+    return {
+      scheduledDocument,
+      appliedPriceCents: null,
+      hasInvertedLayers: false,
+      priceMismatchReason: 'Preço programado inválido fora do intervalo permitido.',
+    };
+  }
+
+  const poster = posterFromDocument(scheduledDocument);
+  const { whole, fraction } = sanitizePrice(poster.price);
+  let appliedPriceCents: number | null = null;
+  try {
+    appliedPriceCents = priceToCents(`${whole},${fraction}`);
+  } catch {
+    appliedPriceCents = null;
+  }
+
+  let hasInvertedLayers = false;
+  if (scheduledDocument.layout.template === 'imported-psd') {
+    const artwork = scheduledDocument.layout.artwork;
+    hasInvertedLayers = hasInvertedPsdPriceParts(artwork);
+    if (hasInvertedLayers) {
+      const invertedCents = Number(fraction) * 100 + Number(whole.padEnd(2, '0').slice(0, 2));
+      return {
+        scheduledDocument,
+        appliedPriceCents: Number.isSafeInteger(invertedCents) ? invertedCents : appliedPriceCents,
+        hasInvertedLayers: true,
+        priceMismatchReason: `Divergência de camadas no cartaz PSD: Reais e Centavos estão invertidos (programado R$ ${formatCentsBr(scheduledPriceCents)} → seria exibido R$ ${fraction},${whole}). Corrija o mapeamento antes de imprimir.`,
+      };
+    }
+    const warning = importedPriceWarning(artwork, poster.price);
+    if (warning) {
+      return {
+        scheduledDocument,
+        appliedPriceCents,
+        hasInvertedLayers: false,
+        priceMismatchReason: warning,
+      };
+    }
+  }
+
+  if (appliedPriceCents !== scheduledPriceCents) {
+    return {
+      scheduledDocument,
+      appliedPriceCents,
+      hasInvertedLayers,
+      priceMismatchReason: `Preço aplicado no cartaz (${appliedPriceCents !== null ? 'R$ ' + formatCentsBr(appliedPriceCents) : 'inválido'}) diverge do preço programado (R$ ${formatCentsBr(scheduledPriceCents)}).`,
+    };
+  }
+
+  return {
+    scheduledDocument,
+    appliedPriceCents,
+    hasInvertedLayers: false,
+    priceMismatchReason: null,
+  };
+}
+
 export function buildCampaignMatchViews(campaign: OfferCampaign, library: IndexedCartaz[]): CampaignMatchView[] {
   const byPath = new Map<string, IndexedCartaz>();
   for (const item of library) {
@@ -321,11 +392,15 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
     const linkedPaths = new Set(item.posters.map(p => normalizedPath(p.cartazPath)));
     const matchedPosters = item.posters.map(state => {
       const lib = byPath.get(normalizedPath(state.cartazPath)) ?? allF7Matches.find(m => m.document.id === state.cartazId) ?? null;
+      const inspection = lib ? inspectScheduledPriceApplication(lib.document, item.scheduledPriceCents) : null;
       return {
         state,
         libraryCartaz: lib,
         currentPriceCents: lib ? lib.document.product.priceCents : null,
-        scheduledDocument: lib ? buildScheduledDocument(lib.document, item.scheduledPriceCents) : null,
+        scheduledDocument: inspection ? inspection.scheduledDocument : null,
+        appliedPriceCents: inspection ? inspection.appliedPriceCents : null,
+        hasInvertedLayers: inspection ? inspection.hasInvertedLayers : false,
+        priceMismatchReason: inspection ? inspection.priceMismatchReason : null,
       };
     });
     const unlinkedLibraryPosters = allF7Matches.filter(m => !linkedPaths.has(normalizedPath(m.path)));
