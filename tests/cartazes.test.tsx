@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import './dbf.test';
+import './updates.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
 import { priceToCents, fileName } from '../src/features/cartazes/validation';

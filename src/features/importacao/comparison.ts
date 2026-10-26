@@ -28,7 +28,7 @@ export function comparePrices(products: DbfProduct[], library: IndexedCartaz[]):
         const current = match?.document.product.priceCents ?? null;
         const priceStatus = current !== null && product.priceCents !== null ? (current === product.priceCents ? 'Igual' : 'Alterado') : null;
         const status = conflicting ? 'Conflito no DBF' : product.issues.length ? 'Dados inválidos' : match ? priceStatus! : 'Sem cartaz';
-        rows.push({ key: `${product.record}:${match?.path ?? ''}`, product, occurrences, conflicting, cartazPath: match?.path ?? null, cartazId: match?.document.id ?? null, cartazPriceCents: current, priceStatus, status });
+        rows.push({ key: `${product.record}:${match?.path ?? ''}`, product, occurrences, conflicting, cartazPath: match?.path ?? null, cartazId: match?.document.id ?? null, cartazPriceCents: current, cartazSource: match ? match.source ?? JSON.stringify(match.document) : null, priceStatus, status });
       }
     }
   }

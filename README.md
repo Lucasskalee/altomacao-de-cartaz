@@ -1,10 +1,12 @@
-# Skalee Cartazes A5 — Sprint 04.0 · v0.4.0
+# Skalee Cartazes A5 — Sprint 04.1 · v0.4.1
+
+Agora é possível selecionar alterações válidas do DBF, revisar preços e confirmar a gravação dos cartazes existentes. Cada arquivo é revalidado, recebe backup e histórico local e pode ter o preço restaurado mediante nova confirmação. Edições não salvas no editor e arquivos alterados após a comparação são bloqueados. [Fluxo, segurança, testes e limitações do Sprint 04.1](docs/SPRINT-04-1.md).
 
 A nova aba **Importação de Preços** lê DBF local e compara preços com todos os cartazes do mesmo F7, sem gravar alterações. Inclui pesquisa, codificação selecionável, paginação, preços alternativos/códigos de barras e indicação de conflitos. A leitura do `consulta01.dbf` real foi verificada: 37.218 registros, 28.196 F7 distintos, arquivo original intacto. [Detalhes, regras e evidências do Sprint 04.0](docs/SPRINT-04.md).
 
 O F7 é salvo em `product.productCode` como string, preservando zeros à esquerda. O editor aceita dígitos sem comprimento fixo; a biblioteca pesquisa por nome/F7 e filtra cartazes sem F7. Códigos repetidos mostram os cartazes correspondentes sem bloquear o salvamento. F7 não aparece na impressão nem no PNG. Não há importação ou atualização automática de preços nesta versão.
 
-Arquivos da v0.2.0 continuam abrindo, inclusive sem `productCode`. O esquema permanece na versão 1. Veja [detalhes, consulta reutilizável e testes do Sprint 03](docs/SPRINT-03.md). As seções de sprints anteriores abaixo registram a evolução do aplicativo; o workflow atual publica a v0.4.0.
+Arquivos da v0.2.0 continuam abrindo, inclusive sem `productCode`. O esquema permanece na versão 1. Veja [detalhes, consulta reutilizável e testes do Sprint 03](docs/SPRINT-03.md). As seções de sprints anteriores abaixo registram a evolução do aplicativo; o workflow atual publica a v0.4.1.
 
 Editor desktop Tauri 2 + React + TypeScript. Os cartazes são documentos JSON `.skcartaz` no computador. O aplicativo instalado funciona offline, sem serviços remotos, banco de dados ou localStorage.
 

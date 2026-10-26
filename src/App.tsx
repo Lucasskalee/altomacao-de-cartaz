@@ -11,6 +11,9 @@ import { posterFromDocument } from './features/cartazes/presentation';
 import { PriceImport } from './components/importacao/PriceImport';
 export default function App() {
   const editor = useCartaz();
+  const editorGuard = { path: editor.path, dirty: editor.dirty };
+  const guardRef = useRef(editorGuard);
+  guardRef.current = editorGuard;
   const f7Matches = useF7Matches(editor.document.product.productCode, editor.path);
   const [section, setSection] = useState('editor');
   const [data, setData] = useState<LibraryData | null>(null);
@@ -32,7 +35,7 @@ export default function App() {
   const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
   const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
   return <div className="app">
-    <header><div className="brand"><img className="brand-logo" src="/logo.png" alt="Logo oficial Skalee"/><div><strong>Skalee Cartazes</strong><small>Editor de ofertas · A5 vertical · Offline</small></div></div><span className="version">Sprint 04.0</span></header>
+    <header><div className="brand"><img className="brand-logo" src="/logo.png" alt="Logo oficial Skalee"/><div><strong>Skalee Cartazes</strong><small>Editor de ofertas · A5 vertical · Offline</small></div></div><span className="version">Sprint 04.1</span></header>
     <nav className="navigation" aria-label="Navegação principal"><button className={section === 'editor' ? 'active' : 'subtle'} disabled={busy} onClick={() => setSection('editor')}>Editor de Cartazes</button><button className={section === 'library' ? 'active' : 'subtle'} disabled={busy} onClick={() => { setSection('library'); run(refresh); }}>Meus Cartazes</button><button className={section === 'import' ? 'active' : 'subtle'} disabled={busy} onClick={() => setSection('import')}>Importação de Preços</button></nav>
     <div className="notifications" aria-live="polite">{busy && <p role="status">Aguarde…</p>}{message && <p className="success" role="status">{message}</p>}{error && <p className="error-text" role="alert">{error}</p>}</div>
     <fieldset className="workspace" disabled={busy} aria-busy={busy}>
@@ -47,7 +50,7 @@ export default function App() {
       {queue.length > 0 && <div className="queue"><h3>Lista de cartazes</h3>{queue.map((item,i) => <div key={i}><span>{item.name} {item.detail} · R$ {item.price}</span><button className="remove" aria-label={'Remover ' + item.name} onClick={() => setQueue(items => items.filter((_,j) => i !== j))}>×</button></div>)}<small>Lista temporária preparada para a futura impressão em lote.</small></div>}
       <p className="hint">Impressão: selecione papel A5, escala 100%, margens nenhuma e desative cabeçalhos/rodapés. A saída depende do driver da impressora.</p>
     </section><section className="panel preview"><div className="preview-heading"><div><h2>Pré-visualização</h2><p>148 × 210 mm · Retrato</p></div><span className="status">Documento editável local</span></div><div className="paper-wrap"><PosterView poster={poster}/></div></section></main></> : section === 'library' ? <div className="library-container">{data ? <Library data={data} open={open} newDocument={newDocument} run={run} refresh={refresh} relocated={editor.relocate} removed={editor.removed}/> : <section className="panel"><h2>Meus Cartazes</h2><p>Abra o aplicativo desktop para usar a biblioteca local.</p><button onClick={() => run(refresh)}>Tentar novamente</button></section>}</div> : null}
-    <div hidden={section !== 'import'} className="library-container"><PriceImport run={run}/></div>
+    <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
     </fieldset><div className="print-only"><PosterView poster={poster}/></div>
   </div>;
 }

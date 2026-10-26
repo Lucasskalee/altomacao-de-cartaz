@@ -6,7 +6,7 @@ export const digitsOnly = (value: string): string => value.replace(/[^0-9]/g, ''
 export const getF7 = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 && !/[^0-9]/.test(value) ? value : null;
 
-export type IndexedCartaz = { path: string; fileName: string; document: Cartaz };
+export type IndexedCartaz = { path: string; fileName: string; document: Cartaz; source?: string };
 
 /** Includes every valid document in the recursive local library snapshot. */
 export function indexCartazes(entries: Entry[]): IndexedCartaz[] {
@@ -14,7 +14,7 @@ export function indexCartazes(entries: Entry[]): IndexedCartaz[] {
   for (const entry of entries) {
     if (entry.folder || !entry.content || entry.error) continue;
     try {
-      result.push({ path: entry.path, fileName: entry.name, document: deserialize(entry.content) });
+      result.push({ path: entry.path, fileName: entry.name, document: deserialize(entry.content), source: entry.content });
     } catch { /* Invalid files stay visible as errors in the library, never as matches. */ }
   }
   return result;

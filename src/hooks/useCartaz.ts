@@ -34,6 +34,10 @@ export function useCartaz() {
   const current = (): Cartaz => ({ ...document, product: { ...document.product, priceCents: priceToCents(price) } });
   return {
     document, price, path, dirty, current,
+    async refreshSaved(paths: string[]) {
+      const normalize = (value: string) => value.replace(/\//g, '\\').toLowerCase();
+      if (!dirty && path && paths.some(value => normalize(value) === normalize(path))) load(await storage.openDocument(path), path);
+    },
     change(field: string, value: string) {
       if (field === 'price') setPrice(value);
       else setDocument(d => ({ ...d, product: { ...d.product, [field]: field === 'productCode' ? digitsOnly(value) : value } }));

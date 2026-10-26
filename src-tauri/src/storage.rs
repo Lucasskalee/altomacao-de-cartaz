@@ -33,12 +33,12 @@ fn resolved(p: &Path) -> Result<PathBuf, String> {
     if p.exists() { p.canonicalize().map_err(err) }
     else { Ok(p.parent().ok_or("Caminho inválido.")?.canonicalize().map_err(err)?.join(p.file_name().ok_or("Nome inválido.")?)) }
 }
-fn inside(root: &Path, p: &Path) -> Result<PathBuf, String> {
+pub(crate) fn inside(root: &Path, p: &Path) -> Result<PathBuf, String> {
     let p = resolved(p)?;
     if !p.starts_with(root) { return Err("A operação deve permanecer na biblioteca local.".into()); }
     Ok(p)
 }
-fn document(s: &str) -> Result<Value, String> {
+pub(crate) fn document(s: &str) -> Result<Value, String> {
     if s.len() > 1_048_576 { return Err("Documento excede 1 MB.".into()); }
     let v: Value = serde_json::from_str(s).map_err(|_| "Arquivo JSON inválido ou corrompido.")?;
     let p = &v["product"];
@@ -50,12 +50,12 @@ fn document(s: &str) -> Result<Value, String> {
     }
     Ok(v)
 }
-fn read(p: &Path) -> Result<String, String> {
+pub(crate) fn read(p: &Path) -> Result<String, String> {
     extension(p)?;
     if fs::metadata(p).map_err(err)?.len() > 1_048_576 { return Err("Documento excede 1 MB.".into()); }
     let s = fs::read_to_string(p).map_err(err)?; document(&s)?; Ok(s)
 }
-fn write(p: &Path, s: &str, overwrite: bool) -> Result<(), String> {
+pub(crate) fn write(p: &Path, s: &str, overwrite: bool) -> Result<(), String> {
     extension(p)?; document(s)?;
     let mut tmp = tempfile::NamedTempFile::new_in(p.parent().ok_or("Caminho inválido.")?).map_err(err)?;
     tmp.write_all(s.as_bytes()).map_err(err)?;

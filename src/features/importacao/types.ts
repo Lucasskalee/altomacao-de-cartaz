@@ -32,6 +32,7 @@ export type PriceComparison = {
   cartazPath: string | null;
   cartazId: string | null;
   cartazPriceCents: number | null;
+  cartazSource: string | null;
   priceStatus: 'Igual' | 'Alterado' | null;
   status: ComparisonStatus;
 };
