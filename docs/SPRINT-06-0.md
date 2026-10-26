@@ -52,3 +52,20 @@ A aba **Pastas de Ofertas** permite organizar campanhas de ofertas futuras por d
 - **Zero mutação do Excel**: o arquivo `.xlsx` é aberto apenas com `fs::read` após seleção explícita do usuário no diálogo nativo.
 - **Compatibilidade total**: funciona tanto com cartazes do modelo `oferta-classica` quanto com artes `imported-psd` da Sprint 05.0, sem alterar o fluxo DBF da aba *Importação de Preços*.
 
+---
+
+## Resultado Verificado da Entrega (GitHub Actions · Windows x64)
+
+- **Commit compilado**: `80e583c082bcd796faaddfa07906c33e17a5c02f`
+- **Workflow concluído com sucesso**: [Execução #40406563627](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40406563627) (`conclusion: success` em todas as etapas).
+- **Verificações aprovadas**:
+  - `npm run typecheck`: aprovado.
+  - `npm test`: **37/37 testes aprovados localmente** (e 35/35 no CI, onde os 2 arquivos privados locais `consulta01.dbf` e `repolho verde kg.psd` não estão presentes).
+  - `npm run build` e `npm run check:config`: aprovados.
+  - `cargo test --manifest-path src-tauri/Cargo.toml`: aprovado (incluindo os novos testes em `src-tauri/src/offers.rs` para persistência atômica `.skoferta`, preservação de F7 com zeros à esquerda e validação somente-leitura de `.xlsx`).
+  - `npm run tauri -- build --bundles nsis`: aprovado.
+- **Artefato publicado (retido por 30 dias)**:
+  - Nome: [`Skalee-Cartazes-A5-v0.6.0-Windows-x64`](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40406563627/artifacts/12691498137) (`4.659.415 bytes`)
+  - Instalador: `Skalee-Cartazes-A5-0.6.0-windows-x64-setup.exe`
+  - Digest SHA-256 do artefato ZIP: `157fdbefb7eee9e2fd4bd33ce105bcd42c408caa3b8ca3ed73b76562b9c2c7e1`
+
