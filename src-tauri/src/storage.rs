@@ -43,7 +43,9 @@ fn document(s: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(s).map_err(|_| "Arquivo JSON inválido ou corrompido.")?;
     let p = &v["product"];
     let text = |v: &Value, max: usize| v.as_str().map(|s| s.chars().count() <= max).unwrap_or(false);
-    if v["schemaVersion"] != 1 || !text(&v["id"], 100) || v["id"].as_str() == Some("") || !text(&p["name"],32) || p["name"].as_str().unwrap_or("").trim().is_empty() || !text(&p["complement"],28) || !text(&p["unit"],12) || p["unit"].as_str().unwrap_or("").trim().is_empty() || !(p["productCode"].is_null() || text(&p["productCode"],100)) || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true) || v["layout"]["template"] != "oferta-classica" || v["layout"]["paper"] != "A5" || v["layout"]["orientation"] != "portrait" || !text(&v["metadata"]["createdAt"],40) || !text(&v["metadata"]["updatedAt"],40) {
+    // Preserve legacy free-text codes and absent codes from v0.2.0. New F7 input
+    // is digit-only in the editor; string codes have no fixed length limit.
+    if v["schemaVersion"] != 1 || !text(&v["id"], 100) || v["id"].as_str() == Some("") || !text(&p["name"],32) || p["name"].as_str().unwrap_or("").trim().is_empty() || !text(&p["complement"],28) || !text(&p["unit"],12) || p["unit"].as_str().unwrap_or("").trim().is_empty() || !(p["productCode"].is_null() || p["productCode"].is_string()) || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true) || v["layout"]["template"] != "oferta-classica" || v["layout"]["paper"] != "A5" || v["layout"]["orientation"] != "portrait" || !text(&v["metadata"]["createdAt"],40) || !text(&v["metadata"]["updatedAt"],40) {
         return Err("Documento incompatível: confira versão, produto, preço em centavos e layout A5.".into());
     }
     Ok(v)
@@ -193,5 +195,28 @@ mod tests {
         assert!(document("<script>alert(1)</script>").is_err());
         assert!(document(&sample().replace("289","2.89")).is_err());
         assert!(document(&sample().replace("\"schemaVersion\":1","\"schemaVersion\":2")).is_err());
+    }
+    #[test] fn f7_round_trip_and_legacy_compatibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f7.skcartaz");
+        let mut original = document(&sample()).unwrap();
+        original["product"].as_object_mut().unwrap().remove("productCode");
+        write(&path, &original.to_string(), false).unwrap();
+        let mut reopened = document(&read(&path).unwrap()).unwrap();
+        assert!(reopened["product"]["productCode"].is_null());
+        reopened["product"]["productCode"] = json!("001245");
+        write(&path, &reopened.to_string(), true).unwrap();
+        let saved = document(&read(&path).unwrap()).unwrap();
+        assert_eq!(saved["product"]["productCode"], "001245");
+        assert_eq!(saved["id"], original["id"]);
+        assert_eq!(saved["layout"], original["layout"]);
+        assert_eq!(saved["product"]["priceCents"], original["product"]["priceCents"]);
+        for code in [json!(""), Value::Null, json!("ABC-001"), json!("0".repeat(150))] {
+            reopened["product"]["productCode"] = code.clone();
+            write(&path, &reopened.to_string(), true).unwrap();
+            assert_eq!(document(&read(&path).unwrap()).unwrap()["product"]["productCode"], code);
+        }
+        reopened["product"]["productCode"] = json!(1245);
+        assert!(write(&path, &reopened.to_string(), true).is_err());
     }
 }

@@ -5,8 +5,12 @@ import { Library } from './components/library/Library';
 import { useCartaz } from './hooks/useCartaz';
 import { listFiles } from './features/cartazes/storage';
 import type { Library as LibraryData } from './features/cartazes/types';
+import { F7Field } from './components/editor/F7Field';
+import { useF7Matches } from './hooks/useF7Matches';
+import { posterFromDocument } from './features/cartazes/presentation';
 export default function App() {
   const editor = useCartaz();
+  const f7Matches = useF7Matches(editor.document.product.productCode, editor.path);
   const [section, setSection] = useState('editor');
   const [data, setData] = useState<LibraryData | null>(null);
   const [message, setMessage] = useState('');
@@ -14,8 +18,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
   const [queue, setQueue] = useState<Poster[]>([]);
-  const poster: Poster = { name: editor.document.product.name, detail: editor.document.product.complement, price: editor.price, unit: editor.document.product.unit };
-  const refresh = async () => setData(await listFiles());
+  const poster: Poster = { ...posterFromDocument(editor.document), price: editor.price };
+  const refresh = async () => { setData(await listFiles()); f7Matches.refresh(); };
   useEffect(() => { let active = true; listFiles().then(value => { if(active) setData(value); }).catch(ex => { if(active) setError(String(ex)); }); return () => { active = false; }; }, []);
   const run = (action: () => Promise<void>) => {
     if (locked.current) return;
@@ -25,9 +29,9 @@ export default function App() {
   const newDocument = async () => { if (await editor.newDocument()) setSection('editor'); };
   const open = async (path?: string) => { if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); } };
   const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
-  const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return { ...poster, price: (d.product.priceCents/100).toFixed(2) }; };
+  const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
   return <div className="app">
-    <header><div className="brand"><img className="brand-logo" src="/logo.png" alt="Logo oficial Skalee"/><div><strong>Skalee Cartazes</strong><small>Editor de ofertas · A5 vertical · Offline</small></div></div><span className="version">Sprint 02</span></header>
+    <header><div className="brand"><img className="brand-logo" src="/logo.png" alt="Logo oficial Skalee"/><div><strong>Skalee Cartazes</strong><small>Editor de ofertas · A5 vertical · Offline</small></div></div><span className="version">Sprint 03</span></header>
     <nav className="navigation" aria-label="Navegação principal"><button className={section === 'editor' ? 'active' : 'subtle'} disabled={busy} onClick={() => setSection('editor')}>Editor de Cartazes</button><button className={section === 'library' ? 'active' : 'subtle'} disabled={busy} onClick={() => { setSection('library'); run(refresh); }}>Meus Cartazes</button></nav>
     <div className="notifications" aria-live="polite">{busy && <p role="status">Aguarde…</p>}{message && <p className="success" role="status">{message}</p>}{error && <p className="error-text" role="alert">{error}</p>}</div>
     <fieldset className="workspace" disabled={busy} aria-busy={busy}>
@@ -36,7 +40,7 @@ export default function App() {
       <label>Nome principal<input value={poster.name} maxLength={32} onChange={e => editor.change('name',e.target.value.toUpperCase())}/></label>
       <label>Complemento<input value={poster.detail} maxLength={28} onChange={e => editor.change('complement',e.target.value.toUpperCase())}/></label>
       <div className="fields"><label>Preço (R$)<input inputMode="decimal" value={poster.price} onChange={e => editor.change('price',e.target.value)}/></label><label>Unidade<select value={poster.unit} onChange={e => editor.change('unit',e.target.value)}>{Array.from(new Set(['KG','UN','PCT','CX','LT',poster.unit])).map(unit => <option key={unit}>{unit}</option>)}</select></label></div>
-      <label>Código do produto (opcional)<input value={editor.document.product.productCode ?? ''} maxLength={100} onChange={e => editor.change('productCode',e.target.value)}/></label>
+      <F7Field value={editor.document.product.productCode} onChange={value => editor.change('productCode',value)} matches={f7Matches.matches} checking={f7Matches.checking} error={f7Matches.error} onRefresh={f7Matches.refresh}/>
       <div className="actions"><button onClick={() => run(async () => { validPoster(); window.print(); })}>Imprimir A5</button><button className="secondary" onClick={() => run(async () => exportPng(validPoster()))}>Exportar PNG 300 DPI</button></div>
       <button className="outline" onClick={() => run(async () => { const p = validPoster(); setQueue(items => [...items,p]); })}>+ Adicionar à lista ({queue.length})</button>
       {queue.length > 0 && <div className="queue"><h3>Lista de cartazes</h3>{queue.map((item,i) => <div key={i}><span>{item.name} {item.detail} · R$ {item.price}</span><button className="remove" aria-label={'Remover ' + item.name} onClick={() => setQueue(items => items.filter((_,j) => i !== j))}>×</button></div>)}<small>Lista temporária preparada para a futura impressão em lote.</small></div>}

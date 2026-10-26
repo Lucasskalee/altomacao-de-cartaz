@@ -1,4 +1,8 @@
-# Skalee Cartazes A5 — Sprint 02
+# Skalee Cartazes A5 — Sprint 03 · v0.3.0
+
+O F7 é salvo em `product.productCode` como string, preservando zeros à esquerda. O editor aceita dígitos sem comprimento fixo; a biblioteca pesquisa por nome/F7 e filtra cartazes sem F7. Códigos repetidos mostram os cartazes correspondentes sem bloquear o salvamento. F7 não aparece na impressão nem no PNG. Não há importação ou atualização automática de preços nesta versão.
+
+Arquivos da v0.2.0 continuam abrindo, inclusive sem `productCode`. O esquema permanece na versão 1. Veja [detalhes, consulta reutilizável e testes do Sprint 03](docs/SPRINT-03.md). As seções de sprints anteriores abaixo registram a evolução do aplicativo; o workflow atual publica a v0.3.0.
 
 Editor desktop Tauri 2 + React + TypeScript. Os cartazes são documentos JSON `.skcartaz` no computador. O aplicativo instalado funciona offline, sem serviços remotos, banco de dados ou localStorage.
 

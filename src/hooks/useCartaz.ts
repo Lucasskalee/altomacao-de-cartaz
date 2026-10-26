@@ -5,6 +5,7 @@ import type { Cartaz } from '../features/cartazes/types';
 import { createDocument, duplicate } from '../features/cartazes/serialization';
 import { priceToCents, fileName } from '../features/cartazes/validation';
 import * as storage from '../features/cartazes/storage';
+import { digitsOnly } from '../features/cartazes/f7';
 export function useCartaz() {
   const [document, setDocument] = useState(createDocument);
   const [price, setPrice] = useState('2,89');
@@ -35,7 +36,7 @@ export function useCartaz() {
     document, price, path, dirty, current,
     change(field: string, value: string) {
       if (field === 'price') setPrice(value);
-      else setDocument(d => ({ ...d, product: { ...d.product, [field]: value } }));
+      else setDocument(d => ({ ...d, product: { ...d.product, [field]: field === 'productCode' ? digitsOnly(value) : value } }));
       setDirty(true);
     },
     async newDocument() { if (await confirmDiscard()) { load(createDocument(), null, true); return true; } return false; },
