@@ -1,0 +1,16 @@
+[package]
+name = "skalee-cartazes-a5"
+version = "0.1.0"
+description = "Editor de cartazes A5 para Windows"
+authors = ["Skalee"]
+edition = "2021"
+
+[lib]
+name = "skalee_cartazes_a5_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
