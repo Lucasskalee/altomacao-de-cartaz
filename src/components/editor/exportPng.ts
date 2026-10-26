@@ -1,5 +1,9 @@
 import { sanitizePrice, type Poster } from './PosterView';
-export function exportPng(poster: Poster) {
+import { importedPng } from './importedRenderer';
+export async function exportPng(poster: Poster) {
+    if (poster.artwork) {
+      const link=document.createElement('a'); link.download=`cartaz-${safe(poster.name)}.png`; link.href=await importedPng(poster.artwork,poster.price); link.click(); return;
+    }
     // Renderização em 300 DPI com fontes do sistema e desenho vetorial no canvas.
     const canvas = document.createElement('canvas'); canvas.width = 1748; canvas.height = 2480;
     const ctx = canvas.getContext('2d'); if (!ctx) return;
@@ -21,3 +25,4 @@ export function exportPng(poster: Poster) {
     ctx.fillStyle='#292d5a';ctx.textAlign='center';ctx.font='italic 900 120px Arial, sans-serif';ctx.fillText(poster.unit.toUpperCase(),1240,1660);
     const link = document.createElement('a');link.download=`cartaz-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.png`;link.href=canvas.toDataURL('image/png');link.click();
 }
+const safe = (value: string) => value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'arte';

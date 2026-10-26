@@ -3,7 +3,7 @@ import './dbf.test';
 import './updates.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
-import { priceToCents, fileName } from '../src/features/cartazes/validation';
+import { priceToCents, fileName, MAX_DOCUMENT_CHARS } from '../src/features/cartazes/validation';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PosterView } from '../src/components/editor/PosterView';
 import { digitsOnly, getF7, indexCartazes, findCartazesByF7, matchesCartazSearch, withoutF7 } from '../src/features/cartazes/f7';
@@ -13,6 +13,15 @@ import { F7Field } from '../src/components/editor/F7Field';
 import { Library } from '../src/components/library/Library';
 import type { Entry } from '../src/features/cartazes/types';
 import * as storage from '../src/features/cartazes/storage';
+import { importedPriceWarning } from '../src/components/editor/importedRenderer';
+import { analyzePsd, buildArtwork, extractMetadata, extractPriceFromRoles } from '../src/features/psd/importer';
+import { initializeCanvas } from 'ag-psd';
+import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import type { ImportedArtwork } from '../src/features/cartazes/types';
+
+const pixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+function importedArtwork():ImportedArtwork{return {kind:'imported-psd',compatibility:'ready',source:{fileName:'repolho verde kg.psd',sha256:'a'.repeat(64)},canvas:{width:886,height:1240,resolutionPpi:150,fit:'contain'},staticBackground:pixel,originalPreview:pixel,priceParts:[{role:'whole',layerId:'6',bounds:{left:121,top:606,right:422,bottom:1036},fontFamily:'Zullia',color:'#c74624'},{role:'fraction',layerId:'15',bounds:{left:422,top:602,right:719,bottom:847},fontFamily:'Zullia',color:'#c74624'},{role:'decimal',layerId:'14',bounds:{left:432,top:897,right:492,bottom:963},fontFamily:'Zullia',color:'#c74624'},{role:'fractionRule',layerId:'22',bounds:{left:437,top:865,right:696,bottom:883},color:'#c74624'}],layers:[{id:'6',name:'2',type:'text',visible:true,depth:0,text:'2',font:'Zullia',bounds:{left:121,top:606,right:422,bottom:1036}}],warnings:[]};}
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 test('Repolho Verde: serializar, reabrir, editar preço e manter identidade', () => {
   const initial = createDocument();
@@ -29,6 +38,61 @@ test('duplicar mantém original intacto e cria outra identidade', () => {
   copy.product.priceCents = 349;
   assert.notEqual(copy.id,initial.id); assert.equal(initial.product.priceCents,289);
 });
+test('cartaz PSD é autocontido, preserva F7/zeros e duplica com outro UUID',()=>{
+  const d=createDocument();d.product.productCode='001245';d.product.priceCents=299;d.layout={template:'imported-psd',paper:'A5',orientation:'portrait',artwork:importedArtwork()};
+  const reopened=deserialize(serialize(d));assert.equal(reopened.layout.template,'imported-psd');assert.equal(reopened.product.productCode,'001245');
+  assert.equal((reopened.layout as any).artwork.source.fileName,'repolho verde kg.psd');assert.ok(serialize(reopened).includes(pixel));
+  const copy=duplicate(reopened);assert.notEqual(copy.id,reopened.id);assert.deepEqual(copy.layout,reopened.layout);
+});
+test('compositor PSD recebe somente preço e não projeta F7 na saída',()=>{
+  const d=createDocument();d.product.productCode='001245';d.product.priceCents=349;d.layout={template:'imported-psd',paper:'A5',orientation:'portrait',artwork:importedArtwork()};
+  const poster=posterFromDocument(d);assert.equal(poster.price,'3.49');assert.equal(poster.artwork?.source.fileName,'repolho verde kg.psd');assert.ok(!JSON.stringify(poster).includes('001245'));
+  assert.equal(importedPriceWarning(importedArtwork(),'2,99'),'');
+  assert.equal(importedPriceWarning(importedArtwork(),'3,49'),'');
+  assert.equal(importedPriceWarning(importedArtwork(),'12,99'),'');
+  assert.ok(importedPriceWarning(importedArtwork(),'129,90'));
+  assert.ok(importedPriceWarning(importedArtwork(),'123456,78'));
+  const html=renderToStaticMarkup(<PosterView poster={poster}/>);assert.ok(html.includes('canvas'));assert.ok(!html.includes('001245'));
+});
+test('extração de metadados PSD não inventa preço fictício quando não reconhecido',()=>{
+  const layers=importedArtwork().layers;
+  assert.equal(extractPriceFromRoles(layers,{whole:'6'}),'');
+  const unknown=extractMetadata([{id:'1',name:'Camada',type:'raster',visible:true,depth:0,bounds:{left:0,top:0,right:10,bottom:10}}],{});
+  assert.deepEqual(unknown,{name:'',complement:'',unit:'',price:''});
+});
+test('repolho verde kg.psd real: análise de 26 camadas, extração 2,99, alteração 3,49, F7 e integridade', {skip:!existsSync('repolho verde kg.psd')}, async () => {
+  const fakeCanvas = (w = 886, h = 1240): any => ({
+    width: w, height: h,
+    getContext: () => ({ clearRect(){}, save(){}, restore(){}, drawImage(){}, putImageData(){}, getImageData: (_x:number,_y:number,cw:number,ch:number) => ({data:new Uint8ClampedArray(cw*ch*4),width:cw,height:ch}) }),
+    toDataURL: () => pixel,
+  });
+  initializeCanvas(fakeCanvas, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => fakeCanvas() } });
+  try {
+    const raw = readFileSync('repolho verde kg.psd');
+    const hashBefore = createHash('sha256').update(raw).digest('hex');
+    const buffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+    const analysis = await analyzePsd(buffer, 'repolho verde kg.psd');
+    assert.equal(analysis.hash, hashBefore);
+    assert.equal(analysis.width, 886); assert.equal(analysis.height, 1240);
+    assert.equal(analysis.layers.length, 26);
+    assert.deepEqual(analysis.suggested, { whole: '7', fraction: '15', decimal: '14', fractionRule: '22' });
+    assert.deepEqual(analysis.metadata, { name: 'REPOLHO', complement: 'VERDE', unit: 'KG', price: '2,99' });
+    const artwork = buildArtwork(analysis, analysis.suggested);
+    assert.equal(artwork.compatibility, 'ready');
+    const doc = createDocument();
+    doc.product = { ...doc.product, name: analysis.metadata.name, complement: analysis.metadata.complement, unit: analysis.metadata.unit, productCode: '001245', priceCents: priceToCents('3,49') };
+    doc.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
+    const reopened = deserialize(serialize(doc));
+    assert.equal(reopened.product.priceCents, 349);
+    assert.equal(reopened.product.productCode, '001245');
+    assert.equal(reopened.layout.template, 'imported-psd');
+    assert.equal(createHash('sha256').update(readFileSync('repolho verde kg.psd')).digest('hex'), hashBefore);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor); else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
 test('preserva informações adicionais e código do produto', () => {
   const d = createDocument(); d.product.productCode = '000123'; d.product.extra = 'texto'; d.extra = { note: 'observação' };
   assert.deepEqual(deserialize(serialize(d)),d);
@@ -38,7 +102,7 @@ test('valores monetários em centavos sem arredondamento binário', () => {
   for (const input of ['-1','2,899','2,3,4','NaN','Infinity','','1e5']) assert.throws(() => priceToCents(input));
 });
 test('rejeita JSON corrompido, versão futura, campos inválidos e documentos grandes', () => {
-  for (const s of ['{','null','<script>','{}', 'x'.repeat(1_048_577)]) assert.throws(() => deserialize(s));
+  for (const s of ['{','null','<script>','{}', 'x'.repeat(MAX_DOCUMENT_CHARS + 1)]) assert.throws(() => deserialize(s));
   for (const mutate of [(d:any) => d.schemaVersion=2,(d:any) => d.product.priceCents=2.89,(d:any) => d.product.priceCents=-1,(d:any) => d.product.name='',(d:any) => d.product.unit=null,(d:any) => d.metadata.updatedAt='ontem',(d:any) => d.layout.paper='A4']) {
     const d = createDocument(); mutate(d); assert.throws(() => deserialize(JSON.stringify(d)));
   }

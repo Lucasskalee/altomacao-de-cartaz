@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::HashSet, fs, io::Write, path::{Path, PathBuf}, sync::Mutex};
 use tauri::Manager;
+pub(crate) const MAX_DOCUMENT_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct Access(Mutex<HashSet<PathBuf>>);
@@ -39,20 +40,35 @@ pub(crate) fn inside(root: &Path, p: &Path) -> Result<PathBuf, String> {
     Ok(p)
 }
 pub(crate) fn document(s: &str) -> Result<Value, String> {
-    if s.len() > 1_048_576 { return Err("Documento excede 1 MB.".into()); }
+    if s.len() > MAX_DOCUMENT_BYTES { return Err("Documento excede 12 MB.".into()); }
     let v: Value = serde_json::from_str(s).map_err(|_| "Arquivo JSON inválido ou corrompido.")?;
     let p = &v["product"];
     let text = |v: &Value, max: usize| v.as_str().map(|s| s.chars().count() <= max).unwrap_or(false);
     // Preserve legacy free-text codes and absent codes from v0.2.0. New F7 input
     // is digit-only in the editor; string codes have no fixed length limit.
-    if v["schemaVersion"] != 1 || !text(&v["id"], 100) || v["id"].as_str() == Some("") || !text(&p["name"],32) || p["name"].as_str().unwrap_or("").trim().is_empty() || !text(&p["complement"],28) || !text(&p["unit"],12) || p["unit"].as_str().unwrap_or("").trim().is_empty() || !(p["productCode"].is_null() || p["productCode"].is_string()) || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true) || v["layout"]["template"] != "oferta-classica" || v["layout"]["paper"] != "A5" || v["layout"]["orientation"] != "portrait" || !text(&v["metadata"]["createdAt"],40) || !text(&v["metadata"]["updatedAt"],40) {
+    let template = v["layout"]["template"].as_str();
+    let imported_ok = template != Some("imported-psd") || imported_artwork(&v["layout"]["artwork"]);
+    if v["schemaVersion"] != 1 || !text(&v["id"], 100) || v["id"].as_str() == Some("") || !text(&p["name"],32) || p["name"].as_str().unwrap_or("").trim().is_empty() || !text(&p["complement"],28) || !text(&p["unit"],12) || p["unit"].as_str().unwrap_or("").trim().is_empty() || !(p["productCode"].is_null() || p["productCode"].is_string()) || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true) || !matches!(template, Some("oferta-classica" | "imported-psd")) || !imported_ok || v["layout"]["paper"] != "A5" || v["layout"]["orientation"] != "portrait" || !text(&v["metadata"]["createdAt"],40) || !text(&v["metadata"]["updatedAt"],40) {
         return Err("Documento incompatível: confira versão, produto, preço em centavos e layout A5.".into());
     }
     Ok(v)
 }
+fn imported_artwork(a: &Value) -> bool {
+    let png = |v: &Value| v.as_str().map(|s| s.starts_with("data:image/png;base64,") && s.len() <= 8 * 1024 * 1024).unwrap_or(false);
+    let source = &a["source"];
+    let canvas = &a["canvas"];
+    a["kind"] == "imported-psd" && matches!(a["compatibility"].as_str(), Some("ready" | "requires-preparation"))
+        && source["fileName"].is_string() && source["sha256"].as_str().map(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())).unwrap_or(false)
+        && canvas["width"].as_u64().map(|n| (1..=10_000).contains(&n)).unwrap_or(false)
+        && canvas["height"].as_u64().map(|n| (1..=10_000).contains(&n)).unwrap_or(false)
+        && canvas["resolutionPpi"].as_f64().map(|n| (1.0..=2400.0).contains(&n)).unwrap_or(false)
+        && canvas["fit"] == "contain" && png(&a["staticBackground"]) && png(&a["originalPreview"])
+        && a["priceParts"].as_array().map(|parts| parts.iter().any(|p| p["role"] == "whole") && parts.iter().any(|p| p["role"] == "fraction")).unwrap_or(false)
+        && a["layers"].is_array() && a["warnings"].is_array()
+}
 pub(crate) fn read(p: &Path) -> Result<String, String> {
     extension(p)?;
-    if fs::metadata(p).map_err(err)?.len() > 1_048_576 { return Err("Documento excede 1 MB.".into()); }
+    if fs::metadata(p).map_err(err)?.len() > MAX_DOCUMENT_BYTES as u64 { return Err("Documento excede 12 MB.".into()); }
     let s = fs::read_to_string(p).map_err(err)?; document(&s)?; Ok(s)
 }
 pub(crate) fn write(p: &Path, s: &str, overwrite: bool) -> Result<(), String> {
@@ -218,5 +234,17 @@ mod tests {
         }
         reopened["product"]["productCode"] = json!(1245);
         assert!(write(&path, &reopened.to_string(), true).is_err());
+    }
+    #[test] fn imported_psd_document_is_portable_and_validated() {
+        let pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let mut value = document(&sample()).unwrap();
+        value["product"]["productCode"] = json!("001245");
+        value["layout"] = json!({"template":"imported-psd","paper":"A5","orientation":"portrait","artwork":{"kind":"imported-psd","compatibility":"ready","source":{"fileName":"repolho verde kg.psd","sha256":"a".repeat(64)},"canvas":{"width":886,"height":1240,"resolutionPpi":150,"fit":"contain"},"staticBackground":pixel,"originalPreview":pixel,"priceParts":[{"role":"whole"},{"role":"fraction"}],"layers":[],"warnings":[]}});
+        let serialized = value.to_string();
+        let reopened = document(&serialized).unwrap();
+        assert_eq!(reopened["product"]["productCode"], "001245");
+        assert_eq!(reopened["layout"]["artwork"]["source"]["fileName"], "repolho verde kg.psd");
+        let mut invalid = reopened.clone(); invalid["layout"]["artwork"]["staticBackground"] = json!("C:\\temporario\\fundo.png");
+        assert!(document(&invalid.to_string()).is_err());
     }
 }

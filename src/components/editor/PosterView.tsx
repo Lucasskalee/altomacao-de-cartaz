@@ -1,4 +1,7 @@
-export type Poster = { name: string; detail: string; price: string; unit: string };
+import { useEffect, useRef } from 'react';
+import type { ImportedArtwork } from '../../features/cartazes/types';
+import { drawImported } from './importedRenderer';
+export type Poster = { name: string; detail: string; price: string; unit: string; artwork?: ImportedArtwork };
 export const initial: Poster = { name: 'REPOLHO', detail: 'VERDE', price: '2,89', unit: 'KG' };
 export const sanitizePrice = (value: string) => {
   const normalized = value.replace(/[^\d,.]/g, '').replace('.', ',');
@@ -6,6 +9,7 @@ export const sanitizePrice = (value: string) => {
   return { whole: whole || '0', fraction: (fraction + '00').slice(0, 2) };
 };
 export function PosterView({poster}: {poster: Poster}) {
+  if (poster.artwork) return <ImportedPosterView poster={poster}/>;
   const {whole, fraction} = sanitizePrice(poster.price);
   return <div className="poster" aria-label="Prévia do cartaz A5">
     <div className="poster-content">
@@ -18,4 +22,10 @@ export function PosterView({poster}: {poster: Poster}) {
       </div>
     </div>
   </div>;
+}
+
+function ImportedPosterView({poster}: {poster: Poster & {artwork?: ImportedArtwork}}) {
+  const ref=useRef<HTMLCanvasElement>(null);
+  useEffect(() => { if (ref.current && poster.artwork) void drawImported(ref.current,poster.artwork,poster.price).catch(() => undefined); },[poster.artwork,poster.price]);
+  return <div className="poster imported-poster" aria-label="Prévia da arte PSD em A5"><canvas ref={ref}/></div>;
 }

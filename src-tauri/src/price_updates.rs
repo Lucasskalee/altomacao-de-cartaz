@@ -70,7 +70,7 @@ fn read_entry(base: &Path, id: &str) -> Result<HistoryEntry, String> {
 fn backup_source(base: &Path, entry: &HistoryEntry) -> Result<String, String> {
     let directory = history_dir(base, &entry.id)?.canonicalize().map_err(error)?;
     let backup = storage::inside(&directory, &directory.join("before.skcartaz.bak"))?;
-    if fs::metadata(&backup).map_err(error)?.len() > 1_048_576 { return Err("Backup muito grande.".into()); }
+    if fs::metadata(&backup).map_err(error)?.len() > storage::MAX_DOCUMENT_BYTES as u64 { return Err("Backup muito grande.".into()); }
     let source = fs::read_to_string(backup).map_err(error)?;
     storage::document(&source)?;
     if hash(&source) != entry.before_hash { return Err("O backup foi alterado ou está corrompido.".into()); } Ok(source)
@@ -122,7 +122,7 @@ fn validate_proposal(root: &Path, proposal: &Proposal, dirty_paths: &[String]) -
 }
 impl Engine {
     fn prepare(&mut self, root: &Path, dbf_name: String, proposals: Vec<Proposal>, conflict_codes: Vec<String>, dirty_paths: &[String], restores_id: Option<String>) -> Result<Review, String> {
-        if proposals.is_empty() || proposals.len() > 500 || proposals.iter().map(|p| p.source.len()).sum::<usize>() > 16 * 1024 * 1024 { return Err("Selecione de 1 a 500 cartazes, com até 16 MB de documentos por lote.".into()); }
+        if proposals.is_empty() || proposals.len() > 500 || proposals.iter().map(|p| p.source.len()).sum::<usize>() > 128 * 1024 * 1024 { return Err("Selecione de 1 a 500 cartazes, com até 128 MB de documentos por lote.".into()); }
         let mut seen = HashSet::new(); let mut changes = Vec::new(); let mut normalized = Vec::new();
         let conflicts: HashSet<String> = conflict_codes.into_iter().collect();
         for mut proposal in proposals {

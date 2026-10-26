@@ -1,8 +1,8 @@
 import type { Cartaz } from './types';
-import { validate } from './validation';
+import { MAX_DOCUMENT_CHARS, validate } from './validation';
 export function serialize(document: Cartaz): string { validate(document); return JSON.stringify(document, null, 2); }
 export function deserialize(source: string): Cartaz {
-  if (source.length > 1_048_576) throw new Error('Documento excede 1 MB.');
+  if (source.length > MAX_DOCUMENT_CHARS) throw new Error('Documento excede 12 MB.');
   let value: unknown;
   try { value = JSON.parse(source); } catch { throw new Error('Arquivo JSON inválido ou corrompido.'); }
   validate(value); return value;

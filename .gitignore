@@ -6,3 +6,4 @@ src-tauri/target/
 .npm-cache/
 artifacts/
 *.dbf
+*.psd

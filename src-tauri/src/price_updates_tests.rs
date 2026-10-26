@@ -143,3 +143,22 @@ fn same_uuid_in_different_paths_is_selected_and_updated_individually() {
     engine.commit(&root,&base,&review.id,true,&[]).unwrap();
     assert_eq!(storage::read(&second).unwrap(),original); assert_eq!(history(&base).unwrap().entries.len(),1);
 }
+#[test]
+fn large_imported_psd_document_updates_and_restores_over_1mb() {
+    let (_temp,root,base)=setup(); let path=root.join("repolho-psd.skcartaz");
+    let payload = format!("data:image/png;base64,{}", "A".repeat(1_200_000));
+    let doc = json!({"schemaVersion":1,"id":Uuid::new_v4().to_string(),"product":{"name":"REPOLHO","complement":"VERDE","priceCents":299,"unit":"KG","productCode":"001245"},"layout":{"template":"imported-psd","paper":"A5","orientation":"portrait","artwork":{"kind":"imported-psd","compatibility":"ready","source":{"fileName":"repolho verde kg.psd","sha256":"a".repeat(64)},"canvas":{"width":886,"height":1240,"resolutionPpi":150,"fit":"contain"},"staticBackground":payload,"originalPreview":payload,"priceParts":[{"role":"whole"},{"role":"fraction"}],"layers":[],"warnings":[]}},"metadata":{"createdAt":"2026-10-26T12:00:00Z","updatedAt":"2026-10-26T12:00:00Z"}});
+    let serialized = serde_json::to_string_pretty(&doc).unwrap();
+    assert!(serialized.len() > 2_000_000);
+    storage::write(&path,&serialized,false).unwrap();
+    let mut engine=Engine::default(); let review=prepare(&mut engine,&root,vec![proposal(&path,349)]);
+    let outcome=engine.commit(&root,&base,&review.id,true,&[]).unwrap();
+    assert!(!outcome.stopped); assert_eq!(outcome.entries[0].result,"updated");
+    assert_eq!(storage::document(&storage::read(&path).unwrap()).unwrap()["product"]["priceCents"],349);
+    let persisted=history(&base).unwrap(); assert!(persisted.entries[0].backup_available);
+    let mut restarted=Engine::default(); let restore=restarted.prepare_restore(&root,&base,&persisted.entries[0].id,&[]).unwrap();
+    let restored=restarted.commit(&root,&base,&restore.id,true,&[]).unwrap();
+    assert_eq!(restored.entries[0].result,"restored");
+    assert_eq!(storage::document(&storage::read(&path).unwrap()).unwrap()["product"]["priceCents"],299);
+}
+
