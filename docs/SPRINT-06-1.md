@@ -32,3 +32,21 @@ Integrar o importador de artes PSD existente (`PsdImport.tsx`, `importer.ts`, `s
    - **Camadas incompatíveis**: marca a arte como `Requer preparação` e bloqueia o salvamento.
    - **Cancelamento ou erro de gravação**: mantém a linha como `Sem cartaz`, sem criar associações incompletas nem duplicar registros por cliques repetidos (`savingRef`).
    - **Importação normal pela Biblioteca**: continua funcionando exatamente como na Sprint 05.0 quando aberta por *Meus Cartazes → Importar Arte · PSD*.
+
+---
+
+## Resultado Verificado da Entrega (GitHub Actions · Windows x64)
+
+- **Commit compilado**: `2aa93964ffec779dc9b13a8d4b2bbd51cd9831c4`
+- **Workflow concluído com sucesso**: [Execução #40410131691](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40410131691) (`conclusion: success` em todas as etapas).
+- **Verificações aprovadas**:
+  - `npm run typecheck`: aprovado.
+  - `npm test`: **38/38 testes aprovados localmente** (e 36/36 no CI, onde os 2 arquivos privados locais `consulta01.dbf` e `repolho verde kg.psd` não estão presentes).
+  - `npm run build` e `npm run check:config`: aprovados.
+  - `cargo test --manifest-path src-tauri/Cargo.toml`: aprovado.
+  - `npm run tauri -- build --bundles nsis`: aprovado.
+- **Artefato publicado (retido por 30 dias)**:
+  - Nome: [`Skalee-Cartazes-A5-v0.6.1-Windows-x64`](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40410131691/artifacts/12692683811) (`4.662.425 bytes`)
+  - Instalador: `Skalee-Cartazes-A5-0.6.1-windows-x64-setup.exe`
+  - Digest SHA-256 do artefato ZIP: `8ccedbd0f8e9a7a38aadc0bbecdeb30763263cfb28d3825c64d13e4be5c5eb8a`
+
