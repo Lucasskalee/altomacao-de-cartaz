@@ -4,6 +4,5 @@ src-tauri/target/
 *.log
 *.tsbuildinfo
 .npm-cache/
-
-.npm-cache/
 artifacts/
+*.dbf

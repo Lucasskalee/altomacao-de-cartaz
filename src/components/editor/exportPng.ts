@@ -15,8 +15,8 @@ export function exportPng(poster: Poster) {
     ctx.fillRect(210,925,1328,14);
     const detail = (poster.detail || '').toUpperCase();fit(detail,1250,148,900,'Arial, sans-serif');ctx.fillText(detail,874,1030);
     const {whole,fraction}=sanitizePrice(poster.price);
-    ctx.fillStyle='#e97858';ctx.textAlign='right';ctx.textBaseline='alphabetic';fit(whole,740,790,900,'Arial, sans-serif');ctx.fillText(whole,920,1780);
-    ctx.textAlign='left';fit(fraction,640,410,900,'Arial, sans-serif');ctx.fillText(fraction,930,1460);
+    ctx.fillStyle='#e97858';ctx.textAlign='right';ctx.textBaseline='alphabetic';fit(whole,740,790,400,'Zullia, Arial, sans-serif');ctx.fillText(whole,920,1780);
+    ctx.textAlign='left';fit(fraction,640,410,400,'Zullia, Arial, sans-serif');ctx.fillText(fraction,930,1460);
     ctx.fillRect(945,1500,530,14);
     ctx.fillStyle='#292d5a';ctx.textAlign='center';ctx.font='italic 900 120px Arial, sans-serif';ctx.fillText(poster.unit.toUpperCase(),1240,1660);
     const link = document.createElement('a');link.download=`cartaz-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}.png`;link.href=canvas.toDataURL('image/png');link.click();
