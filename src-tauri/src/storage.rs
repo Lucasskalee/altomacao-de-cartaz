@@ -96,6 +96,7 @@ fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>) -> Result<(), String> {
             if meta.file_attributes() & 0x400 != 0 { continue; }
         }
         if meta.file_type().is_symlink() { continue; }
+        if entry.file_name().to_string_lossy().starts_with('.') { continue; }
         let p = inside(root, &p)?;
         if meta.is_dir() {
             rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":true}));
