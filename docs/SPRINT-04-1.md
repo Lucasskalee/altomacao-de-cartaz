@@ -68,3 +68,14 @@ Rust/Cargo não estão instalados localmente. O workflow Windows executa os test
 Workflow: [Compilar instalador Windows](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/workflows/windows-exe.yml). Artefato esperado: **Skalee-Cartazes-A5-v0.4.1-Windows-x64**, com `Skalee-Cartazes-A5-0.4.1-windows-x64-setup.exe`, checksum e commit de origem. A leitura real do `consulta01.dbf` é testada apenas quando o arquivo está presente localmente; no CI, esse teste é explicitamente ignorado.
 
 Impressão A5 e PNG mantêm os testes de regressão existentes. Instalação interativa, diálogos nativos e impressão física continuam precisando de conferência manual no instalador. Faça o primeiro teste com cópias de cartazes, revise a seleção, confirme os preços após fechar/reabrir e teste uma restauração.
+
+## Resultado verificado da entrega
+
+- Código compilado: commit `64cfc13f97ebe61676f85841aec1bdd15cd049fe`.
+- [Workflow Windows concluído com sucesso](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40377610477).
+- CI: TypeScript, build frontend e configuração aprovados; **29 testes frontend aprovados e 1 ignorado**, pois o DBF real é privado e não está no repositório. Localmente, **30 testes aprovados**, incluindo essa leitura real.
+- **13 testes Rust aprovados**, sem falhas. Os nove testes novos executaram os cenários de gravação/restauração em arquivos reais, validação de snapshots, bloqueios, falhas e recuperação. O teste Windows de arquivo somente leitura confirmou que falha de substituição mantém o original e um backup válido.
+- A atualização/reabertura/restauração em disco foi verificada em diretório temporário no Windows, inclusive recriando o estado do aplicativo e relendo o histórico persistido. Não houve alteração de cartazes do usuário para esses testes.
+- [Artefato publicado para download](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40377610477/artifacts/12677325993), retido por 30 dias: `Skalee-Cartazes-A5-0.4.1-windows-x64-setup.exe`.
+- Instalador baixado e conferido: versão **0.4.1**, cabeçalhos PE/MZ válidos, commit de origem correto e SHA-256 **`b5b1d8b4445766858806a4d938bb26ec72752dcd22e3a175f42706b3d0c45bc5`**, igual ao manifesto do artefato.
+- Logs e evidências locais não versionados: `artifacts/sprint041-ci.log`, `artifacts/price-update-ui-verification.json` e `artifacts/v0.4.1-final/`.
