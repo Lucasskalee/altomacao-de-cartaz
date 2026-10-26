@@ -57,3 +57,18 @@ O arquivo real `repolho verde kg.psd` foi testado localmente (mantido fora do re
   - `R$ 129,90`: aciona corretamente o aviso de largura excessiva para a área de 1 dígito do template original.
 - **Persistência e Exportação**: documento `.skcartaz` salvo com F7 `"001245"` e preço `349` centavos (`230.210 bytes`), reaberto e validado com sucesso; PNG exportado em `1748 × 2480 px` (300 DPI).
 
+## Resultado Verificado da Entrega (GitHub Actions · Windows x64)
+
+- **Commit compilado**: `cb95ccd2f364d50dd5416842354ec37bdddf1154`
+- **Workflow concluído com sucesso**: [Execução #40397722347](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40397722347) (`conclusion: success` em todas as etapas).
+- **Verificações aprovadas no CI**:
+  - `npm run typecheck`: aprovado.
+  - `npm test`: aprovado (32 testes executados no CI e 2 testes de arquivos locais privados `consulta01.dbf` e `repolho verde kg.psd` ignorados no CI e aprovados localmente — **34/34 aprovados localmente**).
+  - `npm run build` e `npm run check:config`: aprovados.
+  - `cargo test --manifest-path src-tauri/Cargo.toml`: aprovado (todos os testes nativos em `storage.rs`, `dbf.rs`, `psd.rs` e `price_updates_tests.rs`, incluindo validação de cartaz PSD, limites de arquivo `.psd` e atualização/restauração de cartaz PSD acima de 1 MB).
+  - `npm run tauri -- build --bundles nsis`: aprovado.
+- **Artefato publicado (retido por 30 dias)**:
+  - Nome: [`Skalee-Cartazes-A5-v0.5.0-Windows-x64`](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/runs/40397722347/artifacts/12688135955) (`4.626.507 bytes`)
+  - Instalador: `Skalee-Cartazes-A5-0.5.0-windows-x64-setup.exe`
+  - Digest SHA-256 do artefato ZIP: `ef9c7c0d1cecdaeb23fc6e35a1c641f294b8342830360b98d79ce4f339c23bf9`
+
