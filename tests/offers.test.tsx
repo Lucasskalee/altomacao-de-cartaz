@@ -23,15 +23,18 @@ import {
   createCampaign,
   deleteCampaign,
   duplicateCampaign,
+  linkSavedPosterToCampaignItem,
   listCampaigns,
   renameCampaign,
   saveCampaign,
+  suggestFromExcelDescription,
   syncCampaignWithLibrary,
   updatePosterSelection,
   updateScheduledPrice,
 } from '../src/features/ofertas/service';
-import type { OfferCampaign } from '../src/features/ofertas/types';
+import type { OfferCampaign, PsdImportOfferContext } from '../src/features/ofertas/types';
 import { OfferFolders } from '../src/components/ofertas/OfferFolders';
+import { PsdImport } from '../src/components/library/PsdImport';
 
 function buildZip(files: Record<string, string>): ArrayBuffer {
   const encoder = new TextEncoder();
@@ -408,4 +411,112 @@ test('Persistência IPC de Pastas de Ofertas e renderização da aba Pastas de O
       else Reflect.deleteProperty(globalThis, key);
     }
   }
+});
+
+test('Sprint 06.1: Importação PSD diretamente na Pasta de Ofertas (exemplo F7 25037 — FLV.ABÓBORA KG CABOTIÁ — R$ 2,89)', () => {
+  // 1. Sugestão de metadados a partir da descrição do Excel sem sobrescrever camadas reais do PSD
+  const suggestion = suggestFromExcelDescription('FLV.ABÓBORA KG CABOTIÁ');
+  assert.deepEqual(suggestion, { name: 'ABÓBORA', complement: 'CABOTIÁ', unit: 'KG' });
+
+  // 2. Criar campanha e importar planilha contendo o item de exemplo 25037 (e um item com zeros à esquerda 0025037)
+  let campaign = createCampaign('Ofertas Hortifruti', '2026-10-27');
+  const sheet = {
+    name: 'FLV',
+    rows: [
+      ['F7', 'DESCRIÇÃO', 'PREÇO OFERTA'],
+      ['25037', 'FLV.ABÓBORA KG CABOTIÁ', '2,89'],
+      ['0025037', 'PRODUTO COM ZEROS À ESQUERDA KG', '4,59'],
+    ],
+  };
+  const extraction = extractCampaignItemsFromSheet(sheet, 0, { f7Col: 0, descriptionCol: 1, priceCol: 2 });
+  assert.equal(extraction.validCount, 2);
+
+  // Biblioteca inicialmente vazia -> ambos os produtos ficam "Sem cartaz"
+  let libraryEntries: Entry[] = [];
+  campaign = applyExcelToCampaign(campaign, extraction, indexCartazes(libraryEntries), {
+    fileName: 'flv.xlsx',
+    sheetName: 'FLV',
+    headerRowIndex: 0,
+    mapping: { f7Col: 0, descriptionCol: 1, priceCol: 2 },
+  });
+
+  let views = buildCampaignMatchViews(campaign, indexCartazes(libraryEntries));
+  const aboboraBefore = views.find(v => v.item.f7 === '25037')!;
+  const zeroBefore = views.find(v => v.item.f7 === '0025037')!;
+  assert.equal(aboboraBefore.missingPoster, true);
+  assert.equal(zeroBefore.missingPoster, true);
+  assert.equal(aboboraBefore.item.scheduledPriceCents, 289);
+
+  // 3. Contexto transmitido ao abrir o importador PSD a partir da linha "Sem cartaz"
+  const offerContext: PsdImportOfferContext = {
+    folderId: campaign.id,
+    offerItemId: aboboraBefore.item.id,
+    productCode: aboboraBefore.item.f7,
+    description: aboboraBefore.item.description,
+    futurePriceCents: aboboraBefore.item.scheduledPriceCents,
+  };
+  const modalHtml = renderToStaticMarkup(
+    <PsdImport offerContext={offerContext} close={() => {}} saved={async () => {}} />
+  );
+  assert.ok(modalHtml.includes('Importar arte PSD para Pasta de Ofertas'));
+  assert.ok(modalHtml.includes('25037'));
+  assert.ok(modalHtml.includes('FLV.ABÓBORA KG CABOTIÁ'));
+  assert.ok(modalHtml.includes('R$ 2,89'));
+
+  // Importação normal pela biblioteca continua funcionando sem offerContext
+  const normalModalHtml = renderToStaticMarkup(
+    <PsdImport close={() => {}} saved={async () => {}} />
+  );
+  assert.ok(normalModalHtml.includes('Importar arte PSD'));
+  assert.ok(!normalModalHtml.includes('Vinculando ao item da oferta'));
+
+  // 4. Cancelar importação mantém a linha como "Sem cartaz" e dados intactos
+  assert.equal(campaign.items.find(i => i.f7 === '25037')!.posters.length, 0);
+
+  // 5. Simular salvamento de arte PSD com preço base 3,99 no PSD e F7 25037
+  const savedPsdDoc = createDocument();
+  savedPsdDoc.id = '77777777-7777-4777-8777-777777777777';
+  savedPsdDoc.product.name = 'ABÓBORA';
+  savedPsdDoc.product.complement = 'CABOTIÁ';
+  savedPsdDoc.product.unit = 'KG';
+  savedPsdDoc.product.productCode = '25037';
+  savedPsdDoc.product.priceCents = 399; // Preço base salvo na biblioteca (extraído da arte PSD)
+  const savedPath = 'C:\\Cartazes\\Hortifruti\\abobora-cabotia.skcartaz';
+
+  libraryEntries = [
+    ...libraryEntries,
+    { name: 'abobora-cabotia.skcartaz', path: savedPath, folder: false, content: serialize(savedPsdDoc) },
+  ];
+
+  // Vincular à pasta de ofertas
+  campaign = linkSavedPosterToCampaignItem(campaign, aboboraBefore.item.id, savedPath, savedPsdDoc);
+  // Cliques repetidos não criam registros duplicados
+  campaign = linkSavedPosterToCampaignItem(campaign, aboboraBefore.item.id, savedPath, savedPsdDoc);
+  assert.equal(campaign.items.find(i => i.f7 === '25037')!.posters.length, 1);
+
+  // 6. Verificar estado atualizado da Pasta de Ofertas e separação entre Preço da Biblioteca (3,99) e Preço Futuro (2,89)
+  views = buildCampaignMatchViews(campaign, indexCartazes(libraryEntries));
+  const aboboraAfter = views.find(v => v.item.f7 === '25037')!;
+  assert.equal(aboboraAfter.missingPoster, false);
+  assert.equal(aboboraAfter.matchedPosters.length, 1);
+  assert.equal(aboboraAfter.matchedPosters[0].state.status, 'preparado');
+  assert.equal(aboboraAfter.matchedPosters[0].state.selected, true);
+  assert.equal(aboboraAfter.matchedPosters[0].state.copies, 1);
+  assert.equal(aboboraAfter.matchedPosters[0].currentPriceCents, 399); // Preço base na biblioteca: R$ 3,99
+  assert.equal(aboboraAfter.item.scheduledPriceCents, 289); // Preço futuro na oferta: R$ 2,89
+  assert.equal(aboboraAfter.matchedPosters[0].scheduledDocument?.product.priceCents, 289); // Prévia/impressão usa R$ 2,89!
+  assert.equal(savedPsdDoc.product.priceCents, 399); // Documento da biblioteca permanece intacto!
+
+  // 7. Testar também preservação de F7 com zeros à esquerda ("0025037")
+  const savedZeroDoc = createDocument();
+  savedZeroDoc.id = '88888888-8888-4888-8888-888888888888';
+  savedZeroDoc.product.productCode = '0025037';
+  savedZeroDoc.product.priceCents = 499;
+  const zeroPath = 'C:\\Cartazes\\Hortifruti\\zero-left.skcartaz';
+  libraryEntries.push({ name: 'zero-left.skcartaz', path: zeroPath, folder: false, content: serialize(savedZeroDoc) });
+  campaign = linkSavedPosterToCampaignItem(campaign, zeroBefore.item.id, zeroPath, savedZeroDoc);
+
+  const zeroAfter = buildCampaignMatchViews(campaign, indexCartazes(libraryEntries)).find(v => v.item.f7 === '0025037')!;
+  assert.equal(zeroAfter.missingPoster, false);
+  assert.equal(zeroAfter.matchedPosters[0].libraryCartaz?.document.product.productCode, '0025037');
 });

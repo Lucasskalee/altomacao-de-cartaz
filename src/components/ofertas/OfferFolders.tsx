@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
-import type { Library as LibraryData } from '../../features/cartazes/types';
+import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
   extractCampaignItemsFromSheet,
@@ -19,6 +19,7 @@ import {
   confirmBatchPrinted,
   createCampaign,
   duplicateCampaign,
+  linkSavedPosterToCampaignItem,
   listCampaigns,
   renameCampaign,
   saveCampaign,
@@ -27,12 +28,17 @@ import {
   updatePosterSelection,
   updateScheduledPrice,
 } from '../../features/ofertas/service';
-import type { OfferCampaign, PrintStatus } from '../../features/ofertas/types';
+import type { OfferCampaign, PrintStatus, PsdImportOfferContext } from '../../features/ofertas/types';
+
+const PsdImport = lazy(() =>
+  import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
+);
 
 type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[]) => void;
+  onRefreshLibrary?: () => Promise<void>;
 };
 
 const money = (cents: number | null) =>
@@ -44,7 +50,7 @@ const tomorrowIso = () => {
   return d.toISOString().slice(0, 10);
 };
 
-export function OfferFolders({ libraryData, run, onPrintBatch }: Props) {
+export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary }: Props) {
   const [campaigns, setCampaigns] = useState<OfferCampaign[]>([]);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -62,6 +68,9 @@ export function OfferFolders({ libraryData, run, onPrintBatch }: Props) {
   const [sheetIdx, setSheetIdx] = useState(0);
   const [headerRow, setHeaderRow] = useState(0);
   const [mapping, setMapping] = useState<ColumnMapping>({ f7Col: 0, descriptionCol: 1, priceCol: 2 });
+
+  // PSD import modal state from "Sem cartaz" row
+  const [psdOfferContext, setPsdOfferContext] = useState<PsdImportOfferContext | null>(null);
 
   // Filter & preview inside active campaign
   const [searchQuery, setSearchQuery] = useState('');
@@ -196,8 +205,22 @@ export function OfferFolders({ libraryData, run, onPrintBatch }: Props) {
 
   const handleSyncLibrary = async () => {
     if (!activeCampaign) return;
+    if (onRefreshLibrary) await onRefreshLibrary();
     const synced = syncCampaignWithLibrary(activeCampaign, libraryIndex);
     await persistUpdate(synced);
+  };
+
+  const handlePsdSavedForOffer = async (path: string, savedDocument: Cartaz) => {
+    if (!activeCampaign || !psdOfferContext) return;
+    const linked = linkSavedPosterToCampaignItem(
+      activeCampaign,
+      psdOfferContext.offerItemId,
+      path,
+      savedDocument
+    );
+    await persistUpdate(linked);
+    if (onRefreshLibrary) await onRefreshLibrary();
+    setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
   };
 
   const matchViews = useMemo(() => {
@@ -634,9 +657,26 @@ export function OfferFolders({ libraryData, run, onPrintBatch }: Props) {
                               </td>
                               <td>
                                 {v.missingPoster ? (
-                                  <span className="comparison-status conflict">
-                                    Sem cartaz com F7 {v.item.f7} na biblioteca
-                                  </span>
+                                  <div className="toolbar" style={{ alignItems: 'center' }}>
+                                    <span className="comparison-status conflict">
+                                      Sem cartaz (F7 {v.item.f7})
+                                    </span>
+                                    <button
+                                      className="subtle"
+                                      style={{ padding: '6px 10px', fontSize: 12 }}
+                                      onClick={() =>
+                                        setPsdOfferContext({
+                                          folderId: activeCampaign.id,
+                                          offerItemId: v.item.id,
+                                          productCode: v.item.f7,
+                                          description: v.item.description,
+                                          futurePriceCents: v.item.scheduledPriceCents,
+                                        })
+                                      }
+                                    >
+                                      Importar arte PSD
+                                    </button>
+                                  </div>
                                 ) : (
                                   <div className="offer-posters-cell">
                                     {v.matchedPosters.map(m => {
@@ -912,6 +952,24 @@ export function OfferFolders({ libraryData, run, onPrintBatch }: Props) {
             </div>
           </section>
         </div>
+      )}
+
+      {psdOfferContext && (
+        <Suspense
+          fallback={
+            <div className="modal-backdrop">
+              <section className="panel modal" role="status">
+                Carregando importador PSD…
+              </section>
+            </div>
+          }
+        >
+          <PsdImport
+            offerContext={psdOfferContext}
+            close={() => setPsdOfferContext(null)}
+            saved={handlePsdSavedForOffer}
+          />
+        </Suspense>
       )}
     </section>
   );

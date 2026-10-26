@@ -142,6 +142,80 @@ export function syncCampaignWithLibrary(campaign: OfferCampaign, library: Indexe
   return changed ? { ...campaign, items, updatedAt: new Date().toISOString() } : campaign;
 }
 
+export function suggestFromExcelDescription(description: string): {
+  name: string;
+  complement: string;
+  unit: string;
+} {
+  const cleaned = description
+    .trim()
+    .toUpperCase()
+    .replace(/^[A-Z]{2,5}\.\s*/, '');
+  const unitRegex = /\b(KG|UN|PCT|CX|LT|BDJ|MACO|MAÇO|DZ|GR|G|ML)\b/i;
+  const unitMatch = cleaned.match(unitRegex);
+  const unit = unitMatch ? unitMatch[1].toUpperCase() : 'UN';
+  const withoutUnit = cleaned
+    .replace(unitRegex, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const tokens = withoutUnit.split(' ').filter(Boolean);
+  const name = (tokens[0] ?? cleaned).slice(0, 32);
+  const complement = tokens.slice(1).join(' ').slice(0, 28);
+  return { name, complement, unit };
+}
+
+export function linkSavedPosterToCampaignItem(
+  campaign: OfferCampaign,
+  offerItemId: string,
+  cartazPath: string,
+  cartazDocument: Cartaz
+): OfferCampaign {
+  if (!cartazPath.trim()) throw new Error('Caminho do cartaz salvo inválido.');
+  const targetNorm = normalizedPath(cartazPath);
+  const now = new Date().toISOString();
+  let foundItem = false;
+
+  const items = campaign.items.map(item => {
+    const isTargetItem = item.id === offerItemId;
+    const isSameF7 =
+      Boolean(cartazDocument.product.productCode) &&
+      cartazDocument.product.productCode === item.f7;
+    if (!isTargetItem && !isSameF7) return item;
+    if (isTargetItem) foundItem = true;
+
+    const existingIdx = item.posters.findIndex(
+      p => normalizedPath(p.cartazPath) === targetNorm || p.cartazId === cartazDocument.id
+    );
+    const nextEntry: CampaignPosterState = {
+      cartazId: cartazDocument.id,
+      cartazPath,
+      selected: true,
+      copies: existingIdx >= 0 ? item.posters[existingIdx].copies : 1,
+      status: 'preparado',
+      printedAt: null,
+    };
+    const nextPosters =
+      existingIdx >= 0
+        ? item.posters.map((p, idx) => (idx === existingIdx ? nextEntry : p))
+        : [...item.posters, nextEntry];
+
+    return {
+      ...item,
+      posters: nextPosters,
+    };
+  });
+
+  if (!foundItem) {
+    throw new Error('Item da pasta de ofertas não encontrado para vincular o cartaz PSD.');
+  }
+
+  return {
+    ...campaign,
+    items,
+    updatedAt: now,
+  };
+}
+
 export function updateScheduledPrice(campaign: OfferCampaign, itemId: string, newPriceCents: number): OfferCampaign {
   if (!Number.isSafeInteger(newPriceCents) || newPriceCents <= 0 || newPriceCents > 99_999_999) {
     throw new Error('Preço programado inválido.');

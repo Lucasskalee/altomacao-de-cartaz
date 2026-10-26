@@ -54,3 +54,11 @@ export type CampaignMatchView = {
   hasConflict: boolean;
   missingPoster: boolean;
 };
+
+export type PsdImportOfferContext = {
+  folderId: string;
+  offerItemId: string;
+  productCode: string;
+  description: string;
+  futurePriceCents: number;
+};
