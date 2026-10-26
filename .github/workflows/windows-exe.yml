@@ -1,29 +1,97 @@
-name: Compilar instalador Windows
+﻿name: Compilar instalador Windows
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows:
+    name: Windows x64 · Skalee Cartazes A5 v0.2.0
     runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      ARTIFACT_NAME: Skalee-Cartazes-A5-v0.2.0-Windows-x64
+      INSTALLER_NAME: Skalee-Cartazes-A5-0.2.0-windows-x64-setup.exe
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
       - name: Instalar dependências
-        run: npm install
+        run: npm ci
+      - name: Verificar TypeScript
+        run: npm run typecheck
+      - name: Testar documentos e editor
+        run: npm test
+      - name: Compilar frontend e conferir configuração
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run check:config
+      - name: Testar arquivos locais em Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Gerar instalador EXE
-        run: npm run tauri build -- --bundles nsis
+        run: npm run tauri -- build --bundles nsis
+      - name: Conferir instalador e gerar checksum
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/release/bundle/nsis -Filter '*_0.2.0_x64-setup.exe' -File)
+          if ($installers.Count -ne 1) { throw "Esperado exatamente um instalador NSIS x64 v0.2.0; encontrados: $($installers.Count)" }
+          if ($installers[0].Length -eq 0) { throw 'O instalador está vazio.' }
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $destination = Join-Path artifacts $env:INSTALLER_NAME
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $destination
+          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:INSTALLER_NAME" | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding utf8
+          @"
+          Skalee Cartazes A5 v0.2.0 — Windows x64
+          Commit: $env:GITHUB_SHA
+          Execução: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          Instalador: $env:INSTALLER_NAME
+          SHA256: $hash
+          "@ | Set-Content -LiteralPath artifacts/BUILD-INFO.txt -Encoding utf8
       - name: Disponibilizar instalador
+        id: installer
         uses: actions/upload-artifact@v4
         with:
-          name: Skalee-Cartazes-A5-Windows-EXE
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            artifacts/*.exe
+            artifacts/SHA256SUMS.txt
+            artifacts/BUILD-INFO.txt
           if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Registrar entrega no resumo
+        env:
+          ARTIFACT_URL: ${{ steps.installer.outputs.artifact-url }}
+        run: |
+          @"
+          ## Skalee Cartazes A5 v0.2.0 — Windows x64
+          - Instalador: $env:INSTALLER_NAME
+          - Commit: $env:GITHUB_SHA
+          - [Baixar artefato $env:ARTIFACT_NAME]($env:ARTIFACT_URL)
+          - O ZIP inclui SHA256SUMS.txt e BUILD-INFO.txt.
+          - Testes TypeScript/React e Rust aprovados; compilação NSIS concluída.
+          - Instalação interativa e impressão física não são verificadas por este workflow.
+          "@ | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
