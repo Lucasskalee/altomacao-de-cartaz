@@ -108,3 +108,21 @@ Os fluxos nativos de fechar/reabrir, filesystem, diálogos, impressão física e
 A impressão depende do driver; o PNG tem dimensões equivalentes a aproximadamente 300 DPI, sem metadados físicos de DPI. A tipografia e o desenho de PNG originais foram preservados e podem diferir visualmente da prévia. A lista de preparação continua temporária e não imprime em lote. PDF, Excel/F7 e editor de modelos permanecem fora deste sprint.
 
 Referências das APIs utilizadas: [comandos Tauri 2](https://v2.tauri.app/develop/calling-rust/), [persistência temporária](https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html), [diálogos nativos](https://docs.rs/rfd/0.15.4/rfd/struct.AsyncMessageDialog.html).
+
+## Sprint 02.1 — instalador Windows v0.2.0
+
+As versões de npm, lockfile, Cargo e Tauri estão alinhadas em **0.2.0**. O workflow `.github/workflows/windows-exe.yml` usa `windows-latest`, Node 22, Rust stable MSVC e caches npm/Rust. Executa `npm ci`, tipos, testes frontend, build, conferência de configuração e `cargo test` antes de `npm run tauri -- build --bundles nsis`.
+
+A publicação do artefato só acontece após todas as etapas passarem e existir exatamente um instalador NSIS x64 v0.2.0 não vazio. O ZIP contém:
+
+- `Skalee-Cartazes-A5-0.2.0-windows-x64-setup.exe`
+- `SHA256SUMS.txt`
+- `BUILD-INFO.txt`, com commit e execução de origem
+
+**Artefato:** `Skalee-Cartazes-A5-v0.2.0-Windows-x64`, retido por 30 dias.
+
+Para executar manualmente, abra [Actions — Compilar instalador Windows](https://github.com/Lucasskalee/altomacao-de-cartaz/actions/workflows/windows-exe.yml), clique **Run workflow**, escolha `main` e confirme **Run workflow**. Push em `main` também inicia a compilação. Após a execução ficar verde, abra a execução e baixe o ZIP em **Artifacts**; o resumo do job também oferece um link direto. É necessário estar conectado ao GitHub para baixar artefatos.
+
+A existência desta configuração não comprova uma compilação bem-sucedida. Confirme a execução e o artefato no GitHub. O workflow testa código e gera o pacote; instalação interativa e impressão física permanecem verificações manuais.
+
+Referências: [pipeline oficial do Tauri](https://tauri.app/distribute/pipelines/github/), [cache npm do setup-node](https://github.com/actions/setup-node/blob/main/docs/advanced-usage.md).

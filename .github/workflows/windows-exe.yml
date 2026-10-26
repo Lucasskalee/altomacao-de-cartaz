@@ -1,4 +1,4 @@
-﻿name: Compilar instalador Windows
+name: Compilar instalador Windows
 
 on:
   workflow_dispatch:
