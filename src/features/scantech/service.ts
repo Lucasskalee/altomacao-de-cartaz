@@ -1,7 +1,8 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { findCartazesByF7, type IndexedCartaz } from '../cartazes/f7';
 import type { Cartaz, ImportedArtwork, ImportedLayerInfo } from '../cartazes/types';
-import { splitCentsToParts } from '../cartazes/presentation';
+import { formatCentsBr, splitCentsToParts } from '../cartazes/presentation';
+import type { Poster } from '../../components/editor/PosterView';
 import { hasInvertedPsdPriceParts, importedPriceWarning } from '../../components/editor/importedRenderer';
 import { applyValidityDateToLayerText, type ColumnMapping, type ExcelExtractionResult } from '../ofertas/excel';
 import type {
@@ -517,6 +518,42 @@ export function buildScantechItemViews(
       canExport,
     };
   });
+}
+
+export function buildPrintableScantechPosters(
+  views: ScantechItemView[],
+  copiesByItemId: Record<string, number> = {}
+): { posters: Poster[]; blockedViews: ScantechItemView[] } {
+  const posters: Poster[] = [];
+  const blockedViews: ScantechItemView[] = [];
+
+  for (const view of views) {
+    const isBlocked =
+      view.realErrors.length > 0 ||
+      (Boolean(view.widthWarning) && !view.isVisuallyApproved) ||
+      !view.artwork;
+
+    if (isBlocked) {
+      blockedViews.push(view);
+      continue;
+    }
+
+    const copies = Math.max(1, Math.min(999, copiesByItemId[view.item.id] ?? 1));
+    const poster: Poster = {
+      name: view.item.description.trim(),
+      detail: '',
+      unit: 'UN',
+      price: formatCentsBr(view.item.priceCents),
+      artwork: view.artwork!,
+      validityText: view.resolvedValidityText,
+    };
+
+    for (let i = 0; i < copies; i += 1) {
+      posters.push(poster);
+    }
+  }
+
+  return { posters, blockedViews };
 }
 
 export function buildOutputPsdPath(exportFolder: string, item: ScantechItem): string {

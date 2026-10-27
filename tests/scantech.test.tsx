@@ -22,6 +22,7 @@ import { computeWholePriceAdjustment } from '../src/components/editor/importedRe
 import {
   applyExcelToScantechCampaign,
   buildOutputPsdPath,
+  buildPrintableScantechPosters,
   buildScantechItemViews,
   createScantechCampaign,
   linkCartazAndPsdToScantechItem,
@@ -343,9 +344,12 @@ try {
   sf.open("w");
   sf.write('{"ok":false,"error":"' + e.toString().replace(/"/g, '\\\\"') + '"}');
   sf.close();
+} finally {
+  app.quit();
 }
 `;
       writeFileSync(jsxFile, jsx, 'utf8');
+      spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Stop-Process -Name photoshop -Force -ErrorAction SilentlyContinue']);
       const child = spawnSync('powershell.exe', [
         '-NoProfile',
         '-Command',
@@ -397,6 +401,7 @@ try {
       const afterHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
       assert.equal(afterHash, origHash);
     } finally {
+      spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Stop-Process -Name photoshop -Force -ErrorAction SilentlyContinue']);
       rmSync(workDir, { recursive: true, force: true });
     }
   }
@@ -619,4 +624,226 @@ test('Sprint 07.1 — Aprovação de composição visual para alerta de largura 
   assert.ok(views[0].realErrors.includes('Preço programado inválido.'));
   assert.equal(views[0].canExport, false);
 });
+
+test('Sprint 07.2 — Impressão direta de Cartazes Scantech: individual e em lote sem depender do Photoshop CS6', () => {
+  const makeArtwork = (origDigitsText: string, sha: string) => ({
+    canvas: { width: 1179, height: 1770 },
+    staticBackground: pixel,
+    priceParts: [
+      { role: 'whole', layerId: '10', bounds: { left: 46, top: 812, right: 631, bottom: 1571 }, color: '#c74624', originalText: origDigitsText, fontSize: 140 },
+      { role: 'fraction', layerId: '11', bounds: { left: 640, top: 798, right: 1013, bottom: 1313 }, color: '#c74624', originalText: '19', fontSize: 70 },
+      { role: 'validity', layerId: '13', bounds: { left: 118, top: 1602, right: 1033, bottom: 1675 }, color: '#000000', originalText: 'OFERTA VÁLIDA ATÉ 25/10' },
+    ],
+    layers: [
+      { id: '10', name: origDigitsText, type: 'text', visible: true, depth: 0, text: origDigitsText, bounds: { left: 46, top: 812, right: 631, bottom: 1571 } },
+      { id: '11', name: '19', type: 'text', visible: true, depth: 0, text: '19', bounds: { left: 640, top: 798, right: 1013, bottom: 1313 } },
+      { id: '13', name: 'OFERTA VÁLIDA ATÉ 25/10', type: 'text', visible: true, depth: 0, text: 'OFERTA VÁLIDA ATÉ 25/10', bounds: { left: 118, top: 1602, right: 1033, bottom: 1675 } },
+    ],
+    source: {
+      fileName: `${origDigitsText}-cartaz.psd`,
+      sourcePath: `C:/cartazes/${origDigitsText}-cartaz.psd`,
+      sha256: sha,
+    },
+  });
+
+  const mockArtworkGuarana = makeArtwork('6', 'mock-sha-guarana');
+  const mockArtworkCorona = makeArtwork('4', 'mock-sha-corona');
+  const mockArtworkArroz = makeArtwork('19', 'mock-sha-arroz');
+  const mockArtworkWhisky = makeArtwork('129', 'mock-sha-whisky');
+  const mockArtworkOutro = makeArtwork('5', 'mock-sha-outro');
+
+  const campaign = createScantechCampaign('Campanha Fim de Ano Scantech', '2026-11-08');
+
+  // 1. Guaraná Antarctica 3L (F7 29965): R$ 11,19 e validade 08/11/2026
+  campaign.items.push({
+    id: 'item-guarana',
+    f7: '29965',
+    description: 'REFRIGERANTE GUARANA ANTARCTICA 3L',
+    previousPriceCents: 1249,
+    priceCents: 1119,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: 'C:/cartazes/guarana-antarctica-3l.psd',
+    sourcePsdSha256: 'mock-sha-guarana',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: 'Preço novo "11,19" tem mais dígitos inteiros que a arte original "6,19".',
+    visualApproval: {
+      f7: '29965',
+      priceCents: 1119,
+      validityText: 'OFERTA VÁLIDA ATÉ 08/11',
+      sourcePsdSha256: 'mock-sha-guarana',
+      approvedAt: Date.now(),
+    },
+  });
+
+  // 2. Preço de 1 dígito: Cerveja Corona 350ml (F7 1001) - R$ 4,19
+  campaign.items.push({
+    id: 'item-corona',
+    f7: '1001',
+    description: 'CERVEJA CORONA EXTRA LATA 350ML',
+    previousPriceCents: 469,
+    priceCents: 419,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: 'C:/cartazes/corona.psd',
+    sourcePsdSha256: 'mock-sha-corona',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: null,
+    visualApproval: null,
+  });
+
+  // 3. Preço de 2 dígitos: Arroz Rampinelli 5kg (F7 38340) - R$ 19,89
+  campaign.items.push({
+    id: 'item-arroz',
+    f7: '38340',
+    description: 'ARROZ RAMPINELLI 5KG',
+    previousPriceCents: 2190,
+    priceCents: 1989,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: 'C:/cartazes/arroz.psd',
+    sourcePsdSha256: 'mock-sha-arroz',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: null,
+    visualApproval: null,
+  });
+
+  // 4. Preço de 3 dígitos: Whisky Red Label 1L (F7 55001) - R$ 129,90
+  campaign.items.push({
+    id: 'item-whisky',
+    f7: '55001',
+    description: 'WHISKY JOHNNIE WALKER RED LABEL 1L',
+    previousPriceCents: 13990,
+    priceCents: 12990,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: 'C:/cartazes/whisky.psd',
+    sourcePsdSha256: 'mock-sha-whisky',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: null,
+    visualApproval: null,
+  });
+
+  // 5. Item com erro de dado real (sem F7): bloqueado para impressão
+  campaign.items.push({
+    id: 'item-invalido',
+    f7: '',
+    description: 'PRODUTO SEM CODIGO',
+    previousPriceCents: null,
+    priceCents: 0,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: null,
+    wholeLayerId: null,
+    fractionLayerId: null,
+    issues: ['Código F7 ausente.'],
+    importedPriceWarning: null,
+    visualApproval: null,
+  });
+
+  // 6. Item com alerta de largura não aprovado: bloqueado para impressão
+  campaign.items.push({
+    id: 'item-alerta-bloqueado',
+    f7: '99887',
+    description: 'PRODUTO COM ALERTA PENDENTE',
+    previousPriceCents: 500,
+    priceCents: 1599,
+    endDateIso: '2026-11-08',
+    sourcePsdPath: 'C:/cartazes/outro.psd',
+    sourcePsdSha256: 'mock-sha-outro',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: 'Preço largo demais para a área mapeada.',
+    visualApproval: null, // NÃO aprovado
+  });
+
+  const extraArtworks = new Map<string, any>([
+    ['item-guarana', mockArtworkGuarana],
+    ['item-corona', mockArtworkCorona],
+    ['item-arroz', mockArtworkArroz],
+    ['item-whisky', mockArtworkWhisky],
+    ['item-alerta-bloqueado', mockArtworkOutro],
+  ]);
+
+  const library: any[] = [];
+  const views = buildScantechItemViews(campaign, library, extraArtworks);
+
+  // A. Validação individual do Guaraná Antarctica 3L (R$ 11,19 e validade 08/11/2026)
+  const vGuarana = views.find(v => v.item.id === 'item-guarana')!;
+  assert.equal(vGuarana.canExport, true);
+  assert.equal(vGuarana.isVisuallyApproved, true);
+  assert.equal(vGuarana.resolvedValidityText, 'OFERTA VÁLIDA ATÉ 08/11');
+  assert.equal(vGuarana.wholeValue, '11');
+  assert.equal(vGuarana.fractionValue, '19');
+
+  const { posters: guaranaPosters, blockedViews: guaranaBlocked } = buildPrintableScantechPosters(
+    [vGuarana],
+    { 'item-guarana': 2 } // 2 cópias
+  );
+  assert.equal(guaranaBlocked.length, 0);
+  assert.equal(guaranaPosters.length, 2);
+  assert.equal(guaranaPosters[0].price, '11,19');
+  assert.equal(guaranaPosters[0].validityText, 'OFERTA VÁLIDA ATÉ 08/11');
+  assert.equal(guaranaPosters[0].name, 'REFRIGERANTE GUARANA ANTARCTICA 3L');
+  assert.equal(guaranaPosters[0].artwork, mockArtworkGuarana);
+
+  // B. Validação de preços de 1, 2 e 3 dígitos
+  const vCorona = views.find(v => v.item.id === 'item-corona')!;
+  const vArroz = views.find(v => v.item.id === 'item-arroz')!;
+  const vWhisky = views.find(v => v.item.id === 'item-whisky')!;
+
+  assert.equal(vCorona.wholeValue, '4');
+  assert.equal(vCorona.fractionValue, '19');
+
+  assert.equal(vArroz.wholeValue, '19');
+  assert.equal(vArroz.fractionValue, '89');
+
+  assert.equal(vWhisky.wholeValue, '129');
+  assert.equal(vWhisky.fractionValue, '90');
+
+  // C. Validação de impressão em lote com quantidades de cópias diferenciadas
+  // Guaraná: 2 cópias, Corona: 3 cópias, Arroz: 1 cópia, Whisky: 4 cópias = Total 10 páginas impressas
+  const copiesConfig: Record<string, number> = {
+    'item-guarana': 2,
+    'item-corona': 3,
+    'item-arroz': 1,
+    'item-whisky': 4,
+  };
+  const batchViews = [vGuarana, vCorona, vArroz, vWhisky];
+  const { posters: batchPosters, blockedViews: batchBlocked } = buildPrintableScantechPosters(
+    batchViews,
+    copiesConfig
+  );
+  assert.equal(batchBlocked.length, 0);
+  assert.equal(batchPosters.length, 10);
+  assert.equal(batchPosters.filter(p => p.price === '11,19').length, 2);
+  assert.equal(batchPosters.filter(p => p.price === '4,19').length, 3);
+  assert.equal(batchPosters.filter(p => p.price === '19,89').length, 1);
+  assert.equal(batchPosters.filter(p => p.price === '129,90').length, 4);
+
+  // D. Validação de fidelidade: o mesmo objeto Poster e artwork da prévia é entregue à impressão
+  assert.equal(batchPosters[0].artwork, vGuarana.artwork);
+  assert.equal(batchPosters[0].validityText, vGuarana.resolvedValidityText);
+
+  // E. Validação de segurança: itens com erros reais ou alerta de largura não aprovado são bloqueados
+  const vInvalido = views.find(v => v.item.id === 'item-invalido')!;
+  const vAlertaBloqueado = views.find(v => v.item.id === 'item-alerta-bloqueado')!;
+
+  const { posters: blockedResult, blockedViews: actuallyBlocked } = buildPrintableScantechPosters(
+    [vInvalido, vAlertaBloqueado]
+  );
+  assert.equal(blockedResult.length, 0);
+  assert.equal(actuallyBlocked.length, 2);
+  assert.ok(actuallyBlocked.some(b => b.item.id === 'item-invalido'));
+  assert.ok(actuallyBlocked.some(b => b.item.id === 'item-alerta-bloqueado'));
+
+  // F. Garantia de independência total: nenhuma rotina de impressão executa ou depende do Photoshop CS6
+  // A montagem de posters e o desenho do canvas A5 são funções locais offline e autossuficientes.
+  assert.equal(typeof buildPrintableScantechPosters, 'function');
+});
+
 

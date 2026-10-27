@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
-import { computeWholePriceAdjustment, repairInvertedPsdArtwork } from '../editor/importedRenderer';
+import { computeWholePriceAdjustment, hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { formatCentsBr } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
 import { saveDocument } from '../../features/cartazes/storage';
@@ -25,6 +25,7 @@ import { readPsdByPath, selectPsd } from '../../features/psd/service';
 import {
   applyExcelToScantechCampaign,
   buildOutputPsdPath,
+  buildPrintableScantechPosters,
   buildScantechItemViews,
   chooseScantechExportFolder,
   chooseScantechPsdFolder,
@@ -304,35 +305,119 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     setCopiesByItemId(previous => ({ ...previous, [itemId]: copies }));
   };
 
-  const buildPrintablePosters = (views: ScantechItemView[]) => {
-    const posters: Poster[] = [];
-    for (const view of views) {
-      if (!view.canExport || !view.artwork) continue;
-      const copies = copiesByItemId[view.item.id] ?? 1;
-      const poster: Poster = {
-        name: view.item.description.slice(0, 32),
-        detail: '',
-        unit: 'UN',
-        price: formatCentsBr(view.item.priceCents),
-        artwork: view.artwork,
-        validityText: view.resolvedValidityText,
+  const ensureArtworkLoaded = async (view: ScantechItemView): Promise<ImportedArtwork | null> => {
+    if (view.artwork) return view.artwork;
+    if (!view.item.sourcePsdPath) return null;
+    try {
+      const psdData = await readPsdByPath(view.item.sourcePsdPath);
+      const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
+      const roles: PsdRoleMap = {
+        whole: view.item.wholeLayerId ?? analysis.suggested.whole ?? undefined,
+        fraction: view.item.fractionLayerId ?? analysis.suggested.fraction ?? undefined,
+        decimal: view.item.decimalLayerId ?? analysis.suggested.decimal ?? undefined,
+        fractionRule: view.item.fractionRuleLayerId ?? analysis.suggested.fractionRule ?? undefined,
+        validity: view.item.validityLayerId ?? analysis.suggested.validity ?? undefined,
       };
-      for (let index = 0; index < copies; index += 1) posters.push(poster);
+      if (roles.whole && roles.fraction) {
+        let built = buildArtwork(analysis, roles);
+        if (hasInvertedPsdPriceParts(built)) {
+          built = repairInvertedPsdArtwork(built).artwork;
+        }
+        setExtraArtworks(prev => {
+          const next = new Map(prev);
+          next.set(view.item.id, built);
+          return next;
+        });
+        return built;
+      }
+    } catch (err) {
+      console.warn(`Não foi possível carregar arte para ${view.item.f7}:`, err);
     }
-    return posters;
+    return null;
   };
 
-  const printScantechViews = (views: ScantechItemView[]) => {
-    const blocked = views.filter(view => !view.canExport || !view.artwork);
-    if (blocked.length > 0) {
+  useEffect(() => {
+    if (selectedView && !selectedView.artwork && selectedView.item.sourcePsdPath) {
+      void ensureArtworkLoaded(selectedView);
+    }
+  }, [selectedView?.item.id, selectedView?.item.sourcePsdPath, selectedView?.artwork]);
+
+  const handlePrintSingle = async (view: ScantechItemView) => {
+    if (view.realErrors.length > 0) {
+      throw new Error(`Impressão bloqueada (F7 ${view.item.f7 || '—'}): ${view.realErrors.join('; ')}`);
+    }
+    if (view.widthWarning && !view.isVisuallyApproved) {
       throw new Error(
-        `Impressão bloqueada: F7 ${blocked[0].item.f7 || '—'} — ${
-          blocked[0].blockingReasons.join('; ') || 'arte PSD não carregada para composição.'
-        }`
+        `Alerta de largura no produto F7 ${view.item.f7 || '—'}: o preço programado ultrapassa os limites originais. Confira a prévia visual e clique em "Aprovar composição visual" antes de imprimir.`
       );
     }
-    const posters = buildPrintablePosters(views);
-    if (posters.length === 0) throw new Error('Selecione ao menos um cartaz Scantech válido para imprimir.');
+    let artwork = view.artwork;
+    if (!artwork) {
+      artwork = await ensureArtworkLoaded(view);
+    }
+    if (!artwork) {
+      throw new Error(
+        `Não foi possível carregar o arquivo .psd vinculado a este cartaz para impressão.`
+      );
+    }
+    const viewWithArtwork: ScantechItemView = { ...view, artwork };
+    const { posters, blockedViews } = buildPrintableScantechPosters([viewWithArtwork], copiesByItemId);
+    if (blockedViews.length > 0 || posters.length === 0) {
+      throw new Error(`Não foi possível gerar a impressão para o produto selecionado.`);
+    }
+    onPrintBatch(posters);
+  };
+
+  const handlePrintSelected = async () => {
+    const selected = itemViews.filter(view => view.item.selected);
+    if (selected.length === 0) {
+      throw new Error('Nenhum cartaz selecionado. Marque ao menos um produto na tabela para imprimir.');
+    }
+
+    const withRealErrors = selected.filter(v => v.realErrors.length > 0);
+    if (withRealErrors.length > 0) {
+      const summary = withRealErrors
+        .slice(0, 3)
+        .map(b => `F7 ${b.item.f7 || '—'}: ${b.realErrors.join(', ')}`)
+        .join('; ');
+      const more = withRealErrors.length > 3 ? ` e mais ${withRealErrors.length - 3} item(ns)` : '';
+      throw new Error(
+        `Existem ${withRealErrors.length} produto(s) com erros de dados impedindo a impressão (${summary}${more}). Corrija ou desmarque esses itens para prosseguir.`
+      );
+    }
+
+    const withUnapprovedWidth = selected.filter(v => Boolean(v.widthWarning) && !v.isVisuallyApproved);
+    if (withUnapprovedWidth.length > 0) {
+      const summary = withUnapprovedWidth
+        .slice(0, 3)
+        .map(b => `F7 ${b.item.f7 || '—'}`)
+        .join(', ');
+      const more = withUnapprovedWidth.length > 3 ? ` e mais ${withUnapprovedWidth.length - 3} produto(s)` : '';
+      throw new Error(
+        `Os produtos (${summary}${more}) possuem alerta de largura e necessitam de conferência da prévia e aprovação da composição visual antes de imprimir em lote.`
+      );
+    }
+
+    // Carrega artworks sob demanda para qualquer item que ainda não tenha
+    const loadedViews = await Promise.all(
+      selected.map(async v => {
+        if (v.artwork) return v;
+        const art = await ensureArtworkLoaded(v);
+        return { ...v, artwork: art };
+      })
+    );
+
+    const missingArt = loadedViews.filter(v => !v.artwork);
+    if (missingArt.length > 0) {
+      throw new Error(
+        `Não foi possível carregar a arte PSD de ${missingArt.length} produto(s). Verifique se os arquivos .psd originais existem no computador.`
+      );
+    }
+
+    const { posters, blockedViews } = buildPrintableScantechPosters(loadedViews, copiesByItemId);
+    if (posters.length === 0 || blockedViews.length > 0) {
+      throw new Error('Nenhum cartaz pronto para impressão na seleção.');
+    }
     onPrintBatch(posters);
   };
 
@@ -811,12 +896,9 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 <button
                   type="button"
                   className="subtle"
-                  disabled={printableViews.length === 0}
                   onClick={() =>
                     run(async () => {
                       const next = activeCampaign.items.reduce((campaign, item) => {
-                        const view = itemViews.find(candidate => candidate.item.id === item.id);
-                        if (!view?.canExport || !view.artwork) return campaign;
                         return updateScantechItemFields(campaign, item.id, { selected: true });
                       }, activeCampaign);
                       await persistUpdate(next);
@@ -824,6 +906,23 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                   }
                 >
                   Selecionar todos
+                </button>
+                <button
+                  type="button"
+                  className="subtle"
+                  disabled={counts.ready === 0}
+                  onClick={() =>
+                    run(async () => {
+                      const next = activeCampaign.items.reduce((campaign, item) => {
+                        const view = itemViews.find(candidate => candidate.item.id === item.id);
+                        if (!view?.canExport) return campaign;
+                        return updateScantechItemFields(campaign, item.id, { selected: true });
+                      }, activeCampaign);
+                      await persistUpdate(next);
+                    })
+                  }
+                >
+                  Selecionar prontos
                 </button>
                 <button
                   type="button"
@@ -844,11 +943,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 <button
                   type="button"
                   disabled={itemViews.filter(view => view.item.selected).length === 0}
-                  onClick={() =>
-                    run(async () =>
-                      printScantechViews(itemViews.filter(view => view.item.selected))
-                    )
-                  }
+                  onClick={() => run(async () => handlePrintSelected())}
                 >
                   Imprimir selecionados ({itemViews.filter(view => view.item.selected).length})
                 </button>
@@ -1177,8 +1272,15 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                                       </label>
                                       <button
                                         type="button"
-                                        disabled={!v.canExport || !v.artwork}
-                                        onClick={() => run(async () => printScantechViews([v]))}
+                                        disabled={v.realErrors.length > 0 || (Boolean(v.widthWarning) && !v.isVisuallyApproved)}
+                                        title={
+                                          v.realErrors.length > 0
+                                            ? v.realErrors.join('; ')
+                                            : v.widthWarning && !v.isVisuallyApproved
+                                            ? 'Alerta de largura: aprove a composição visual antes de imprimir'
+                                            : 'Imprimir cartaz diretamente em formato A5'
+                                        }
+                                        onClick={() => run(async () => handlePrintSingle(v))}
                                       >
                                         Imprimir cartaz
                                       </button>
@@ -1201,9 +1303,9 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                   )}
                 </div>
 
-                {/* Painel de Prévia antes da Exportação */}
+                {/* Painel de Prévia antes da Impressão / Exportação */}
                 <div className="offers-preview-pane">
-                  <h3>Prévia antes da exportação</h3>
+                  <h3>Prévia do Cartaz (A5 · 148 × 210 mm)</h3>
                   {selectedView ? (
                     <>
                       <p style={{ fontSize: 12, margin: '4px 0 8px' }}>
@@ -1213,21 +1315,55 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                         <code>{selectedView.resolvedValidityText}</code>
                       </p>
                       {selectedView.artwork ? (
-                        <div className="paper-wrap">
-                          <PosterView
-                            poster={{
-                              name: selectedView.item.description.slice(0, 32),
-                              detail: '',
-                              unit: 'UN',
-                              price: formatCentsBr(selectedView.item.priceCents),
-                              artwork: selectedView.artwork,
-                              validityText: selectedView.resolvedValidityText,
-                            }}
-                          />
-                        </div>
+                        <>
+                          <div className="paper-wrap">
+                            <PosterView
+                              poster={{
+                                name: selectedView.item.description.slice(0, 32),
+                                detail: '',
+                                unit: 'UN',
+                                price: formatCentsBr(selectedView.item.priceCents),
+                                artwork: selectedView.artwork,
+                                validityText: selectedView.resolvedValidityText,
+                              }}
+                            />
+                          </div>
+                          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <label className="scantech-copies-control">
+                              Cópias:
+                              <input
+                                type="number"
+                                min={1}
+                                max={999}
+                                value={copiesByItemId[selectedView.item.id] ?? 1}
+                                onChange={event => setCopies(selectedView.item.id, event.target.value)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              style={{ flex: 1 }}
+                              disabled={
+                                selectedView.realErrors.length > 0 ||
+                                (Boolean(selectedView.widthWarning) && !selectedView.isVisuallyApproved)
+                              }
+                              title={
+                                selectedView.realErrors.length > 0
+                                  ? selectedView.realErrors.join('; ')
+                                  : selectedView.widthWarning && !selectedView.isVisuallyApproved
+                                  ? 'Alerta de largura: aprove a composição visual antes de imprimir'
+                                  : 'Imprimir este cartaz em formato A5'
+                              }
+                              onClick={() => run(async () => handlePrintSingle(selectedView))}
+                            >
+                              Imprimir este cartaz (A5)
+                            </button>
+                          </div>
+                        </>
                       ) : (
                         <p className="empty">
-                          Vincule ou importe a arte PSD deste produto para visualizar a prévia das camadas antes da exportação.
+                          {selectedView.item.sourcePsdPath
+                            ? 'Carregando arte PSD vinculada para renderização no formato A5…'
+                            : 'Vincule ou importe a arte PSD deste produto para visualizar a prévia e imprimir.'}
                         </p>
                       )}
                     </>
