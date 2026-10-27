@@ -19,6 +19,14 @@ export type ScannedPsdEntry = {
 
 export type ScantechItemStatus = 'pronto' | 'sem-psd' | 'inconsistente' | 'exportado' | 'erro-exportacao';
 
+export type VisualApproval = {
+  f7: string;
+  priceCents: number;
+  validityText: string;
+  sourcePsdSha256: string | null;
+  approvedAt: string;
+};
+
 export type ScantechItem = {
   id: string;
   rowNumber: number;
@@ -42,6 +50,9 @@ export type ScantechItem = {
   selected: boolean;
   status: ScantechItemStatus;
   issues: string[];
+  importedPriceWarning?: string | null;
+  sourcePsdSha256?: string | null;
+  visualApproval?: VisualApproval | null;
   exportedPsdPath: string | null;
   exportedAt: string | null;
   exportError: string | null;
@@ -77,6 +88,9 @@ export type ScantechItemView = {
   fractionValue: string;
   artwork: ImportedArtwork | null;
   hasInvertedLayers: boolean;
+  widthWarning: string | null;
+  isVisuallyApproved: boolean;
+  realErrors: string[];
   blockingReasons: string[];
   canExport: boolean;
 };

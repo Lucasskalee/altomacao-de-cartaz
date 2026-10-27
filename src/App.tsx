@@ -67,7 +67,7 @@ export default function App() {
     </section><section className="panel preview"><div className="preview-heading"><div><h2>Pré-visualização</h2><p>148 × 210 mm · Retrato</p></div><span className="status">Documento editável local</span></div><div className="paper-wrap"><PosterView poster={poster}/></div></section></main></> : section === 'library' ? <div className="library-container">{data ? <Library data={data} open={open} newDocument={newDocument} run={run} refresh={refresh} relocated={editor.relocate} removed={editor.removed}/> : <section className="panel"><h2>Meus Cartazes</h2><p>Abra o aplicativo desktop para usar a biblioteca local.</p><button onClick={() => run(refresh)}>Tentar novamente</button></section>}</div> : null}
     <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
     <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
-    <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onRefreshLibrary={refresh}/></div>
+    <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     </fieldset><div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p}/></div>) : <PosterView poster={poster}/>}</div>
   </div>;
 }

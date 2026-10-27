@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import { PosterView } from '../editor/PosterView';
+import { PosterView, type Poster } from '../editor/PosterView';
 import { computeWholePriceAdjustment, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { formatCentsBr } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
@@ -57,6 +57,7 @@ type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onRefreshLibrary?: () => Promise<void>;
+  onPrintBatch: (posters: Poster[]) => void;
 };
 
 const money = (cents: number | null) =>
@@ -68,7 +69,7 @@ const nextWeekIso = () => {
   return d.toISOString().slice(0, 10);
 };
 
-export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
+export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBatch }: Props) {
   const [campaigns, setCampaigns] = useState<ScantechCampaign[]>([]);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -105,6 +106,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'todos' | 'encontrados' | 'sem-psd' | 'inconsistentes' | 'exportados'>('todos');
   const [previewItemId, setPreviewItemId] = useState<string | null>(null);
+  const [copiesByItemId, setCopiesByItemId] = useState<Record<string, number>>({});
 
   // Edição inline de preço e data individual
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -291,6 +293,48 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
     const exported = itemViews.filter(v => v.item.status === 'exportado').length;
     return { total, ready, missingPsd, inconsistent, exported };
   }, [itemViews]);
+
+  const printableViews = useMemo(
+    () => itemViews.filter(view => view.canExport && Boolean(view.artwork)),
+    [itemViews]
+  );
+
+  const setCopies = (itemId: string, value: string) => {
+    const copies = Math.max(1, Math.min(999, Number.parseInt(value, 10) || 1));
+    setCopiesByItemId(previous => ({ ...previous, [itemId]: copies }));
+  };
+
+  const buildPrintablePosters = (views: ScantechItemView[]) => {
+    const posters: Poster[] = [];
+    for (const view of views) {
+      if (!view.canExport || !view.artwork) continue;
+      const copies = copiesByItemId[view.item.id] ?? 1;
+      const poster: Poster = {
+        name: view.item.description.slice(0, 32),
+        detail: '',
+        unit: 'UN',
+        price: formatCentsBr(view.item.priceCents),
+        artwork: view.artwork,
+        validityText: view.resolvedValidityText,
+      };
+      for (let index = 0; index < copies; index += 1) posters.push(poster);
+    }
+    return posters;
+  };
+
+  const printScantechViews = (views: ScantechItemView[]) => {
+    const blocked = views.filter(view => !view.canExport || !view.artwork);
+    if (blocked.length > 0) {
+      throw new Error(
+        `Impressão bloqueada: F7 ${blocked[0].item.f7 || '—'} — ${
+          blocked[0].blockingReasons.join('; ') || 'arte PSD não carregada para composição.'
+        }`
+      );
+    }
+    const posters = buildPrintablePosters(views);
+    if (posters.length === 0) throw new Error('Selecione ao menos um cartaz Scantech válido para imprimir.');
+    onPrintBatch(posters);
+  };
 
   const handleSelectDirectPsdForItem = async (view: ScantechItemView) => {
     if (!activeCampaign) return;
@@ -527,7 +571,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
         role="status"
       >
         <div>
-          <strong>Integração Adobe Photoshop (Exportação PSD Editável):</strong>{' '}
+          <strong>Photoshop (somente para exportação PSD editável):</strong>{' '}
           {photoshop ? (
             photoshop.available ? (
               <span>
@@ -565,7 +609,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
         {/* Coluna Esquerda: Pastas de Ofertas Scantech */}
         <aside className="panel offers-sidebar">
           <h2>Pastas Scantech</h2>
-          <p>Campanhas para atualização de preço, validade e exportação PSD editável.</p>
+          <p>Campanhas para atualização de preço, validade, impressão direta e exportação PSD editável.</p>
 
           <div className="offers-create-box">
             <label>
@@ -765,6 +809,50 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                   <option value="exportados">Exportados ({counts.exported})</option>
                 </select>
                 <button
+                  type="button"
+                  className="subtle"
+                  disabled={printableViews.length === 0}
+                  onClick={() =>
+                    run(async () => {
+                      const next = activeCampaign.items.reduce((campaign, item) => {
+                        const view = itemViews.find(candidate => candidate.item.id === item.id);
+                        if (!view?.canExport || !view.artwork) return campaign;
+                        return updateScantechItemFields(campaign, item.id, { selected: true });
+                      }, activeCampaign);
+                      await persistUpdate(next);
+                    })
+                  }
+                >
+                  Selecionar todos
+                </button>
+                <button
+                  type="button"
+                  className="subtle"
+                  disabled={itemViews.every(view => !view.item.selected)}
+                  onClick={() =>
+                    run(async () => {
+                      const next = activeCampaign.items.reduce(
+                        (campaign, item) => updateScantechItemFields(campaign, item.id, { selected: false }),
+                        activeCampaign
+                      );
+                      await persistUpdate(next);
+                    })
+                  }
+                >
+                  Desmarcar todos
+                </button>
+                <button
+                  type="button"
+                  disabled={itemViews.filter(view => view.item.selected).length === 0}
+                  onClick={() =>
+                    run(async () =>
+                      printScantechViews(itemViews.filter(view => view.item.selected))
+                    )
+                  }
+                >
+                  Imprimir selecionados ({itemViews.filter(view => view.item.selected).length})
+                </button>
+                <button
                   disabled={!photoshop?.available || counts.ready === 0}
                   onClick={() =>
                     run(async () => {
@@ -869,10 +957,59 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                                     <span className="error-text">Sem arquivo .psd associado</span>
                                   )}
                                 </div>
-                                {v.blockingReasons.length > 0 && (
+                                {v.widthWarning && !v.isVisuallyApproved && (
+                                  <div className="import-warning" style={{ fontSize: 11, marginTop: 4 }}>
+                                    <span>⚠ {v.widthWarning}</span>
+                                    <button
+                                      type="button"
+                                      className="subtle"
+                                      style={{ display: 'inline-block', marginLeft: 6, padding: '2px 6px', fontSize: 10 }}
+                                      onClick={() =>
+                                        run(async () => {
+                                          await persistUpdate(
+                                            updateScantechItemFields(activeCampaign, v.item.id, {
+                                              visualApproval: {
+                                                f7: v.item.f7,
+                                                priceCents: v.item.priceCents,
+                                                validityText: v.resolvedValidityText,
+                                                sourcePsdSha256: v.artwork?.source.sha256 ?? null,
+                                                approvedAt: new Date().toISOString(),
+                                              },
+                                              selected: true,
+                                            })
+                                          );
+                                        })
+                                      }
+                                    >
+                                      ✓ Aprovar composição visual
+                                    </button>
+                                  </div>
+                                )}
+                                {v.isVisuallyApproved && (
+                                  <div className="success" style={{ fontSize: 11, marginTop: 4 }}>
+                                    ✓ Composição visual aprovada manualmente para impressão
+                                    <button
+                                      type="button"
+                                      className="subtle"
+                                      style={{ display: 'inline-block', marginLeft: 6, padding: '2px 6px', fontSize: 10 }}
+                                      onClick={() =>
+                                        run(async () => {
+                                          await persistUpdate(
+                                            updateScantechItemFields(activeCampaign, v.item.id, {
+                                              visualApproval: null,
+                                            })
+                                          );
+                                        })
+                                      }
+                                    >
+                                      Revogar
+                                    </button>
+                                  </div>
+                                )}
+                                {v.realErrors.length > 0 && (
                                   <div className="error-text" style={{ fontSize: 11, marginTop: 4 }} role="alert">
-                                    {v.blockingReasons.map((reason, i) => (
-                                      <div key={i}>⚠ {reason}</div>
+                                    {v.realErrors.map((reason, i) => (
+                                      <div key={i}>✕ {reason}</div>
                                     ))}
                                   </div>
                                 )}
@@ -1003,6 +1140,48 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                                           Corrigir Inversão Reais/Centavos
                                         </button>
                                       )}
+                                      {v.widthWarning && !v.isVisuallyApproved && (
+                                        <button
+                                          type="button"
+                                          className="subtle"
+                                          onClick={() =>
+                                            run(async () => {
+                                              await persistUpdate(
+                                                updateScantechItemFields(activeCampaign, v.item.id, {
+                                                  visualApproval: {
+                                                    f7: v.item.f7,
+                                                    priceCents: v.item.priceCents,
+                                                    validityText: v.resolvedValidityText,
+                                                    sourcePsdSha256: v.artwork?.source.sha256 ?? null,
+                                                    approvedAt: new Date().toISOString(),
+                                                  },
+                                                  selected: true,
+                                                })
+                                              );
+                                            })
+                                          }
+                                        >
+                                          Aprovar Visual
+                                        </button>
+                                      )}
+                                      <label className="scantech-copies-control">
+                                        Cópias
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          max={999}
+                                          value={copiesByItemId[v.item.id] ?? 1}
+                                          onChange={event => setCopies(v.item.id, event.target.value)}
+                                          aria-label={`Quantidade de cópias do F7 ${v.item.f7 || v.item.description}`}
+                                        />
+                                      </label>
+                                      <button
+                                        type="button"
+                                        disabled={!v.canExport || !v.artwork}
+                                        onClick={() => run(async () => printScantechViews([v]))}
+                                      >
+                                        Imprimir cartaz
+                                      </button>
                                       <button
                                         type="button"
                                         disabled={!photoshop?.available || !v.canExport}

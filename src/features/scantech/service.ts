@@ -13,6 +13,7 @@ import type {
   ScantechItem,
   ScantechItemStatus,
   ScantechItemView,
+  VisualApproval,
 } from './types';
 
 const STORAGE_KEY = 'skalee.scantech.campaigns.v1';
@@ -357,6 +358,7 @@ export function updateScantechItemFields(
     fractionRuleLayerId?: string | null;
     validityLayerId?: string | null;
     originalValidityText?: string | null;
+    visualApproval?: VisualApproval | null;
   }
 ): ScantechCampaign {
   const now = new Date().toISOString();
@@ -372,9 +374,21 @@ export function updateScantechItemFields(
       };
       if (updates.priceCents !== undefined && updates.priceCents > 0) {
         next.issues = next.issues.filter(msg => !/pre[cç]o/i.test(msg));
+        if (next.visualApproval && updates.priceCents !== next.visualApproval.priceCents) {
+          next.visualApproval = null;
+        }
       }
       if (updates.endDateIso !== undefined && updates.endDateIso) {
         next.issues = next.issues.filter(msg => !/data/i.test(msg));
+        if (next.visualApproval && next.visualApproval.validityText) {
+          next.visualApproval = null;
+        }
+      }
+      if (updates.customValidityText !== undefined && next.visualApproval) {
+        next.visualApproval = null;
+      }
+      if (updates.sourcePsdPath !== undefined && next.visualApproval) {
+        next.visualApproval = null;
       }
       if (next.issues.length > 0 || !next.f7 || next.priceCents <= 0) {
         next.status = 'inconsistente';
@@ -426,19 +440,20 @@ export function buildScantechItemViews(
         ? applyValidityDateToLayerText(baseValidityText, effectiveEndDate, effectiveStartDate)
         : baseValidityText;
 
-    const blockingReasons: string[] = [...item.issues];
-    if (!item.f7) blockingReasons.push('Produto sem código F7.');
+    const realErrors: string[] = [...(item.issues ?? [])];
+    if (!item.f7) realErrors.push('Produto sem código F7.');
     if (!Number.isSafeInteger(item.priceCents) || item.priceCents <= 0) {
-      blockingReasons.push('Preço programado inválido.');
+      realErrors.push('Preço programado inválido.');
     }
     if (!effectiveEndDate || !/^\d{4}-\d{2}-\d{2}$/.test(effectiveEndDate)) {
-      blockingReasons.push('Data de validade da oferta ausente ou inválida.');
+      realErrors.push('Data de validade da oferta ausente ou inválida.');
     }
     if (effectiveStartDate && effectiveEndDate && effectiveStartDate > effectiveEndDate) {
-      blockingReasons.push(`Data inicial (${effectiveStartDate}) posterior à data final (${effectiveEndDate}).`);
+      realErrors.push(`Data inicial (${effectiveStartDate}) posterior à data final (${effectiveEndDate}).`);
     }
 
     let hasInvertedLayers = false;
+    let widthWarning: string | null = item.importedPriceWarning ?? null;
     if (artwork) {
       // Verifica se o mapeamento do item ou da arte está invertido geometricamente
       const wLayer = artwork.layers.find(l => l.id === (item.wholeLayerId ?? ''));
@@ -453,21 +468,36 @@ export function buildScantechItemViews(
         hasInvertedLayers = true;
       }
       if (hasInvertedLayers) {
-        blockingReasons.push(
+        realErrors.push(
           'Camadas de Reais e Centavos estão invertidas (Reais à direita dos Centavos). Corrija a inversão antes de exportar.'
         );
       }
-      const warning = importedPriceWarning(artwork, `${wholeValue},${fractionValue}`);
-      if (warning) {
-        blockingReasons.push(warning);
+      const rawWarning = importedPriceWarning(artwork, `${wholeValue},${fractionValue}`);
+      if (rawWarning) {
+        widthWarning = rawWarning;
       }
     }
 
     if (!item.wholeLayerId || !item.fractionLayerId) {
-      blockingReasons.push('Mapeamento das camadas de Reais e Centavos pendente.');
+      realErrors.push('Mapeamento das camadas de Reais e Centavos pendente.');
     }
     if (!item.sourcePsdPath) {
-      blockingReasons.push('Arquivo .psd original não vinculado para exportação no Photoshop.');
+      realErrors.push('Arquivo .psd original não vinculado para exportação no Photoshop.');
+    }
+
+    // Validação estrita da aprovação visual vinculada a F7, preço, validade e versão da arte (SHA256)
+    const artSha256 = artwork?.source.sha256 ?? item.sourcePsdSha256 ?? null;
+    const isVisuallyApproved = Boolean(
+      item.visualApproval &&
+        item.visualApproval.f7 === item.f7 &&
+        item.visualApproval.priceCents === item.priceCents &&
+        item.visualApproval.validityText === resolvedValidityText &&
+        (!item.visualApproval.sourcePsdSha256 || !artSha256 || item.visualApproval.sourcePsdSha256 === artSha256)
+    );
+
+    const blockingReasons: string[] = [...realErrors];
+    if (widthWarning && !isVisuallyApproved) {
+      blockingReasons.push(`Alerta de largura: ${widthWarning}`, widthWarning);
     }
 
     const canExport = blockingReasons.length === 0;
@@ -480,6 +510,9 @@ export function buildScantechItemViews(
       fractionValue,
       artwork,
       hasInvertedLayers,
+      widthWarning,
+      isVisuallyApproved,
+      realErrors,
       blockingReasons,
       canExport,
     };

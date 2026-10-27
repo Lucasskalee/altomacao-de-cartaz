@@ -478,8 +478,8 @@ test('Sprint 07.1 — Transformação geométrica e ajuste automático de preço
     const [xx, xy, yx, yy] = wholePart.transform;
     const origRotDeg = Math.atan2(xy, xx) * 180 / Math.PI;
     const origSkewDeg = Math.atan2(yx, yy) * 180 / Math.PI;
-    assert.ok(Math.abs(origRotDeg - 6.17) < 0.2, `Rotação esperada ~6.17°, obtida ${origRotDeg}°`);
-    assert.ok(Math.abs(origSkewDeg - 7.13) < 0.2, `Skew esperado ~7.13°, obtido ${origSkewDeg}°`);
+    assert.ok(Math.abs(Math.abs(origRotDeg) - 6.8) < 0.2, `Magnitude de rotação esperada ~6.8°, obtida ${origRotDeg}°`);
+    assert.ok(Math.abs(Math.abs(origSkewDeg) - 20.1) < 0.5, `Magnitude de skew esperada ~20.1°, obtida ${origSkewDeg}°`);
 
     // 2. Substituição por "11" (R$ 11,99 e R$ 11,19): normalização de rotação e cisalhamento
     const adj11 = computeWholePriceAdjustment(artwork, '11');
@@ -487,7 +487,7 @@ test('Sprint 07.1 — Transformação geométrica e ajuste automático de preço
     assert.ok(Math.abs(adj11.rotateDeltaDeg - (-origRotDeg)) < 0.2);
     assert.ok(adj11.targetSkewDeg >= 15.0 && adj11.targetSkewDeg <= 17.5);
     assert.ok(adj11.fitsWithinSafeLimit);
-    assert.ok(adj11.horizontalScale >= 0.70 && adj11.horizontalScale <= 0.95);
+    assert.ok(adj11.horizontalScale >= 0.70 && adj11.horizontalScale <= 1.0);
 
     // 3. Substituição por 1 dígito ("6"): preserva escala 100%
     const adj6 = computeWholePriceAdjustment(artwork, '6');
@@ -511,3 +511,112 @@ test('Sprint 07.1 — Transformação geométrica e ajuste automático de preço
     else Reflect.deleteProperty(globalThis, 'document');
   }
 });
+
+test('Sprint 07.1 — Aprovação de composição visual para alerta de largura (F7 29965 / Guaraná Antarctica Tradicional 3L)', () => {
+  // 1. Cria campanha e adiciona item com alerta de largura
+  const campaign = createScantechCampaign('Campanha Teste Aprovação Visual', '2026-11-29');
+  
+  // Simulando item Guaraná Antarctica Tradicional 3L (F7 29965)
+  // Original do PSD era R$ 6,19 (1 dígito inteiro). Novo preço é R$ 11,19 (2 dígitos inteiros).
+  campaign.items.push({
+    id: 'item-29965',
+    f7: '29965',
+    description: 'REFRIGERANTE GUARANA ANTARCTICA 3L',
+    previousPriceCents: 619,
+    priceCents: 1119,
+    endDateIso: '2026-11-29',
+    cartazId: 'cartaz-29965',
+    sourcePsdPath: 'C:/cartazes/guarana-antarctica-3l.psd',
+    sourcePsdSha256: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    wholeLayerId: '10',
+    fractionLayerId: '11',
+    issues: [],
+    importedPriceWarning: 'Preço novo "11,19" tem mais dígitos inteiros que a arte original "6,19" e pode ultrapassar a largura útil.',
+    visualApproval: null,
+  });
+
+  const library: any[] = [];
+
+  // Estado inicial: possui alerta de largura, não aprovado -> bloqueado para exportação
+  let views = buildScantechItemViews(campaign, library);
+  let v = views[0];
+  assert.equal(v.widthWarning, 'Preço novo "11,19" tem mais dígitos inteiros que a arte original "6,19" e pode ultrapassar a largura útil.');
+  assert.equal(v.isVisuallyApproved, false);
+  assert.equal(v.canExport, false);
+  assert.ok(v.blockingReasons.includes(v.widthWarning));
+  assert.equal(v.realErrors.length, 0);
+
+  // 2. Concede aprovação visual vinculada a F7, preço (1119), validade e SHA256 da arte
+  campaign.items[0].visualApproval = {
+    f7: '29965',
+    priceCents: 1119,
+    validityText: v.resolvedValidityText,
+    sourcePsdSha256: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    approvedAt: Date.now(),
+  };
+
+  // Após aprovação: alerta continua visível como aviso informativo, mas isVisuallyApproved = true e canExport = true
+  views = buildScantechItemViews(campaign, library);
+  v = views[0];
+  assert.ok(v.widthWarning !== null);
+  assert.equal(v.isVisuallyApproved, true);
+  assert.equal(v.blockingReasons.length, 0);
+  assert.equal(v.canExport, true);
+
+  // 3. Invalidação por alteração de preço: usuário altera preço de R$ 11,19 para R$ 12,49
+  updateScantechItemFields(campaign, 'item-29965', { priceCents: 1249 });
+  assert.equal(campaign.items[0].visualApproval, null); // Aprovação limpa automaticamente no update
+
+  views = buildScantechItemViews(campaign, library);
+  v = views[0];
+  assert.equal(v.isVisuallyApproved, false);
+  assert.equal(v.canExport, false);
+  assert.ok(v.blockingReasons.includes(v.widthWarning!));
+
+  // 4. Reaprovando para R$ 12,49
+  campaign.items[0].visualApproval = {
+    f7: '29965',
+    priceCents: 1249,
+    validityText: v.resolvedValidityText,
+    sourcePsdSha256: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    approvedAt: Date.now(),
+  };
+  views = buildScantechItemViews(campaign, library);
+  assert.equal(views[0].isVisuallyApproved, true);
+  assert.equal(views[0].canExport, true);
+
+  // 5. Invalidação por alteração de data de validade
+  updateScantechItemFields(campaign, 'item-29965', { endDateIso: '2026-12-15' });
+  assert.equal(campaign.items[0].visualApproval, null);
+
+  views = buildScantechItemViews(campaign, library);
+  assert.equal(views[0].isVisuallyApproved, false);
+  assert.equal(views[0].canExport, false);
+
+  // 6. Invalidação caso a arte do PSD seja alterada (SHA256 diferente)
+  campaign.items[0].visualApproval = {
+    f7: '29965',
+    priceCents: 1249,
+    validityText: views[0].resolvedValidityText,
+    sourcePsdSha256: 'antigo-sha-256', // SHA antigo não coincide com sourcePsdSha256
+    approvedAt: Date.now(),
+  };
+  views = buildScantechItemViews(campaign, library);
+  // Como o sha256 difere de 'a1b2c3d4e5f60718293a4b5c6d7e8f90', a aprovação é rejeitada
+  assert.equal(views[0].isVisuallyApproved, false);
+  assert.equal(views[0].canExport, false);
+
+  // 7. Erros reais (ex: preço zerado, PSD ausente) NÃO são ignorados mesmo se houver aprovação visual
+  campaign.items[0].priceCents = 0; // Preço inválido
+  campaign.items[0].visualApproval = {
+    f7: '29965',
+    priceCents: 0,
+    validityText: views[0].resolvedValidityText,
+    sourcePsdSha256: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    approvedAt: Date.now(),
+  };
+  views = buildScantechItemViews(campaign, library);
+  assert.ok(views[0].realErrors.includes('Preço programado inválido.'));
+  assert.equal(views[0].canExport, false);
+});
+

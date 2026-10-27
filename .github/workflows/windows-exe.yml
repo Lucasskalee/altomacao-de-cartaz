@@ -22,6 +22,7 @@ jobs:
       APP_VERSION: '0.7.1'
       ARTIFACT_NAME: Skalee-Cartazes-A5-v0.7.1-Windows-x64
       INSTALLER_NAME: Skalee-Cartazes-A5-0.7.1-windows-x64-setup.exe
+      MSI_NAME: Skalee-Cartazes-A5-0.7.1-windows-x64.msi
     defaults:
       run:
         shell: pwsh
@@ -53,7 +54,7 @@ jobs:
       - name: Testar arquivos locais em Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Gerar instalador EXE
-        run: npm run tauri -- build --bundles nsis
+        run: npm run tauri -- build --bundles nsis,msi
       - name: Conferir instalador e gerar checksum
         run: |
           $pkgVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
@@ -62,21 +63,35 @@ jobs:
             throw "Divergência de versão: workflow=$($env:APP_VERSION), package.json=$pkgVersion, tauri.conf.json=$tauriVersion"
           }
           $nsisDir = 'src-tauri/target/release/bundle/nsis'
+          $msiDir = 'src-tauri/target/release/bundle/msi'
           $allExes = @(Get-ChildItem -LiteralPath $nsisDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+          $allMsis = @(Get-ChildItem -LiteralPath $msiDir -Filter '*.msi' -File -ErrorAction SilentlyContinue)
           Write-Host "Arquivos .exe gerados em ${nsisDir}: $($allExes.Name -join ', ')"
+          Write-Host "Arquivos .msi gerados em ${msiDir}: $($allMsis.Name -join ', ')"
           $pattern = "*_$($env:APP_VERSION)_x64-setup.exe"
           $installers = @($allExes | Where-Object { $_.Name -like $pattern })
           if ($installers.Count -ne 1) {
             throw "Esperado exatamente um instalador NSIS x64 v$($env:APP_VERSION) (padrão $pattern); encontrados: $($installers.Count) [disponíveis: $($allExes.Name -join ', ')]"
           }
+          $msiPattern = "*_$($env:APP_VERSION)_x64_*.msi"
+          $msiInstallers = @($allMsis | Where-Object { $_.Name -like $msiPattern })
+          if ($msiInstallers.Count -ne 1) {
+            throw "Esperado exatamente um instalador MSI x64 v$($env:APP_VERSION) (padrão $msiPattern); encontrados: $($msiInstallers.Count) [disponíveis: $($allMsis.Name -join ', ')]"
+          }
           $producedName = $installers[0].Name
           Write-Host "Instalador NSIS x64 localizado: $producedName ($($installers[0].Length) bytes)"
           if ($installers[0].Length -eq 0) { throw 'O instalador está vazio.' }
+          $producedMsiName = $msiInstallers[0].Name
+          Write-Host "Instalador MSI x64 localizado: $producedMsiName ($($msiInstallers[0].Length) bytes)"
+          if ($msiInstallers[0].Length -eq 0) { throw 'O instalador MSI está vazio.' }
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           $destination = Join-Path artifacts $env:INSTALLER_NAME
+          $msiDestination = Join-Path artifacts $env:MSI_NAME
           Copy-Item -LiteralPath $installers[0].FullName -Destination $destination
+          Copy-Item -LiteralPath $msiInstallers[0].FullName -Destination $msiDestination
           $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $env:INSTALLER_NAME" | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding utf8
+          $msiHash = (Get-FileHash -LiteralPath $msiDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:INSTALLER_NAME`n$msiHash  $env:MSI_NAME" | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding utf8
           @"
           Skalee Cartazes A5 v$($env:APP_VERSION) — Windows x64
           Commit: $env:GITHUB_SHA
@@ -84,6 +99,9 @@ jobs:
           Instalador Tauri NSIS: $producedName
           Instalador Publicado: $env:INSTALLER_NAME
           SHA256: $hash
+          Instalador Tauri MSI: $producedMsiName
+          Instalador MSI Publicado: $env:MSI_NAME
+          SHA256 MSI: $msiHash
           "@ | Set-Content -LiteralPath artifacts/BUILD-INFO.txt -Encoding utf8
       - name: Disponibilizar instalador
         id: installer
@@ -92,6 +110,7 @@ jobs:
           name: ${{ env.ARTIFACT_NAME }}
           path: |
             artifacts/*.exe
+            artifacts/*.msi
             artifacts/SHA256SUMS.txt
             artifacts/BUILD-INFO.txt
           if-no-files-found: error
@@ -103,7 +122,8 @@ jobs:
         run: |
           @"
           ## Skalee Cartazes A5 v$($env:APP_VERSION) — Windows x64
-          - Instalador: $env:INSTALLER_NAME
+          - Instalador NSIS: $env:INSTALLER_NAME
+          - Instalador MSI: $env:MSI_NAME
           - Commit: $env:GITHUB_SHA
           - [Baixar artefato $env:ARTIFACT_NAME]($env:ARTIFACT_URL)
           - O ZIP inclui SHA256SUMS.txt e BUILD-INFO.txt.
