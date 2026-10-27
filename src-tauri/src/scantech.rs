@@ -624,7 +624,7 @@ fn generate_batch_jsx(jobs: &[(ScantechExportJob, PathBuf, PathBuf)], status_fil
     }
 
     format!(
-        r#"#target photoshop
+        r##"#target photoshop
 app.displayDialogs = DialogModes.NO;
 
 function resolveLayerByPath(container, pathStr) {{
@@ -886,7 +886,7 @@ statusFile.encoding = "UTF-8";
 statusFile.open("w");
 statusFile.write('{{"version":"' + jsonEscape(app.version) + '","results":[' + resultsJson.join(",") + ']}}');
 statusFile.close();
-"#
+"##
     )
 }
 
