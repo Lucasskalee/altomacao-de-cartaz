@@ -543,7 +543,7 @@ test('Sprint 07.1 — Aprovação de composição visual para alerta de largura 
   assert.equal(v.widthWarning, 'Preço novo "11,19" tem mais dígitos inteiros que a arte original "6,19" e pode ultrapassar a largura útil.');
   assert.equal(v.isVisuallyApproved, false);
   assert.equal(v.canExport, false);
-  assert.ok(v.blockingReasons.includes(v.widthWarning));
+  assert.ok(v.blockingReasons.some(r => r.includes(v.widthWarning!)));
   assert.equal(v.realErrors.length, 0);
 
   // 2. Concede aprovação visual vinculada a F7, preço (1119), validade e SHA256 da arte
@@ -571,7 +571,7 @@ test('Sprint 07.1 — Aprovação de composição visual para alerta de largura 
   v = views[0];
   assert.equal(v.isVisuallyApproved, false);
   assert.equal(v.canExport, false);
-  assert.ok(v.blockingReasons.includes(v.widthWarning!));
+  assert.ok(v.blockingReasons.some(r => r.includes(v.widthWarning!)));
 
   // 4. Reaprovando para R$ 12,49
   campaign.items[0].visualApproval = {
