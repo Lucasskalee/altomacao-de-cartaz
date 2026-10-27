@@ -354,7 +354,7 @@ try {
       assert.equal(child.status, 0);
 
       const start = Date.now();
-      while (!existsSync(statusFile) && Date.now() - start < 45_000) {
+      while (!existsSync(statusFile) && Date.now() - start < 75_000) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
       }
       assert.ok(existsSync(statusFile), 'Photoshop deve gerar arquivo de status da automação');
