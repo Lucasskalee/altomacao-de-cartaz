@@ -52,7 +52,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run check:config
       - name: Testar arquivos locais em Rust
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml -- --nocapture 2>&1 | Tee-Object -FilePath rust_test.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content rust_test.log | Out-String | Set-Content -Path $env:GITHUB_STEP_SUMMARY
+            exit 1
+          }
       - name: Gerar instalador EXE
         run: npm run tauri -- build --bundles nsis,msi
       - name: Conferir instalador e gerar checksum

@@ -1180,7 +1180,7 @@ pub fn write_scantech_psd(
         tmp_file.sync_all().map_err(err)?;
     } // O handle do arquivo temporário é fechado de forma garantida antes da renomeação
 
-    // 3. Se o arquivo de destino já existe, remove flag de somente-leitura se presente
+    // 3. Se o arquivo de destino já existe, remove proteção de somente-leitura e limpa antes da substituição
     if out_path.exists() {
         if let Ok(meta) = fs::metadata(&out_path) {
             let mut perms = meta.permissions();
@@ -1189,6 +1189,7 @@ pub fn write_scantech_psd(
                 let _ = fs::set_permissions(&out_path, perms);
             }
         }
+        let _ = fs::remove_file(&out_path);
     }
 
     // 4. Renomeação atômica com repetição para contornar bloqueios transitórios
@@ -1203,18 +1204,11 @@ pub fn write_scantech_psd(
                 break;
             }
             Err(e) => {
-                let code = e.raw_os_error();
-                // 5: ERROR_ACCESS_DENIED, 32: ERROR_SHARING_VIOLATION
-                if code == Some(5) || code == Some(32) {
-                    if attempt >= 2 && out_path.exists() {
-                        let _ = fs::remove_file(&out_path);
-                    }
-                    std::thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
-                    last_io_err = Some(e);
-                } else {
-                    last_io_err = Some(e);
-                    break;
+                if out_path.exists() {
+                    let _ = fs::remove_file(&out_path);
                 }
+                std::thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
+                last_io_err = Some(e);
             }
         }
     }
