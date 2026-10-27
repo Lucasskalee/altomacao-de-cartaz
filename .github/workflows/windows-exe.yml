@@ -14,13 +14,14 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows x64 · Skalee Cartazes A5 v0.6.1
+    name: Windows x64 · Skalee Cartazes A5 v0.7.0
     runs-on: windows-latest
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      ARTIFACT_NAME: Skalee-Cartazes-A5-v0.6.1-Windows-x64
-      INSTALLER_NAME: Skalee-Cartazes-A5-0.6.1-windows-x64-setup.exe
+      APP_VERSION: '0.7.0'
+      ARTIFACT_NAME: Skalee-Cartazes-A5-v0.7.0-Windows-x64
+      INSTALLER_NAME: Skalee-Cartazes-A5-0.7.0-windows-x64-setup.exe
     defaults:
       run:
         shell: pwsh
@@ -55,8 +56,21 @@ jobs:
         run: npm run tauri -- build --bundles nsis
       - name: Conferir instalador e gerar checksum
         run: |
-          $installers = @(Get-ChildItem -LiteralPath src-tauri/target/release/bundle/nsis -Filter '*_0.6.1_x64-setup.exe' -File)
-          if ($installers.Count -ne 1) { throw "Esperado exatamente um instalador NSIS x64 v0.6.1; encontrados: $($installers.Count)" }
+          $pkgVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content -LiteralPath src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($pkgVersion -ne $env:APP_VERSION -or $tauriVersion -ne $env:APP_VERSION) {
+            throw "Divergência de versão: workflow=$($env:APP_VERSION), package.json=$pkgVersion, tauri.conf.json=$tauriVersion"
+          }
+          $nsisDir = 'src-tauri/target/release/bundle/nsis'
+          $allExes = @(Get-ChildItem -LiteralPath $nsisDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
+          Write-Host "Arquivos .exe gerados em ${nsisDir}: $($allExes.Name -join ', ')"
+          $pattern = "*_$($env:APP_VERSION)_x64-setup.exe"
+          $installers = @($allExes | Where-Object { $_.Name -like $pattern })
+          if ($installers.Count -ne 1) {
+            throw "Esperado exatamente um instalador NSIS x64 v$($env:APP_VERSION) (padrão $pattern); encontrados: $($installers.Count) [disponíveis: $($allExes.Name -join ', ')]"
+          }
+          $producedName = $installers[0].Name
+          Write-Host "Instalador NSIS x64 localizado: $producedName ($($installers[0].Length) bytes)"
           if ($installers[0].Length -eq 0) { throw 'O instalador está vazio.' }
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           $destination = Join-Path artifacts $env:INSTALLER_NAME
@@ -64,10 +78,11 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $env:INSTALLER_NAME" | Set-Content -LiteralPath artifacts/SHA256SUMS.txt -Encoding utf8
           @"
-          Skalee Cartazes A5 v0.6.1 — Windows x64
+          Skalee Cartazes A5 v$($env:APP_VERSION) — Windows x64
           Commit: $env:GITHUB_SHA
           Execução: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
-          Instalador: $env:INSTALLER_NAME
+          Instalador Tauri NSIS: $producedName
+          Instalador Publicado: $env:INSTALLER_NAME
           SHA256: $hash
           "@ | Set-Content -LiteralPath artifacts/BUILD-INFO.txt -Encoding utf8
       - name: Disponibilizar instalador
@@ -87,7 +102,7 @@ jobs:
           ARTIFACT_URL: ${{ steps.installer.outputs.artifact-url }}
         run: |
           @"
-          ## Skalee Cartazes A5 v0.6.1 — Windows x64
+          ## Skalee Cartazes A5 v$($env:APP_VERSION) — Windows x64
           - Instalador: $env:INSTALLER_NAME
           - Commit: $env:GITHUB_SHA
           - [Baixar artefato $env:ARTIFACT_NAME]($env:ARTIFACT_URL)

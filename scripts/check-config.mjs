@@ -7,12 +7,17 @@ const capability = JSON.parse(readFileSync('src-tauri/capabilities/default.json'
 const pkg = JSON.parse(readFileSync('package.json','utf8'));
 const lock = JSON.parse(readFileSync('package-lock.json','utf8'));
 const cargo = readFileSync('src-tauri/Cargo.toml','utf8');
+const workflow = readFileSync('.github/workflows/windows-exe.yml','utf8');
 const rustVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+const workflowVersion = workflow.match(/APP_VERSION:\s*'([^']+)'/)?.[1];
 assert.equal(pkg.version, '0.7.0', 'Expected Sprint 07.0 version');
 assert.equal(config.version, pkg.version, 'Tauri/npm versions must match');
 assert.equal(lock.version, pkg.version, 'Lockfile version must match');
 assert.equal(lock.packages[''].version, pkg.version);
 assert.equal(rustVersion, pkg.version, 'Rust/npm versions must match');
+assert.equal(workflowVersion, pkg.version, 'GitHub Actions workflow APP_VERSION must match package.json');
+assert.ok(workflow.includes(`Skalee-Cartazes-A5-v${pkg.version}-Windows-x64`), 'Workflow ARTIFACT_NAME must match current version');
+assert.ok(workflow.includes(`Skalee-Cartazes-A5-${pkg.version}-windows-x64-setup.exe`), 'Workflow INSTALLER_NAME must match current version');
 for (const icon of config.bundle.icon ?? []) assert.ok(existsSync(resolve('src-tauri',icon)), 'Missing icon: ' + icon);
 assert.equal(config.$schema,'https://schema.tauri.app/config/2');
 assert.ok(pkg.dependencies['@tauri-apps/api'].includes('2'));
