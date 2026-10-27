@@ -3,14 +3,14 @@ import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPri
 
 export const PSD_MAX_BYTES = 25 * 1024 * 1024;
 export type PsdRoleMap = Partial<Record<ImportedPriceRole, string>>;
-export type PsdProductMetadata = { name: string; complement: string; unit: string; price: string };
+export type PsdProductMetadata = { name: string; complement: string; unit: string; price: string; validityText: string };
 export type PsdAnalysis = {
-  fileName: string; hash: string; width: number; height: number; resolutionPpi: number;
+  fileName: string; sourcePath?: string | null; hash: string; width: number; height: number; resolutionPpi: number;
   originalPreview: string; layers: ImportedLayerInfo[]; suggested: PsdRoleMap; metadata: PsdProductMetadata; warnings: string[];
   psd: Psd; runtime: Map<string, Layer>;
 };
 
-export async function analyzePsd(bytes: ArrayBuffer, fileName: string): Promise<PsdAnalysis> {
+export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): Promise<PsdAnalysis> {
   if (bytes.byteLength < 26 || bytes.byteLength > PSD_MAX_BYTES) throw new Error('O PSD deve ter entre 26 bytes e 25 MB.');
   const signature = new TextDecoder('ascii').decode(bytes.slice(0, 4));
   if (signature !== '8BPS') throw new Error('Arquivo inválido: assinatura PSD não encontrada.');
@@ -34,7 +34,7 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string): Promise<
   if (!metadata.price) warnings.push('O preço original não pôde ser reconhecido automaticamente nas camadas. Informe o preço e confirme o mapeamento.');
   const resolutionPpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? 72;
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2,'0')).join('');
-  return { fileName, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: psd.canvas.toDataURL('image/png'), layers, suggested, metadata, warnings, psd, runtime };
+  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: psd.canvas.toDataURL('image/png'), layers, suggested, metadata, warnings, psd, runtime };
 }
 
 function flatten(source: Layer[], depth: number, prefix: string, parentVisible: boolean, runtime: Map<string, Layer>, result: ImportedLayerInfo[]) {
@@ -55,9 +55,13 @@ function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
   const byText = (pattern: RegExp) => visible.find(layer => pattern.test(layer.text?.trim() ?? ''))?.id;
   const decimalId = byText(/^,$/);
   const fractionRuleId = visible.find(layer => /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id;
+  const validityPattern = /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b|promo[cç][aã]o\s+v[aá]lida)/i;
+  const validityId =
+    visible.find(layer => layer.type === 'text' && validityPattern.test(layer.text ?? layer.name))?.id ??
+    visible.find(layer => layer.type === 'text' && /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/.test(layer.text ?? '') && layer.bounds.top > 900)?.id;
 
   const numericCandidates = visible.filter(layer => {
-    if (layer.id === decimalId || layer.id === fractionRuleId) return false;
+    if (layer.id === decimalId || layer.id === fractionRuleId || layer.id === validityId) return false;
     const text = (layer.text ?? layer.name ?? '').trim();
     return /^\d{1,3}$/.test(text);
   });
@@ -81,6 +85,7 @@ function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
       fraction: fractionCandidate?.id,
       decimal: decimalId,
       fractionRule: fractionRuleId,
+      validity: validityId,
     };
   }
 
@@ -91,6 +96,7 @@ function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
       visible.find(layer => /^\d{2}$/.test(layer.name))?.id,
     decimal: decimalId,
     fractionRule: fractionRuleId,
+    validity: validityId,
   };
 }
 
@@ -104,19 +110,27 @@ export function extractPriceFromRoles(layers: ImportedLayerInfo[], roles: PsdRol
   return `${wholeRaw},${fractionRaw.padEnd(2, '0')}`;
 }
 
+export function extractValidityFromRoles(layers: ImportedLayerInfo[], roles: PsdRoleMap): string {
+  if (!roles.validity) return '';
+  const validityLayer = layers.find(layer => layer.id === roles.validity);
+  return (validityLayer?.text ?? validityLayer?.name ?? '').trim();
+}
+
 export function extractMetadata(layers: ImportedLayerInfo[], roles: PsdRoleMap): PsdProductMetadata {
   const excluded = new Set(Object.values(roles).filter(Boolean));
-  const unitRegex = /^(KG|UN|PCT|CX|LT|BDJ|MACO|MAÇO|DZ|GR|G|ML)$/i;
+  const unitRegex = /^(?:\d+\s*)?(KG|UN|UND|PCT|CX|LT|L|BDJ|MACO|MAÇO|DZ|GR|G|ML)$/i;
+  const validityRegex = /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i;
   const visible = layers.filter(layer => layer.visible && !excluded.has(layer.id));
   const unitLayer = visible.find(layer => unitRegex.test((layer.text ?? layer.name).trim()));
   const unit = unitLayer ? (unitLayer.text ?? unitLayer.name).trim().toUpperCase().slice(0, 12) : '';
   const textLayers = visible
-    .filter(layer => layer.type === 'text' && layer.text && layer.id !== unitLayer?.id && !/^[\d,.\sR$]+$/i.test(layer.text.trim()) && !unitRegex.test(layer.text.trim()))
+    .filter(layer => layer.type === 'text' && layer.text && layer.id !== unitLayer?.id && !/^[\d,.\sR$]+$/i.test(layer.text.trim()) && !unitRegex.test(layer.text.trim()) && !validityRegex.test(layer.text.trim()))
     .sort((a, b) => a.bounds.top - b.bounds.top);
   const name = (textLayers[0]?.text ?? '').trim().toUpperCase().slice(0, 32);
   const complement = (textLayers[1]?.text ?? '').trim().toUpperCase().slice(0, 28);
   const price = extractPriceFromRoles(layers, roles);
-  return { name, complement, unit, price };
+  const validityText = extractValidityFromRoles(layers, roles);
+  return { name, complement, unit, price, validityText };
 }
 
 export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): ImportedArtwork {
@@ -139,7 +153,11 @@ export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): Imported
     const layer = analysis.runtime.get(id!);
     const role=(Object.entries(roles) as [ImportedPriceRole,string | undefined][]).find(([,value])=>value===id)?.[0];
     if (!layer || layer.hidden) preparation.push(`A camada dinâmica ${id} não está visível.`);
-    if (role !== 'fractionRule' && (!layer?.text || (layer.text.style ?? layer.text.styleRuns?.[0]?.style)?.font?.name !== 'Zullia')) preparation.push(`A camada ${layer?.name ?? id} não usa texto Zullia compatível com o piloto.`);
+    if (role === 'validity') {
+      if (!layer?.text) preparation.push(`A camada de validade ${layer?.name ?? id} deve ser uma camada de texto editável.`);
+    } else if (role !== 'fractionRule' && (!layer?.text || (layer.text.style ?? layer.text.styleRuns?.[0]?.style)?.font?.name !== 'Zullia')) {
+      preparation.push(`A camada ${layer?.name ?? id} não usa texto Zullia compatível com o piloto.`);
+    }
   }
   for(const layer of analysis.runtime.values()) {
     const hasRasterMask = Boolean((layer.mask && !layer.mask.disabled && !layer.mask.fromVectorData) || (layer.realMask && !layer.realMask.disabled));
@@ -148,7 +166,7 @@ export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): Imported
   warnings.push(...new Set(preparation));
   return {
     kind: 'imported-psd', compatibility: preparation.length ? 'requires-preparation' : 'ready',
-    source: { fileName: analysis.fileName, sha256: analysis.hash },
+    source: { fileName: analysis.fileName, sha256: analysis.hash, sourcePath: analysis.sourcePath ?? null },
     canvas: { width: analysis.width, height: analysis.height, resolutionPpi: analysis.resolutionPpi, fit: 'contain' },
     staticBackground, originalPreview: analysis.originalPreview, priceParts, layers: analysis.layers, warnings,
   };
@@ -190,13 +208,13 @@ function partFromLayer(role: ImportedPriceRole, id: string, analysis: PsdAnalysi
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
-    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined),
+    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined, role),
     shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
   };
 }
 
-function colorHex(color?: RGB | RGBA | FRGB): string {
-  if (!color) return '#c74624';
+function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedPriceRole): string {
+  if (!color) return role === 'validity' ? '#000000' : '#c74624';
   const raw = 'fr' in color ? [color.fr,color.fg,color.fb] : [color.r,color.g,color.b];
   const values = raw.map(value => Math.round(Math.max(0,Math.min(255, value <= 1 ? value * 255 : value))));
   return `#${values.map(value => value.toString(16).padStart(2,'0')).join('')}`;

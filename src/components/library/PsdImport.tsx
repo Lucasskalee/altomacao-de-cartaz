@@ -22,6 +22,7 @@ const roleLabels: Record<ImportedPriceRole, string> = {
   fraction: 'Centavos',
   decimal: 'Vírgula',
   fractionRule: 'Linha dos centavos',
+  validity: 'Validade da oferta',
 };
 
 const centsToBr = (cents: number) => (cents / 100).toFixed(2).replace('.', ',');
@@ -75,7 +76,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
     try {
       const selected = await selectPsd();
       if (!selected) return;
-      const result = await analyzePsd(selected.buffer, selected.name);
+      const result = await analyzePsd(selected.buffer, selected.name, selected.path ?? null);
       setAnalysis(result);
       setRoles(result.suggested);
       // Preserva textos artísticos reais do PSD; usa descrição do Excel apenas como fallback se o PSD não tiver camada reconhecida

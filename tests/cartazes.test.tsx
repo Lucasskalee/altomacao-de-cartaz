@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import './dbf.test';
 import './updates.test';
 import './offers.test';
+import './scantech.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
 import { priceToCents, fileName, MAX_DOCUMENT_CHARS } from '../src/features/cartazes/validation';
@@ -59,7 +60,7 @@ test('extração de metadados PSD não inventa preço fictício quando não reco
   const layers=importedArtwork().layers;
   assert.equal(extractPriceFromRoles(layers,{whole:'6'}),'');
   const unknown=extractMetadata([{id:'1',name:'Camada',type:'raster',visible:true,depth:0,bounds:{left:0,top:0,right:10,bottom:10}}],{});
-  assert.deepEqual(unknown,{name:'',complement:'',unit:'',price:''});
+  assert.deepEqual(unknown,{name:'',complement:'',unit:'',price:'',validityText:''});
 });
 test('repolho verde kg.psd real: análise de 26 camadas, extração 2,99, alteração 3,49, F7 e integridade', {skip:!existsSync('repolho verde kg.psd')}, async () => {
   const fakeCanvas = (w = 886, h = 1240): any => ({
@@ -78,8 +79,8 @@ test('repolho verde kg.psd real: análise de 26 camadas, extração 2,99, altera
     assert.equal(analysis.hash, hashBefore);
     assert.equal(analysis.width, 886); assert.equal(analysis.height, 1240);
     assert.equal(analysis.layers.length, 26);
-    assert.deepEqual(analysis.suggested, { whole: '7', fraction: '15', decimal: '14', fractionRule: '22' });
-    assert.deepEqual(analysis.metadata, { name: 'REPOLHO', complement: 'VERDE', unit: 'KG', price: '2,99' });
+    assert.deepEqual(analysis.suggested, { whole: '7', fraction: '15', decimal: '14', fractionRule: '22', validity: undefined });
+    assert.deepEqual(analysis.metadata, { name: 'REPOLHO', complement: 'VERDE', unit: 'KG', price: '2,99', validityText: '' });
     const artwork = buildArtwork(analysis, analysis.suggested);
     assert.equal(artwork.compatibility, 'ready');
     const doc = createDocument();

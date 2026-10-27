@@ -1,4 +1,4 @@
-export type ImportedPriceRole = 'whole' | 'fraction' | 'decimal' | 'fractionRule';
+export type ImportedPriceRole = 'whole' | 'fraction' | 'decimal' | 'fractionRule' | 'validity';
 export type ImportedLayerInfo = {
   id: string; name: string; type: 'text' | 'raster' | 'vector' | 'group' | 'empty';
   visible: boolean; depth: number; text?: string; font?: string;
@@ -12,7 +12,7 @@ export type ImportedPricePart = {
 };
 export type ImportedArtwork = {
   kind: 'imported-psd'; compatibility: 'ready' | 'requires-preparation';
-  source: { fileName: string; sha256: string };
+  source: { fileName: string; sha256: string; sourcePath?: string | null };
   canvas: { width: number; height: number; resolutionPpi: number; fit: 'contain' };
   staticBackground: string; originalPreview: string;
   priceParts: ImportedPricePart[]; layers: ImportedLayerInfo[]; warnings: string[];

@@ -67,7 +67,7 @@ export function importedPriceWarning(artwork: ImportedArtwork, price: string): s
   return estimated > available / .64 ? 'O valor é largo demais para a área mapeada. Reduza os dígitos ou prepare a arte.' : '';
 }
 
-export async function drawImported(canvas: HTMLCanvasElement, artwork: ImportedArtwork, price: string, outputWidth = 886, outputHeight = 1260) {
+export async function drawImported(canvas: HTMLCanvasElement, artwork: ImportedArtwork, price: string, outputWidth = 886, outputHeight = 1260, validityText?: string) {
   canvas.width = outputWidth; canvas.height = outputHeight;
   const context = canvas.getContext('2d'); if (!context) throw new Error('Canvas indisponível.');
   context.fillStyle = '#ffffff'; context.fillRect(0,0,outputWidth,outputHeight);
@@ -79,15 +79,28 @@ export async function drawImported(canvas: HTMLCanvasElement, artwork: ImportedA
   const { whole, fraction } = sanitizePrice(price);
   const parts = normalizePsdPriceParts(artwork);
   context.save(); context.translate(offsetX,offsetY); context.scale(scale,scale);
-  for (const part of parts) drawPart(context,part,whole,fraction,artwork.canvas.width);
+  for (const part of parts) drawPart(context,part,whole,fraction,artwork.canvas.width,validityText);
   context.restore();
 }
 
-function drawPart(context: CanvasRenderingContext2D, part: ImportedPricePart, whole: string, fraction: string, _canvasWidth: number) {
-  const b = part.bounds, height = Math.max(1,b.bottom-b.top), font = part.fontFamily || 'Zullia';
+function drawPart(context: CanvasRenderingContext2D, part: ImportedPricePart, whole: string, fraction: string, _canvasWidth: number, validityText?: string) {
+  const b = part.bounds, height = Math.max(1,b.bottom-b.top), font = part.fontFamily || (part.role === 'validity' ? 'Impact' : 'Zullia');
   context.save(); context.fillStyle = part.color;
   if (part.shadow) { context.shadowOffsetX=part.shadow.dx; context.shadowOffsetY=part.shadow.dy; context.shadowBlur=part.shadow.blur; context.shadowColor=part.shadow.color; }
   if (part.role === 'fractionRule') { context.fillRect(b.left,b.top,b.right-b.left,b.bottom-b.top); context.restore(); return; }
+  if (part.role === 'validity') {
+    const val = (validityText ?? part.originalText ?? '').trim();
+    if (!val) { context.restore(); return; }
+    if (part.transform && part.fontSize) {
+      const [a,bm,c,d,e,f]=part.transform; context.transform(a,bm,c,d,e,f);
+      context.font=`400 ${part.fontSize}px ${quoteFont(font)}, Impact, Arial, sans-serif`; context.textAlign='center'; context.textBaseline='alphabetic';
+      context.fillText(val,0,0); context.restore(); return;
+    }
+    const vFontSize = height * 0.96;
+    context.font = `400 ${vFontSize}px ${quoteFont(font)}, Impact, Arial, sans-serif`; context.textAlign='center'; context.textBaseline='alphabetic';
+    context.fillText(val, (b.left + b.right) / 2, b.bottom);
+    context.restore(); return;
+  }
   const value = part.role === 'whole' ? whole : part.role === 'fraction' ? fraction : ',';
   if (part.transform && part.fontSize) {
     const [a,bm,c,d,e,f]=part.transform; context.transform(a,bm,c,d,e,f);

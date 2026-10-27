@@ -59,6 +59,7 @@ fn imported_artwork(a: &Value) -> bool {
     let canvas = &a["canvas"];
     a["kind"] == "imported-psd" && matches!(a["compatibility"].as_str(), Some("ready" | "requires-preparation"))
         && source["fileName"].is_string() && source["sha256"].as_str().map(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())).unwrap_or(false)
+        && (source["sourcePath"].is_null() || source["sourcePath"].is_string())
         && canvas["width"].as_u64().map(|n| (1..=10_000).contains(&n)).unwrap_or(false)
         && canvas["height"].as_u64().map(|n| (1..=10_000).contains(&n)).unwrap_or(false)
         && canvas["resolutionPpi"].as_f64().map(|n| (1.0..=2400.0).contains(&n)).unwrap_or(false)

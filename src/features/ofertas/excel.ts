@@ -19,6 +19,8 @@ export type ColumnMapping = {
   f7Col: number;
   descriptionCol: number;
   priceCol: number;
+  startDateCol?: number | null;
+  endDateCol?: number | null;
 };
 
 export type ExcelImportedItem = {
@@ -28,6 +30,10 @@ export type ExcelImportedItem = {
   description: string;
   priceRaw: string;
   priceCents: number | null;
+  startDateRaw?: string;
+  startDateIso?: string | null;
+  endDateRaw?: string;
+  endDateIso?: string | null;
   issues: string[];
 };
 
@@ -284,11 +290,107 @@ export function suggestColumnMapping(headers: string[]): ColumnMapping {
   if (descriptionCol < 0 && headers.length > 1) descriptionCol = [0, 1, 2].find(i => i !== f7Col) ?? 0;
   let priceCol = findCol([/preco/, /oferta/, /promoc/, /valor/, /prvenda/, /futuro/, /amanha/], [f7Col, descriptionCol]);
   if (priceCol < 0 && headers.length > 2) priceCol = [0, 1, 2, 3].find(i => i !== f7Col && i !== descriptionCol) ?? 0;
-  return {
+  const startDateCol = findCol([/dt.*inic/, /data.*inic/, /\binicio\b/, /\bde\b/], [f7Col, descriptionCol, priceCol]);
+  const endDateCol = findCol([/dt.*fim/, /dt.*fin/, /data.*fim/, /data.*fin/, /validade/, /vencim/, /\bate\b/, /\bfinal\b/], [f7Col, descriptionCol, priceCol, ...(startDateCol >= 0 ? [startDateCol] : [])]);
+  const mapping: ColumnMapping = {
     f7Col: Math.max(0, f7Col),
     descriptionCol: Math.max(0, descriptionCol),
     priceCol: Math.max(0, priceCol),
   };
+  if (startDateCol >= 0) mapping.startDateCol = startDateCol;
+  if (endDateCol >= 0) mapping.endDateCol = endDateCol;
+  return mapping;
+}
+
+export function parseExcelDateToIso(raw: string, referenceYear = new Date().getFullYear()): string {
+  const cleaned = raw.trim();
+  if (!cleaned) throw new Error('Data vazia');
+
+  // 1. Formato ISO AAAA-MM-DD (ou com timestamp AAAA-MM-DDTHH:mm:ss)
+  const isoMatch = cleaned.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s].*)?$/);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    return validateYmd(year, month, day);
+  }
+
+  // 2. Formato Brasileiro DD/MM/AAAA, DD/MM/AA, DD-MM-AAAA, DD.MM.AAAA ou DD/MM
+  const brMatch = cleaned.match(/^(\d{1,2})[/. -](\d{1,2})(?:[/. -](\d{2,4}))?(?:\s+.*)?$/);
+  if (brMatch) {
+    const day = Number(brMatch[1]);
+    const month = Number(brMatch[2]);
+    let year = referenceYear;
+    if (brMatch[3]) {
+      const yRaw = brMatch[3];
+      year = yRaw.length === 2 ? 2000 + Number(yRaw) : Number(yRaw);
+    }
+    return validateYmd(year, month, day);
+  }
+
+  // 3. Número serial de data do Excel (ex.: 46321 ou 46321.5 -> dias desde 1899-12-30)
+  if (/^\d{4,6}(?:\.\d+)?$/.test(cleaned)) {
+    const serial = Math.floor(Number(cleaned));
+    if (serial >= 30_000 && serial <= 80_000) {
+      const excelEpochUtc = Date.UTC(1899, 11, 30);
+      const dateUtc = new Date(excelEpochUtc + serial * 86_400_000);
+      return validateYmd(dateUtc.getUTCFullYear(), dateUtc.getUTCMonth() + 1, dateUtc.getUTCDate());
+    }
+  }
+
+  throw new Error(`Data inválida ("${cleaned}")`);
+}
+
+function validateYmd(year: number, month: number, day: number): string {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new Error(`Ano inválido (${year})`);
+  }
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new Error(`Mês inválido (${month})`);
+  }
+  const maxDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (!Number.isInteger(day) || day < 1 || day > maxDay) {
+    throw new Error(`Dia inválido (${day}/${month}/${year})`);
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+export function formatIsoDateShortBr(isoDate: string): string {
+  const m = isoDate.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return isoDate;
+  return `${m[3]}/${m[2]}`;
+}
+
+export function formatIsoDateFullBr(isoDate: string): string {
+  const m = isoDate.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return isoDate;
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+export function applyValidityDateToLayerText(originalLayerText: string, endDateIso: string, startDateIso?: string | null): string {
+  const cleanEnd = endDateIso.trim();
+  const shortEnd = formatIsoDateShortBr(cleanEnd);
+  const fullEnd = formatIsoDateFullBr(cleanEnd);
+  const base = originalLayerText.trim();
+  if (!base) {
+    return `OFERTA VÁLIDA ATÉ ${shortEnd}`;
+  }
+  // Caso o texto original possua intervalo de datas (ex: "DE 10/10 A 25/10" ou "DE 10/10 ATÉ 25/10")
+  const rangeRegex = /\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(A|AT[EÉ])\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
+  if (startDateIso && rangeRegex.test(base)) {
+    const shortStart = formatIsoDateShortBr(startDateIso);
+    return base.replace(rangeRegex, (_, d1: string, sep: string, d2: string) => {
+      const s1 = d1.length > 5 ? formatIsoDateFullBr(startDateIso) : shortStart;
+      const s2 = d2.length > 5 ? fullEnd : shortEnd;
+      return `${s1} ${sep} ${s2}`;
+    });
+  }
+  // Caso o texto original contenha uma data DD/MM/AAAA ou DD/MM (ex: "OFERTA VÁLIDA ATÉ 25/10")
+  const singleDateRegex = /\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)(?!.*\b\d{1,2}\/\d{1,2})/;
+  if (singleDateRegex.test(base)) {
+    return base.replace(singleDateRegex, match => (match.length > 5 ? fullEnd : shortEnd));
+  }
+  return `${base} ${shortEnd}`.trim();
 }
 
 function roundFloatingNumberString(raw: string): string {
@@ -340,6 +442,8 @@ export function extractCampaignItemsFromSheet(
     const f7Raw = (row[mapping.f7Col] ?? '').trim();
     const description = (row[mapping.descriptionCol] ?? '').trim().toUpperCase();
     const priceRaw = (row[mapping.priceCol] ?? '').trim();
+    const startDateRaw = mapping.startDateCol != null && mapping.startDateCol >= 0 ? (row[mapping.startDateCol] ?? '').trim() : '';
+    const endDateRaw = mapping.endDateCol != null && mapping.endDateCol >= 0 ? (row[mapping.endDateCol] ?? '').trim() : '';
     const issues: string[] = [];
 
     const cleanedF7 = getF7(f7Raw) ?? (f7Raw && /^0*\d+$/.test(f7Raw) ? f7Raw : null);
@@ -367,6 +471,28 @@ export function extractCampaignItemsFromSheet(
       }
     }
 
+    let startDateIso: string | null = null;
+    if (startDateRaw) {
+      try {
+        startDateIso = parseExcelDateToIso(startDateRaw);
+      } catch (err) {
+        issues.push(`Data inicial inválida: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    let endDateIso: string | null = null;
+    if (endDateRaw) {
+      try {
+        endDateIso = parseExcelDateToIso(endDateRaw);
+      } catch (err) {
+        issues.push(`Data final inválida: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (startDateIso && endDateIso && startDateIso > endDateIso) {
+      issues.push(`Data inicial (${startDateIso}) posterior à data final (${endDateIso})`);
+    }
+
     if (cleanedF7) {
       f7Counts.set(cleanedF7, (f7Counts.get(cleanedF7) ?? 0) + 1);
       if (priceCents !== null) {
@@ -383,6 +509,10 @@ export function extractCampaignItemsFromSheet(
       description,
       priceRaw,
       priceCents,
+      startDateRaw: startDateRaw || undefined,
+      startDateIso,
+      endDateRaw: endDateRaw || undefined,
+      endDateIso,
       issues,
     });
   }
