@@ -644,12 +644,35 @@ export async function scanScantechPsdFolder(folderPath: string): Promise<Scanned
   return await invoke<ScannedPsdEntry[]>('scan_scantech_psd_folder', { folderPath });
 }
 
-export async function exportScantechPsds(jobs: ScantechExportJob[]): Promise<ScantechExportBatchResult> {
-  if (!isTauri()) {
-    throw new Error('Abra o aplicativo desktop no Windows para exportar arquivos PSD pelo Photoshop.');
+export {
+  exportScantechPsdsDirect,
+  executeScantechDirectExportJob,
+  resolveLayerByPath,
+  findFirstTextLayerMatching,
+  validateExportJobBasics,
+  type ScantechDirectExportIo,
+} from './directExport';
+
+import { exportScantechPsdsDirect } from './directExport';
+
+export async function exportScantechPsds(
+  jobs: ScantechExportJob[],
+  options?: { useLegacyPhotoshop?: boolean }
+): Promise<ScantechExportBatchResult> {
+  if (options?.useLegacyPhotoshop) {
+    if (!isTauri()) {
+      throw new Error('Abra o aplicativo desktop no Windows para exportar arquivos PSD pelo Photoshop.');
+    }
+    return await invoke<ScantechExportBatchResult>('export_scantech_psds', {
+      request: { jobs },
+    });
   }
-  return await invoke<ScantechExportBatchResult>('export_scantech_psds', {
-    request: { jobs },
-  });
+  return await exportScantechPsdsDirect(jobs);
+}
+
+export async function exportScantechPsdsLegacyPhotoshop(
+  jobs: ScantechExportJob[]
+): Promise<ScantechExportBatchResult> {
+  return await exportScantechPsds(jobs, { useLegacyPhotoshop: true });
 }
 

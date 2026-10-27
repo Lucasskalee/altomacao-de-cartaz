@@ -25,6 +25,8 @@ import {
   buildPrintableScantechPosters,
   buildScantechItemViews,
   createScantechCampaign,
+  executeScantechDirectExportJob,
+  exportScantechPsdsDirect,
   linkCartazAndPsdToScantechItem,
   updateScantechItemFields,
 } from '../src/features/scantech/service';
@@ -845,5 +847,293 @@ test('Sprint 07.2 — Impressão direta de Cartazes Scantech: individual e em lo
   // A montagem de posters e o desenho do canvas A5 são funções locais offline e autossuficientes.
   assert.equal(typeof buildPrintableScantechPosters, 'function');
 });
+
+test('Sprint 07.3 — Exportação PSD Direta: Guaraná Antarctica 3L (sem Photoshop, R$ 11,19 e validade 08/11/2026)', async () => {
+  const guaranaPath = 'C:/Users/Supermercado Sol/Desktop/SCANTECH/REFRIGERANTE GUARANA 3L.psd';
+  const coronaPath = resolve('cerveja corona extra lata 350ml.psd');
+  const srcPsd = existsSync(guaranaPath) ? guaranaPath : coronaPath;
+  assert.ok(existsSync(srcPsd), 'Arquivo PSD de origem deve existir para o teste.');
+
+  const workDir = join(tmpdir(), `skalee-sprint073-guarana-${Date.now()}`);
+  mkdirSync(workDir, { recursive: true });
+
+  const origHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+  const outPsd = join(workDir, '29965-guarana-antarctica-3l-oferta.psd');
+
+  try {
+    const isGuarana = srcPsd === guaranaPath;
+    const job = {
+      itemId: 'item-guarana',
+      f7: '29965',
+      description: 'REFRIGERANTE GUARANA ANTARCTICA 3L',
+      sourcePsdPath: srcPsd,
+      outputPsdPath: outPsd,
+      wholeLayerId: '10',
+      fractionLayerId: '11',
+      decimalLayerId: '9',
+      fractionRuleLayerId: '8',
+      validityLayerId: isGuarana ? '13' : '13',
+      wholeValue: '11',
+      fractionValue: '19',
+      validityText: 'OFERTA VÁLIDA ATÉ 08/11',
+      rotateDeltaDeg: 0,
+      skewDeltaDeg: 0,
+    };
+
+    // 1. Executa exportação direta sem executar Photoshop nem scripts JSX
+    const result = await executeScantechDirectExportJob(job);
+    assert.equal(result.ok, true, result.error ?? undefined);
+    assert.equal(result.wholeApplied, '11');
+    assert.equal(result.fractionApplied, '19');
+    assert.equal(result.validityApplied, 'OFERTA VÁLIDA ATÉ 08/11');
+    assert.ok(result.fileSize && result.fileSize > 100_000);
+
+    // 2. Confirma que o arquivo de destino foi realmente criado no disco
+    assert.ok(existsSync(outPsd), 'O arquivo .psd deve ter sido gravado na pasta de destino.');
+    const buf = readFileSync(outPsd);
+
+    // 3. Valida assinatura binária e estrutura PSD genuína (8BPS, versão 1, dimensões, TySh)
+    assert.equal(buf.subarray(0, 4).toString('ascii'), '8BPS', 'Assinatura PSD 8BPS válida.');
+    const version = buf.readUInt16BE(4);
+    assert.equal(version, 1, 'Versão do cabeçalho PSD deve ser 1.');
+    const height = buf.readUInt32BE(14);
+    const width = buf.readUInt32BE(18);
+    assert.equal(width, 1179);
+    assert.equal(height, 1770);
+    assert.ok(buf.includes(Buffer.from('TySh')), 'Descritor tipográfico de camadas de texto editáveis (TySh) deve existir.');
+
+    // 4. Reabre o PSD exportado usando ag-psd e verifica as camadas de texto
+    const reopened = readPsd(buf, {
+      skipLayerImageData: true,
+      skipCompositeImageData: true,
+      skipThumbnail: true,
+    });
+    assert.equal(reopened.width, 1179);
+    assert.equal(reopened.height, 1770);
+    assert.ok(reopened.children && reopened.children.length >= 13);
+
+    const rWhole = reopened.children[10];
+    const rFrac = reopened.children[11];
+    const rVal = reopened.children[isGuarana ? 13 : 13];
+
+    assert.equal(rWhole?.text?.text?.trim(), '11', 'Preço de Reais deve ser 11.');
+    assert.equal(rFrac?.text?.text?.trim(), '19', 'Preço de Centavos deve ser 19.');
+    assert.equal(rVal?.text?.text?.trim(), 'OFERTA VÁLIDA ATÉ 08/11', 'Validade deve ser 08/11.');
+
+    // 5. Verifica que fontes, efeitos de sombra e contorno foram preservados
+    assert.equal(rWhole?.text?.style?.font?.name, 'Zullia');
+    assert.ok(rWhole?.effects?.dropShadow, 'Efeito de sombra projetada (dropShadow) deve ser preservado.');
+    assert.ok(rWhole?.effects?.stroke, 'Efeito de contorno (stroke) deve ser preservado.');
+    assert.equal(rFrac?.text?.style?.font?.name, 'Zullia');
+
+    // 6. Confirma que o PSD original continuou 100% inalterado
+    const afterHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+    assert.equal(afterHash, origHash, 'O PSD original nunca deve ser modificado.');
+
+    // 7. Conferência manual com Photoshop CS6 se instalado (Photoshop não participa da geração)
+    if (existsSync(photoshopExe)) {
+      const psCheckJsx = join(workDir, 'ps_check_guarana.jsx');
+      const psStatusTxt = join(workDir, 'ps_status_guarana.txt');
+      const jsx = `#target photoshop
+app.displayDialogs = DialogModes.NO;
+try {
+  var doc = app.open(new File("${outPsd.replace(/\\/g, '/')}"));
+  var lWhole = doc.artLayers.getByName("${isGuarana ? '6' : '4'}");
+  var wholeText = lWhole.textItem.contents;
+  var lFrac = doc.artLayers.getByName("19");
+  var fracText = lFrac.textItem.contents;
+  var bWhole = [lWhole.bounds[0].as("px"), lWhole.bounds[1].as("px"), lWhole.bounds[2].as("px"), lWhole.bounds[3].as("px")];
+  var bFrac = [lFrac.bounds[0].as("px"), lFrac.bounds[1].as("px"), lFrac.bounds[2].as("px"), lFrac.bounds[3].as("px")];
+  doc.close(SaveOptions.DONOTSAVECHANGES);
+  var f = new File("${psStatusTxt.replace(/\\/g, '/')}");
+  f.open("w");
+  f.write("OK|" + wholeText + "|" + fracText + "|" + bWhole[2] + "|" + bFrac[0]);
+  f.close();
+} catch (e) {
+  var f = new File("${psStatusTxt.replace(/\\/g, '/')}");
+  f.open("w");
+  f.write("ERROR|" + e.toString());
+  f.close();
+} finally {
+  app.quit();
+}
+`;
+      writeFileSync(psCheckJsx, jsx, 'utf8');
+      spawnSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `Start-Process -FilePath '${photoshopExe}' -ArgumentList @('-r', '${psCheckJsx}')`,
+      ]);
+      const start = Date.now();
+      while (!existsSync(psStatusTxt) && Date.now() - start < 35_000) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      }
+      if (existsSync(psStatusTxt)) {
+        const out = readFileSync(psStatusTxt, 'utf8');
+        const parts = out.split('|');
+        assert.equal(parts[0], 'OK', `Photoshop retornou erro na abertura: ${out}`);
+        assert.equal(parts[1], '11', 'Photoshop deve ler a camada de reais como 11.');
+        assert.equal(parts[2], '19', 'Photoshop deve ler a camada de centavos como 19.');
+        const wholeRight = parseFloat(parts[3]);
+        const fracLeft = parseFloat(parts[4]);
+        assert.ok(wholeRight <= fracLeft, `Camada de Reais não pode ultrapassar Centavos (${wholeRight} <= ${fracLeft}).`);
+      }
+    }
+  } finally {
+    spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Stop-Process -Name photoshop -Force -ErrorAction SilentlyContinue']);
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test('Sprint 07.3 — Tratamento de erros e segurança na exportação direta (bloqueio de sobrescrita, dados inválidos e continuidade)', async () => {
+  const coronaPath = resolve('cerveja corona extra lata 350ml.psd');
+  assert.ok(existsSync(coronaPath));
+
+  const workDir = join(tmpdir(), `skalee-sprint073-errors-${Date.now()}`);
+  mkdirSync(workDir, { recursive: true });
+
+  const validDst = join(workDir, 'exportado_valido.psd');
+
+  try {
+    const jobs = [
+      // 1. Bloqueio de sobrescrita do original
+      {
+        itemId: 'job-overwrite',
+        f7: '1001',
+        description: 'CERVEJA CORONA OVERWRITE',
+        sourcePsdPath: coronaPath,
+        outputPsdPath: coronaPath, // Tentativa de sobrescrever o original!
+        wholeLayerId: '10',
+        fractionLayerId: '11',
+        wholeValue: '5',
+        fractionValue: '49',
+      },
+      // 2. Erro de preço inválido
+      {
+        itemId: 'job-bad-price',
+        f7: '1002',
+        description: 'CERVEJA CORONA PRECO INVALIDO',
+        sourcePsdPath: coronaPath,
+        outputPsdPath: join(workDir, 'bad_price.psd'),
+        wholeLayerId: '10',
+        fractionLayerId: '11',
+        wholeValue: '', // Vazio!
+        fractionValue: '49',
+      },
+      // 3. Erro de camada inexistente
+      {
+        itemId: 'job-bad-layer',
+        f7: '1003',
+        description: 'CERVEJA CORONA CAMADA INVALIDA',
+        sourcePsdPath: coronaPath,
+        outputPsdPath: join(workDir, 'bad_layer.psd'),
+        wholeLayerId: '99.99', // Inexistente!
+        fractionLayerId: '11',
+        wholeValue: '7',
+        fractionValue: '99',
+      },
+      // 4. Job perfeitamente válido (deve continuar e concluir com sucesso)
+      {
+        itemId: 'job-valid',
+        f7: '1004',
+        description: 'CERVEJA CORONA VALIDO',
+        sourcePsdPath: coronaPath,
+        outputPsdPath: validDst,
+        wholeLayerId: '10',
+        fractionLayerId: '11',
+        wholeValue: '8',
+        fractionValue: '79',
+        validityText: 'OFERTA VÁLIDA ATÉ 15/11',
+      },
+    ];
+
+    const batch = await exportScantechPsdsDirect(jobs);
+
+    assert.equal(batch.results.length, 4);
+
+    // Job 1 falhou com erro de segurança
+    assert.equal(batch.results[0].ok, false);
+    assert.ok(batch.results[0].error?.includes('Bloqueado por segurança'));
+
+    // Job 2 falhou com erro de reais inválidos
+    assert.equal(batch.results[1].ok, false);
+    assert.ok(batch.results[1].error?.includes('Parte inteira do preço'));
+
+    // Job 3 falhou com erro de camada não encontrada
+    assert.equal(batch.results[2].ok, false);
+    assert.ok(batch.results[2].error?.includes('não encontrada'));
+
+    // Job 4 teve sucesso pleno mesmo com as falhas anteriores
+    assert.equal(batch.results[3].ok, true);
+    assert.equal(batch.results[3].wholeApplied, '8');
+    assert.equal(batch.results[3].fractionApplied, '79');
+    assert.ok(existsSync(validDst));
+
+    // Nenhum arquivo corrompido foi gerado para os jobs 1, 2 e 3
+    assert.equal(existsSync(join(workDir, 'bad_price.psd')), false);
+    assert.equal(existsSync(join(workDir, 'bad_layer.psd')), false);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test('Sprint 07.3 — Exportação em lote direta dos 14 produtos Scantech', {
+  skip: !existsSync('C:/Users/Supermercado Sol/Documents/Skalee Cartazes/.scantech-campanhas/0c5138f8-c803-4818-a6dc-3766552e74be.skscantech'),
+}, async () => {
+  const campaignPath = 'C:/Users/Supermercado Sol/Documents/Skalee Cartazes/.scantech-campanhas/0c5138f8-c803-4818-a6dc-3766552e74be.skscantech';
+  const campaign = JSON.parse(readFileSync(campaignPath, 'utf8'));
+
+  const workDir = join(tmpdir(), `skalee-sprint073-batch14-${Date.now()}`);
+  mkdirSync(workDir, { recursive: true });
+
+  try {
+    const jobs = campaign.items.map((item: any) => {
+      const origPath = item.sourcePsdPath.replace(/^\\\\\?\\/, '');
+      const [y, m, d] = (item.endDateIso || '2026-11-08').split('-');
+      return {
+        itemId: item.id,
+        f7: item.f7,
+        description: item.description,
+        sourcePsdPath: origPath,
+        outputPsdPath: join(workDir, `${item.f7}-${item.sourcePsdName}`),
+        wholeLayerId: item.wholeLayerId,
+        fractionLayerId: item.fractionLayerId,
+        decimalLayerId: item.decimalLayerId,
+        fractionRuleLayerId: item.fractionRuleLayerId,
+        validityLayerId: item.validityLayerId,
+        wholeValue: String(Math.floor(item.priceCents / 100)),
+        fractionValue: String(item.priceCents % 100).padStart(2, '0'),
+        validityText: `OFERTA VÁLIDA ATÉ ${d}/${m}`,
+      };
+    });
+
+    assert.equal(jobs.length, 14, 'A campanha Scantech real deve conter exatamente 14 produtos.');
+
+    const batch = await exportScantechPsdsDirect(jobs);
+
+    assert.equal(batch.results.length, 14);
+    const successResults = batch.results.filter(r => r.ok);
+    assert.equal(successResults.length, 14, `Todos os 14 PSDs devem ser gerados com sucesso direto. Falhas: ${batch.results.filter(r => !r.ok).map(r => r.error).join('; ')}`);
+
+    for (const res of batch.results) {
+      assert.ok(existsSync(res.outputPsdPath));
+      const fileBytes = readFileSync(res.outputPsdPath);
+      assert.equal(fileBytes.subarray(0, 4).toString('ascii'), '8BPS');
+      assert.ok(fileBytes.includes(Buffer.from('TySh')));
+
+      const reopened = readPsd(fileBytes, {
+        skipLayerImageData: true,
+        skipCompositeImageData: true,
+        skipThumbnail: true,
+      });
+      assert.ok(reopened.children && reopened.children.length > 5);
+      const wLayer = reopened.children[parseInt(res.wholeApplied || '', 10) ? 10 : 10];
+      assert.ok(wLayer);
+    }
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
 
 

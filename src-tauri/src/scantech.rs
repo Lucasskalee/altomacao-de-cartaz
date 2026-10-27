@@ -1074,6 +1074,90 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
     })
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteScantechPsdRequest {
+    pub output_path: String,
+    pub source_psd_path: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteScantechPsdResponse {
+    pub file_size: u64,
+}
+
+#[tauri::command]
+pub fn write_scantech_psd(
+    request: WriteScantechPsdRequest,
+) -> Result<WriteScantechPsdResponse, String> {
+    let out_path = PathBuf::from(&request.output_path);
+    let src_path = PathBuf::from(&request.source_psd_path);
+
+    if out_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("psd"))
+        != Some(true)
+    {
+        return Err("O caminho de saída deve ter extensão .psd.".into());
+    }
+
+    if !src_path.is_file() {
+        return Err(format!(
+            "Arquivo PSD original não encontrado: {}",
+            src_path.display()
+        ));
+    }
+
+    if let (Ok(c_out), Ok(c_src)) = (out_path.canonicalize(), src_path.canonicalize()) {
+        if c_out == c_src {
+            return Err(
+                "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
+                    .into(),
+            );
+        }
+    } else if out_path == src_path {
+        return Err(
+            "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
+                .into(),
+        );
+    }
+
+    if request.bytes.len() < 64 || request.bytes.len() > 50 * 1024 * 1024 {
+        return Err("Conteúdo binário PSD inválido ou fora dos limites de tamanho.".into());
+    }
+
+    if &request.bytes[0..4] != b"8BPS" {
+        return Err("Assinatura binária 8BPS ausente no arquivo exportado.".into());
+    }
+
+    let orig_len = fs::metadata(&src_path).map_err(err)?.len();
+
+    let parent = out_path
+        .parent()
+        .ok_or_else(|| "Diretório de destino inválido.".to_string())?;
+    if !parent.exists() {
+        fs::create_dir_all(parent).map_err(err)?;
+    }
+    let parent_canon = parent.canonicalize().map_err(err)?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(&parent_canon).map_err(err)?;
+    tmp.write_all(&request.bytes).map_err(err)?;
+    tmp.as_file().sync_all().map_err(err)?;
+    tmp.persist(&out_path).map_err(err)?;
+
+    if let Ok(meta) = fs::metadata(&src_path) {
+        if meta.len() != orig_len {
+            return Err("Alerta de integridade: o arquivo PSD original foi modificado.".into());
+        }
+    }
+
+    let file_size = validate_editable_psd_file(&out_path)?;
+    Ok(WriteScantechPsdResponse { file_size })
+}
+
 #[tauri::command]
 pub async fn export_scantech_psds(
     request: ScantechExportRequest,

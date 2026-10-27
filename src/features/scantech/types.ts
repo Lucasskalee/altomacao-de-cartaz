@@ -113,6 +113,8 @@ export type ScantechExportJob = {
   skewDeltaDeg?: number | null;
   safeLeftLimit?: number | null;
   safeRightLimit?: number | null;
+  horizontalScale?: number | null;
+  normalizedTransform?: [number, number, number, number, number, number] | null;
 };
 
 export type ScantechExportJobResult = {
@@ -131,7 +133,9 @@ export type ScantechExportJobResult = {
 };
 
 export type ScantechExportBatchResult = {
-  photoshopVersion: string | null;
+  photoshopVersion?: string | null;
+  directExport?: boolean;
+  engine?: string;
   results: ScantechExportJobResult[];
 };
 

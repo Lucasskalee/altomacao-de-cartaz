@@ -563,13 +563,8 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     setEditingItemId(null);
   };
 
-  const runPhotoshopExport = async (targetViews: ScantechItemView[]) => {
+  const runDirectExport = async (targetViews: ScantechItemView[]) => {
     if (!activeCampaign) return;
-    if (!photoshop?.available) {
-      throw new Error(
-        'O Adobe Photoshop não foi detectado no Windows. Instale ou configure o Photoshop antes de exportar arquivos PSD editáveis.'
-      );
-    }
     let exportFolder = activeCampaign.exportFolder;
     if (!exportFolder) {
       exportFolder = await chooseScantechExportFolder();
@@ -605,6 +600,8 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
         skewDeltaDeg: adjustment?.skewDeltaDeg ?? 0,
         safeLeftLimit: adjustment?.safeLeftLimit ?? 42,
         safeRightLimit: adjustment?.safeRightLimit ?? 0,
+        horizontalScale: adjustment?.horizontalScale ?? 1,
+        normalizedTransform: adjustment?.normalized ? adjustment.normalizedTransform : null,
       };
     });
 
@@ -632,7 +629,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
         return {
           ...item,
           status: 'erro-exportacao' as ScantechItemStatus,
-          exportError: res.error ?? 'Erro ao exportar PSD no Photoshop.',
+          exportError: res.error ?? 'Erro ao exportar PSD direto.',
         };
       }),
     };
@@ -643,9 +640,9 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
 
   return (
     <div className="offers-module scantech-module">
-      {/* Banner de Status do Photoshop */}
+      {/* Banner de Motor de Exportação PSD */}
       <div
-        className={photoshop?.available ? 'import-warning' : 'error-text'}
+        className="import-warning"
         style={{
           marginBottom: 14,
           display: 'flex',
@@ -656,32 +653,18 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
         role="status"
       >
         <div>
-          <strong>Photoshop (somente para exportação PSD editável):</strong>{' '}
-          {photoshop ? (
-            photoshop.available ? (
-              <span>
-                ● Conectado a <strong>{photoshop.productName}</strong> (v{photoshop.version}) · Modo:{' '}
-                <code>{photoshop.automationMode}</code> · <code>{photoshop.exePath}</code>
-              </span>
-            ) : (
-              <span>○ Indisponível — {photoshop.details}</span>
-            )
-          ) : (
-            <span>Verificando instalação do Adobe Photoshop no Windows…</span>
+          <strong>Exportação PSD:</strong> Modo Direto (ag-psd nativo, geração sem executar o Photoshop).
+          {photoshop?.available && (
+            <span style={{ marginLeft: 8, opacity: 0.9 }}>
+              · {photoshop.productName} detectado (disponível para conferência manual opcional).
+            </span>
           )}
         </div>
-        <button
-          type="button"
-          className="subtle"
-          onClick={() =>
-            run(async () => {
-              const st = await detectPhotoshop();
-              setPhotoshop(st);
-            })
-          }
-        >
-          Reverificar Photoshop
-        </button>
+        {photoshop?.available ? (
+          <span style={{ fontSize: '0.85rem', color: '#2e7d32' }}>✓ Photoshop CS6 pronto para conferência</span>
+        ) : (
+          <span style={{ fontSize: '0.85rem' }}>Geração 100% autônoma ativa</span>
+        )}
       </div>
 
       {loadErrors.map((err, idx) => (
@@ -948,16 +931,16 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                   Imprimir selecionados ({itemViews.filter(view => view.item.selected).length})
                 </button>
                 <button
-                  disabled={!photoshop?.available || counts.ready === 0}
+                  disabled={counts.ready === 0}
                   onClick={() =>
                     run(async () => {
                       const selectedReady = itemViews.filter(v => v.item.selected && v.canExport);
                       const targets = selectedReady.length > 0 ? selectedReady : itemViews.filter(v => v.canExport);
-                      await runPhotoshopExport(targets);
+                      await runDirectExport(targets);
                     })
                   }
                 >
-                  Exportar PSDs em Lote no Photoshop ({itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})
+                  Exportar PSDs em Lote ({itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})
                 </button>
               </div>
 
@@ -966,7 +949,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 <div className="import-warning" role="region" aria-label="Relatório de exportação PSD">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <strong>
-                      Relatório de Exportação Photoshop (v{exportReport.photoshopVersion ?? 'CS6'}):{' '}
+                      Relatório de Exportação PSD Direta:{' '}
                       {exportReport.results.filter(r => r.ok).length} concluído(s),{' '}
                       {exportReport.results.filter(r => !r.ok).length} falha(s)
                     </strong>
@@ -1286,8 +1269,8 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                                       </button>
                                       <button
                                         type="button"
-                                        disabled={!photoshop?.available || !v.canExport}
-                                        onClick={() => run(() => runPhotoshopExport([v]))}
+                                        disabled={!v.canExport}
+                                        onClick={() => run(() => runDirectExport([v]))}
                                       >
                                         Exportar PSD
                                       </button>
