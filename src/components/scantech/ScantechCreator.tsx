@@ -817,13 +817,13 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 <div>
                   <small style={{ display: 'block', fontWeight: 600 }}>Pasta de PSDs de origem:</small>
                   <code style={{ fontSize: 11, wordBreak: 'break-all' }}>
-                    {activeCampaign.psdSourceFolder || 'Biblioteca local (.skcartaz) / Seleção manual'}
+                    {activeCampaign.psdSourceFolder ? activeCampaign.psdSourceFolder.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/i, '') : 'Biblioteca local (.skcartaz) / Seleção manual'}
                   </code>
                 </div>
                 <div>
                   <small style={{ display: 'block', fontWeight: 600 }}>Pasta de exportação PSD:</small>
                   <code style={{ fontSize: 11, wordBreak: 'break-all' }}>
-                    {activeCampaign.exportFolder || 'Solicitar ao exportar'}
+                    {activeCampaign.exportFolder ? activeCampaign.exportFolder.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/i, '') : 'Solicitar ao exportar'}
                   </code>
                 </div>
               </div>

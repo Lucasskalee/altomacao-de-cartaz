@@ -1164,5 +1164,82 @@ test('Sprint 07.3 — Exportação em lote direta dos 14 produtos Scantech', {
   }
 });
 
+test('Sprint 07.3 — Gravação de PSD real e sobrescrita segura quando o destino já existe', {
+  skip: !candidatePsd,
+}, async () => {
+  const srcPsd = candidatePsd!;
+  const workDir = join(tmpdir(), `skalee-sprint073-overwrite-${Date.now()}`);
+  mkdirSync(workDir, { recursive: true });
+
+  const targetPsd = join(workDir, '29965-destino-existente.psd');
+  const origHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+
+  try {
+    const isGuarana = srcPsd === guaranaCandidate;
+    const jobV1 = {
+      itemId: 'item-overwrite-test',
+      f7: '29965',
+      description: 'REFRIGERANTE GUARANA ANTARCTICA 3L',
+      sourcePsdPath: srcPsd,
+      outputPsdPath: targetPsd,
+      wholeLayerId: '10',
+      fractionLayerId: '11',
+      decimalLayerId: '9',
+      fractionRuleLayerId: '8',
+      validityLayerId: isGuarana ? '13' : '13',
+      wholeValue: '11',
+      fractionValue: '19',
+      validityText: 'OFERTA VÁLIDA ATÉ 08/11',
+    };
+
+    // 1. Gravação inicial do PSD em pasta temporária
+    const res1 = await executeScantechDirectExportJob(jobV1);
+    assert.equal(res1.ok, true, `Gravação inicial falhou: ${res1.error}`);
+    assert.ok(existsSync(targetPsd), 'Arquivo de destino deve existir após primeira gravação.');
+    const bytes1 = readFileSync(targetPsd);
+    assert.equal(bytes1.subarray(0, 4).toString('ascii'), '8BPS', 'Assinatura 8BPS válida.');
+    assert.ok(bytes1.includes(Buffer.from('TySh')), 'Camadas de texto editáveis preservadas.');
+
+    const reopened1 = readPsd(bytes1, { skipLayerImageData: true, skipCompositeImageData: true });
+    assert.equal(reopened1.children?.[10]?.text?.text?.trim(), '11');
+    assert.equal(reopened1.children?.[11]?.text?.text?.trim(), '19');
+
+    // 2. Gravação sobre o arquivo JÁ EXISTENTE (sobrescrita segura com novos valores)
+    const jobV2 = {
+      ...jobV1,
+      wholeValue: '12',
+      fractionValue: '49',
+      validityText: 'OFERTA VÁLIDA ATÉ 15/11',
+    };
+
+    const res2 = await executeScantechDirectExportJob(jobV2);
+    assert.equal(res2.ok, true, `Sobrescrita sobre destino existente falhou: ${res2.error}`);
+    assert.ok(existsSync(targetPsd), 'Arquivo deve continuar existindo após sobrescrita.');
+    const bytes2 = readFileSync(targetPsd);
+    assert.equal(bytes2.subarray(0, 4).toString('ascii'), '8BPS');
+
+    const reopened2 = readPsd(bytes2, { skipLayerImageData: true, skipCompositeImageData: true });
+    assert.equal(reopened2.children?.[10]?.text?.text?.trim(), '12', 'Novo valor de reais gravado sobre o anterior.');
+    assert.equal(reopened2.children?.[11]?.text?.text?.trim(), '49', 'Novo valor de centavos gravado sobre o anterior.');
+    assert.equal(reopened2.children?.[13]?.text?.text?.trim(), 'OFERTA VÁLIDA ATÉ 15/11', 'Nova validade gravada sobre a anterior.');
+
+    // 3. Valida que o arquivo original continuou 100% inalterado
+    const afterHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+    assert.equal(afterHash, origHash, 'Arquivo PSD de origem permaneceu intacto.');
+
+    // 4. Valida proteção de segurança: não permite gravar sobre o PSD de origem
+    const jobOverSrc = {
+      ...jobV1,
+      outputPsdPath: srcPsd,
+    };
+    const resOverSrc = await executeScantechDirectExportJob(jobOverSrc);
+    assert.equal(resOverSrc.ok, false);
+    assert.ok(resOverSrc.error?.includes('Bloqueado por segurança'));
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+
 
 

@@ -98,6 +98,28 @@ fn err(e: impl std::fmt::Display) -> String {
     format!("Não foi possível concluir a operação Scantech: {e}")
 }
 
+pub(crate) fn clean_windows_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped))
+    } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+pub(crate) fn paths_point_to_same_file(p1: &Path, p2: &Path) -> bool {
+    let clean1 = clean_windows_path(p1);
+    let clean2 = clean_windows_path(p2);
+    if let (Ok(c1), Ok(c2)) = (clean1.canonicalize(), clean2.canonicalize()) {
+        return c1 == c2;
+    }
+    let s1 = clean1.to_string_lossy().replace('/', "\\").to_lowercase();
+    let s2 = clean2.to_string_lossy().replace('/', "\\").to_lowercase();
+    s1.trim_end_matches('\\') == s2.trim_end_matches('\\')
+}
+
 fn parse_registry_exe_path(raw: &str) -> Option<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -253,7 +275,7 @@ pub async fn choose_scantech_psd_folder() -> Result<Option<String>, String> {
     let Some(folder) = chosen else {
         return Ok(None);
     };
-    let path = folder.path().canonicalize().map_err(err)?;
+    let path = clean_windows_path(folder.path());
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -266,7 +288,7 @@ pub async fn choose_scantech_export_folder() -> Result<Option<String>, String> {
     let Some(folder) = chosen else {
         return Ok(None);
     };
-    let path = folder.path().canonicalize().map_err(err)?;
+    let path = clean_windows_path(folder.path());
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -1092,8 +1114,11 @@ pub struct WriteScantechPsdResponse {
 pub fn write_scantech_psd(
     request: WriteScantechPsdRequest,
 ) -> Result<WriteScantechPsdResponse, String> {
-    let out_path = PathBuf::from(&request.output_path);
-    let src_path = PathBuf::from(&request.source_psd_path);
+    let raw_out = PathBuf::from(&request.output_path);
+    let raw_src = PathBuf::from(&request.source_psd_path);
+
+    let out_path = clean_windows_path(&raw_out);
+    let src_path = clean_windows_path(&raw_src);
 
     if out_path
         .extension()
@@ -1111,14 +1136,7 @@ pub fn write_scantech_psd(
         ));
     }
 
-    if let (Ok(c_out), Ok(c_src)) = (out_path.canonicalize(), src_path.canonicalize()) {
-        if c_out == c_src {
-            return Err(
-                "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
-                    .into(),
-            );
-        }
-    } else if out_path == src_path {
+    if paths_point_to_same_file(&out_path, &src_path) {
         return Err(
             "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
                 .into(),
@@ -1133,7 +1151,8 @@ pub fn write_scantech_psd(
         return Err("Assinatura binária 8BPS ausente no arquivo exportado.".into());
     }
 
-    let orig_len = fs::metadata(&src_path).map_err(err)?.len();
+    let orig_meta = fs::metadata(&src_path).map_err(err)?;
+    let orig_len = orig_meta.len();
 
     let parent = out_path
         .parent()
@@ -1141,13 +1160,82 @@ pub fn write_scantech_psd(
     if !parent.exists() {
         fs::create_dir_all(parent).map_err(err)?;
     }
-    let parent_canon = parent.canonicalize().map_err(err)?;
 
-    let mut tmp = tempfile::NamedTempFile::new_in(&parent_canon).map_err(err)?;
-    tmp.write_all(&request.bytes).map_err(err)?;
-    tmp.as_file().sync_all().map_err(err)?;
-    tmp.persist(&out_path).map_err(err)?;
+    // 1. Cria nome de arquivo temporário exclusivo no próprio diretório de destino
+    let tmp_name = format!(
+        ".tmp_psd_export_{}_{}.tmp",
+        std::process::id(),
+        Uuid::new_v4().simple()
+    );
+    let tmp_path = parent.join(tmp_name);
 
+    // 2. Grava os bytes no arquivo temporário e fecha o descritor explicitamente (Drop)
+    {
+        let mut tmp_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .map_err(err)?;
+        tmp_file.write_all(&request.bytes).map_err(err)?;
+        tmp_file.sync_all().map_err(err)?;
+    } // O handle do arquivo temporário é fechado de forma garantida antes da renomeação
+
+    // 3. Se o arquivo de destino já existe, remove flag de somente-leitura se presente
+    if out_path.exists() {
+        if let Ok(meta) = fs::metadata(&out_path) {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                let _ = fs::set_permissions(&out_path, perms);
+            }
+        }
+    }
+
+    // 4. Renomeação atômica com repetição para contornar bloqueios transitórios
+    // (ex: antivírus/Windows Defender ou indexador de arquivos do Desktop no Windows)
+    let mut renamed = false;
+    let mut last_io_err = None;
+
+    for attempt in 0..8 {
+        match fs::rename(&tmp_path, &out_path) {
+            Ok(_) => {
+                renamed = true;
+                break;
+            }
+            Err(e) => {
+                let code = e.raw_os_error();
+                // 5: ERROR_ACCESS_DENIED, 32: ERROR_SHARING_VIOLATION
+                if code == Some(5) || code == Some(32) {
+                    if attempt >= 2 && out_path.exists() {
+                        let _ = fs::remove_file(&out_path);
+                    }
+                    std::thread::sleep(Duration::from_millis(40 * (attempt + 1) as u64));
+                    last_io_err = Some(e);
+                } else {
+                    last_io_err = Some(e);
+                    break;
+                }
+            }
+        }
+    }
+
+    if !renamed {
+        // Fallback: se rename falhar (ex: restrições especiais de volume), tenta cópia + exclusão
+        match fs::copy(&tmp_path, &out_path) {
+            Ok(_) => {
+                let _ = fs::remove_file(&tmp_path);
+            }
+            Err(copy_err) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!(
+                    "Não foi possível persistir arquivo PSD de destino: {}",
+                    last_io_err.unwrap_or(copy_err)
+                ));
+            }
+        }
+    }
+
+    // 5. Verificação de integridade: assegura que o arquivo de origem nunca foi modificado
     if let Ok(meta) = fs::metadata(&src_path) {
         if meta.len() != orig_len {
             return Err("Alerta de integridade: o arquivo PSD original foi modificado.".into());
@@ -1218,5 +1306,52 @@ mod tests {
         let res = validate_export_job(&job);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Bloqueado por segurança"));
+    }
+
+    #[test]
+    fn test_write_scantech_psd_disk_and_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_psd = dir.path().join("orig_template.psd");
+        let out_psd = dir.path().join("export_result.psd");
+
+        // Cria estrutura de PSD válido (8BPS, modo RGB 3, 300 DPI, TySh)
+        let mut valid_psd = b"8BPS\x00\x01\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x06\xea\x00\x00\x04\x9b\x00\x08\x00\x03".to_vec();
+        valid_psd.resize(1024, 0);
+        valid_psd[120..124].copy_from_slice(b"TySh");
+        fs::write(&src_psd, &valid_psd).unwrap();
+
+        let req1 = WriteScantechPsdRequest {
+            output_path: out_psd.to_string_lossy().into_owned(),
+            source_psd_path: src_psd.to_string_lossy().into_owned(),
+            bytes: valid_psd.clone(),
+        };
+
+        // 1. Gravação inicial em disco
+        let res1 = write_scantech_psd(req1);
+        assert!(res1.is_ok(), "Gravação inicial deve ter sucesso: {:?}", res1.err());
+        assert!(out_psd.exists());
+        assert_eq!(res1.unwrap().file_size, 1024);
+
+        // 2. Gravação sobre arquivo já existente (sobrescrita segura no destino)
+        let mut updated_psd = valid_psd.clone();
+        updated_psd.resize(2048, 0);
+        let req2 = WriteScantechPsdRequest {
+            output_path: out_psd.to_string_lossy().into_owned(),
+            source_psd_path: src_psd.to_string_lossy().into_owned(),
+            bytes: updated_psd,
+        };
+        let res2 = write_scantech_psd(req2);
+        assert!(res2.is_ok(), "Sobrescrita com destino existente deve ter sucesso: {:?}", res2.err());
+        assert_eq!(res2.unwrap().file_size, 2048);
+
+        // 3. Bloqueio ao tentar sobrescrever o arquivo original
+        let req_block = WriteScantechPsdRequest {
+            output_path: src_psd.to_string_lossy().into_owned(),
+            source_psd_path: src_psd.to_string_lossy().into_owned(),
+            bytes: valid_psd,
+        };
+        let res_block = write_scantech_psd(req_block);
+        assert!(res_block.is_err());
+        assert!(res_block.unwrap_err().contains("Bloqueado por segurança"));
     }
 }

@@ -557,7 +557,10 @@ export function buildPrintableScantechPosters(
 }
 
 export function buildOutputPsdPath(exportFolder: string, item: ScantechItem): string {
-  const cleanFolder = exportFolder.replace(/[\\/]+$/, '');
+  const cleanFolder = exportFolder
+    .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+    .replace(/^\\\\\?\\/i, '')
+    .replace(/[\\/]+$/, '');
   const baseSlug = (item.sourcePsdName ? item.sourcePsdName.replace(/\.psd$/i, '') : item.description)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
