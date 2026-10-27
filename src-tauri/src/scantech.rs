@@ -52,10 +52,16 @@ pub struct ScantechExportJob {
     pub output_psd_path: String,
     pub whole_layer_id: String,
     pub fraction_layer_id: String,
+    pub decimal_layer_id: Option<String>,
+    pub fraction_rule_layer_id: Option<String>,
     pub validity_layer_id: Option<String>,
     pub whole_value: String,
     pub fraction_value: String,
     pub validity_text: Option<String>,
+    pub rotate_delta_deg: Option<f64>,
+    pub skew_delta_deg: Option<f64>,
+    pub safe_left_limit: Option<f64>,
+    pub safe_right_limit: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +82,8 @@ pub struct ScantechExportJobResult {
     pub whole_applied: Option<String>,
     pub fraction_applied: Option<String>,
     pub validity_applied: Option<String>,
+    pub horizontal_scale_applied: Option<f64>,
+    pub normalized_transform: Option<bool>,
     pub file_size: Option<u64>,
 }
 
@@ -599,12 +607,19 @@ fn generate_batch_jsx(jobs: &[(ScantechExportJob, PathBuf, PathBuf)], status_fil
         let f7 = escape_jsx_string(&job.f7);
         let whole_id = escape_jsx_string(&job.whole_layer_id);
         let frac_id = escape_jsx_string(&job.fraction_layer_id);
+        let dec_id = escape_jsx_string(job.decimal_layer_id.as_deref().unwrap_or(""));
+        let rule_id = escape_jsx_string(job.fraction_rule_layer_id.as_deref().unwrap_or(""));
         let val_id = escape_jsx_string(job.validity_layer_id.as_deref().unwrap_or(""));
         let whole_val = escape_jsx_string(&job.whole_value);
         let frac_val = escape_jsx_string(&job.fraction_value);
         let val_text = escape_jsx_string(job.validity_text.as_deref().unwrap_or(""));
+        let rot_delta = job.rotate_delta_deg.unwrap_or(0.0);
+        let skew_delta = job.skew_delta_deg.unwrap_or(0.0);
+        let safe_left = job.safe_left_limit.unwrap_or(42.0);
+        let safe_right = job.safe_right_limit.unwrap_or(0.0);
+
         jobs_js.push_str(&format!(
-            "{{itemId:\"{item_id}\",f7:\"{f7}\",src:\"{src_str}\",dst:\"{dst_str}\",wholeId:\"{whole_id}\",fractionId:\"{frac_id}\",validityId:\"{val_id}\",wholeVal:\"{whole_val}\",fractionVal:\"{frac_val}\",validityText:\"{val_text}\"}},\n"
+            "{{itemId:\"{item_id}\",f7:\"{f7}\",src:\"{src_str}\",dst:\"{dst_str}\",wholeId:\"{whole_id}\",fractionId:\"{frac_id}\",decimalId:\"{dec_id}\",ruleId:\"{rule_id}\",validityId:\"{val_id}\",wholeVal:\"{whole_val}\",fractionVal:\"{frac_val}\",validityText:\"{val_text}\",rotDelta:{rot_delta},skewDelta:{skew_delta},safeLeft:{safe_left},safeRight:{safe_right}}},\n"
         ));
     }
 
@@ -619,7 +634,6 @@ function resolveLayerByPath(container, pathStr) {{
   for (var i = 0; i < parts.length; i++) {{
     var idx = parseInt(parts[i], 10);
     if (isNaN(idx) || !current.layers || idx < 0 || idx >= current.layers.length) return null;
-    // ag-psd enumera psd.children de baixo para cima (0 = fundo), enquanto Photoshop DOM doc.layers enumera de cima para baixo (0 = topo)
     var domIdx = current.layers.length - 1 - idx;
     var layer = current.layers[domIdx];
     if (i === parts.length - 1) return layer;
@@ -631,6 +645,63 @@ function resolveLayerByPath(container, pathStr) {{
 function jsonEscape(str) {{
   if (str === null || str === undefined) return "";
   return String(str).replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+}}
+
+function applyActionTrnf(layer, angleDeg, skewH) {{
+  if (angleDeg === 0 && skewH === 0) return;
+  app.activeDocument.activeLayer = layer;
+  var desc = new ActionDescriptor();
+  var ref = new ActionReference();
+  ref.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+  desc.putReference(charIDToTypeID("null"), ref);
+  desc.putEnumerated(charIDToTypeID("FTcs"), charIDToTypeID("QCSt"), charIDToTypeID("Qcsa"));
+  var offsetDesc = new ActionDescriptor();
+  offsetDesc.putUnitDouble(charIDToTypeID("Hrzn"), charIDToTypeID("#Pxl"), 0.0);
+  offsetDesc.putUnitDouble(charIDToTypeID("Vrtc"), charIDToTypeID("#Pxl"), 0.0);
+  desc.putObject(charIDToTypeID("Ofst"), charIDToTypeID("Ofst"), offsetDesc);
+  if (skewH !== 0) {{
+    var skewDesc = new ActionDescriptor();
+    skewDesc.putUnitDouble(charIDToTypeID("Hrzn"), charIDToTypeID("#Ang"), skewH);
+    skewDesc.putUnitDouble(charIDToTypeID("Vrtc"), charIDToTypeID("#Ang"), 0.0);
+    desc.putObject(charIDToTypeID("Skew"), charIDToTypeID("Pnt "), skewDesc);
+  }}
+  if (angleDeg !== 0) {{
+    desc.putUnitDouble(charIDToTypeID("Angl"), charIDToTypeID("#Ang"), angleDeg);
+  }}
+  executeAction(charIDToTypeID("Trnf"), desc, DialogModes.NO);
+}}
+
+function readTextTransform(layer) {{
+  try {{
+    app.activeDocument.activeLayer = layer;
+    var ref = new ActionReference();
+    ref.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+    var desc = executeActionGet(ref);
+    if (!desc.hasKey(stringIDToTypeID("textKey"))) return null;
+    var tk = desc.getObjectValue(stringIDToTypeID("textKey"));
+    if (tk.hasKey(stringIDToTypeID("transform"))) {{
+      var tr = tk.getObjectValue(stringIDToTypeID("transform"));
+      return [
+        tr.getDouble(stringIDToTypeID("xx")),
+        tr.getDouble(stringIDToTypeID("xy")),
+        tr.getDouble(stringIDToTypeID("yx")),
+        tr.getDouble(stringIDToTypeID("yy"))
+      ];
+    }}
+  }} catch (_) {{}}
+  return null;
+}}
+
+function findFirstVisibleLayer(container, pattern) {{
+  if (!container || !container.layers) return null;
+  for (var i = 0; i < container.layers.length; i++) {{
+    var l = container.layers[i];
+    if (l.visible) {{
+      if (l.kind == LayerKind.TEXT && pattern.test(l.textItem.contents)) return l;
+      if (pattern.test(l.name)) return l;
+    }}
+  }}
+  return null;
 }}
 
 var jobs = [
@@ -656,17 +727,105 @@ for (var j = 0; j < jobs.length; j++) {{
     if (!fractionLayer || fractionLayer.kind != LayerKind.TEXT) {{
       throw new Error("Camada de Centavos (" + job.fractionId + ") nao e uma camada de texto editavel.");
     }}
+
+    var origWholeBounds = [wholeLayer.bounds[0].as("px"), wholeLayer.bounds[1].as("px"), wholeLayer.bounds[2].as("px"), wholeLayer.bounds[3].as("px")];
+    var origHScale = (wholeLayer.textItem && typeof wholeLayer.textItem.horizontalScale === "number") ? wholeLayer.textItem.horizontalScale : 100.0;
+    var origWholeText = wholeLayer.textItem.contents;
+
+    var commaLayer = resolveLayerByPath(doc, job.decimalId);
+    if (!commaLayer) commaLayer = findFirstVisibleLayer(doc, /^,$/);
+    var ruleLayer = resolveLayerByPath(doc, job.ruleId);
+    if (!ruleLayer) ruleLayer = findFirstVisibleLayer(doc, /rectangle\s*3|linha.*cent/i);
+
+    var fracLeft = fractionLayer.bounds[0].as("px");
+    var minObstacleLeft = fracLeft;
+    if (commaLayer && commaLayer.visible) {{
+      var cLeft = commaLayer.bounds[0].as("px");
+      if (cLeft > origWholeBounds[0] && cLeft < minObstacleLeft) minObstacleLeft = cLeft;
+    }}
+    if (ruleLayer && ruleLayer.visible) {{
+      var rLeft = ruleLayer.bounds[0].as("px");
+      if (rLeft > origWholeBounds[0] && rLeft < minObstacleLeft) minObstacleLeft = rLeft;
+    }}
+
+    var safeRight = job.safeRight > 0 ? job.safeRight : Math.min(minObstacleLeft - 18, Math.max(origWholeBounds[2], minObstacleLeft - 24));
+    var safeLeft = job.safeLeft > 0 ? job.safeLeft : Math.min(42, Math.max(16, Math.round(origWholeBounds[0] * 0.5)));
+    var availableWidth = Math.max(120, safeRight - safeLeft);
+
+    var rotDelta = job.rotDelta;
+    var skewDelta = job.skewDelta;
+    var normalizedTransformApplied = false;
+
+    if (rotDelta === 0 && skewDelta === 0) {{
+      var tr = readTextTransform(wholeLayer);
+      if (tr) {{
+        var xx = tr[0], xy = tr[1], yx = tr[2], yy = tr[3];
+        var rotDeg = Math.atan2(xy, xx) * 180 / Math.PI;
+        var skewDeg = Math.atan2(yx, yy) * 180 / Math.PI;
+        var netCounter = skewDeg - rotDeg;
+        var isOnes = /^1{{2,}}$/.test(job.wholeVal);
+        if (isOnes && (Math.abs(rotDeg) > 0.8 || netCounter < 13.5)) {{
+          rotDelta = Math.abs(rotDeg) > 0.8 ? -rotDeg : 0;
+          var afterRot = skewDeg - rotDelta;
+          var targetSkew = Math.min(17.5, Math.max(afterRot, 15.6));
+          skewDelta = targetSkew - afterRot;
+        }} else if (Math.abs(rotDeg) > 1.5) {{
+          rotDelta = -rotDeg;
+          var afterRot = skewDeg - rotDelta;
+          var targetSkew = Math.min(14.5, Math.max(7.5, afterRot));
+          skewDelta = targetSkew - afterRot;
+        }}
+      }}
+    }}
+
+    if (Math.abs(rotDelta) > 0.1 || Math.abs(skewDelta) > 0.2) {{
+      if (Math.abs(rotDelta) > 0.1) applyActionTrnf(wholeLayer, rotDelta, 0);
+      if (Math.abs(skewDelta) > 0.2) applyActionTrnf(wholeLayer, 0, skewDelta);
+      normalizedTransformApplied = true;
+    }}
+
     wholeLayer.textItem.contents = job.wholeVal;
+    var currentB = [wholeLayer.bounds[0].as("px"), wholeLayer.bounds[1].as("px"), wholeLayer.bounds[2].as("px"), wholeLayer.bounds[3].as("px")];
+    var currentW = currentB[2] - currentB[0];
+    var appliedHScale = origHScale;
+
+    if (currentW > availableWidth) {{
+      var scaleRatio = availableWidth / currentW;
+      if (scaleRatio < 0.48) {{
+        throw new Error("Preco R$ " + job.wholeVal + "," + job.fractionVal + " ultrapassa o limite seguro de reducao horizontal (" + Math.round(scaleRatio * 100) + "% < 48%) para a area util do cartaz.");
+      }}
+      appliedHScale = origHScale * scaleRatio;
+      wholeLayer.textItem.horizontalScale = appliedHScale;
+      currentB = [wholeLayer.bounds[0].as("px"), wholeLayer.bounds[1].as("px"), wholeLayer.bounds[2].as("px"), wholeLayer.bounds[3].as("px")];
+      if (currentB[2] - currentB[0] > availableWidth) {{
+        appliedHScale = appliedHScale * (availableWidth / (currentB[2] - currentB[0]));
+        wholeLayer.textItem.horizontalScale = appliedHScale;
+        currentB = [wholeLayer.bounds[0].as("px"), wholeLayer.bounds[1].as("px"), wholeLayer.bounds[2].as("px"), wholeLayer.bounds[3].as("px")];
+      }}
+    }}
+
+    var renderedW = currentB[2] - currentB[0];
+    var targetRight = Math.min(safeRight, Math.max(origWholeBounds[2], origWholeBounds[0] + renderedW));
+    var dx = targetRight - currentB[2];
+    if (currentB[0] + dx < safeLeft) {{
+      dx = safeLeft - currentB[0];
+    }}
+    if (Math.abs(dx) >= 0.5) {{
+      wholeLayer.translate(new UnitValue(dx, "px"), new UnitValue(0, "px"));
+    }}
+
     fractionLayer.textItem.contents = job.fractionVal;
 
     var validityApplied = "";
-    if (job.validityId && job.validityText) {{
+    if (job.validityText) {{
       var validityLayer = resolveLayerByPath(doc, job.validityId);
-      if (!validityLayer || validityLayer.kind != LayerKind.TEXT) {{
-        throw new Error("Camada de Validade (" + job.validityId + ") nao e uma camada de texto editavel.");
+      if (!validityLayer || !validityLayer.visible) {{
+        validityLayer = findFirstVisibleLayer(doc, /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i);
       }}
-      validityLayer.textItem.contents = job.validityText;
-      validityApplied = validityLayer.textItem.contents;
+      if (validityLayer && validityLayer.visible && validityLayer.kind == LayerKind.TEXT) {{
+        validityLayer.textItem.contents = job.validityText;
+        validityApplied = validityLayer.textItem.contents;
+      }}
     }}
 
     var saveOpts = new PhotoshopSaveOptions();
@@ -683,9 +842,19 @@ for (var j = 0; j < jobs.length; j++) {{
     var wholeRead = (vWhole && vWhole.kind == LayerKind.TEXT) ? vWhole.textItem.contents : "";
     var fracRead = (vFrac && vFrac.kind == LayerKind.TEXT) ? vFrac.textItem.contents : "";
     var valRead = "";
-    if (job.validityId && job.validityText) {{
+    if (job.validityText) {{
       var vVal = resolveLayerByPath(verifyDoc, job.validityId);
+      if (!vVal || !vVal.visible) vVal = findFirstVisibleLayer(verifyDoc, /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i);
       valRead = (vVal && vVal.kind == LayerKind.TEXT) ? vVal.textItem.contents : "";
+    }}
+
+    if (vWhole && vFrac) {{
+      var vWholeRight = vWhole.bounds[2].as("px");
+      var vFracLeft = vFrac.bounds[0].as("px");
+      if (vWholeRight > vFracLeft) {{
+        verifyDoc.close(SaveOptions.DONOTSAVECHANGES);
+        throw new Error("Inconsistencia geometrica: camada de Reais colidiu com Centavos (Reais=" + vWholeRight + " > Centavos=" + vFracLeft + ").");
+      }}
     }}
     verifyDoc.close(SaveOptions.DONOTSAVECHANGES);
 
@@ -695,7 +864,9 @@ for (var j = 0; j < jobs.length; j++) {{
       '","ok":true,"outputPsdPath":"' + jsonEscape(job.dst) +
       '","wholeApplied":"' + jsonEscape(wholeRead) +
       '","fractionApplied":"' + jsonEscape(fracRead) +
-      '","validityApplied":"' + jsonEscape(valRead) + '"}}'
+      '","validityApplied":"' + jsonEscape(valRead) +
+      '","horizontalScaleApplied":' + appliedHScale.toFixed(2) +
+      ',"normalizedTransform":' + (normalizedTransformApplied ? "true" : "false") + '}}'
     );
   }} catch (err) {{
     if (doc != null) {{
@@ -747,6 +918,8 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
                     whole_applied: None,
                     fraction_applied: None,
                     validity_applied: None,
+                    horizontal_scale_applied: None,
+                    normalized_transform: None,
                     file_size: None,
                 });
             }
@@ -831,6 +1004,8 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
                     whole_applied: None,
                     fraction_applied: None,
                     validity_applied: None,
+                    horizontal_scale_applied: None,
+                    normalized_transform: None,
                     file_size: None,
                 });
                 continue;
@@ -839,6 +1014,8 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
             let whole_applied = entry["wholeApplied"].as_str().map(|s| s.trim().to_string());
             let fraction_applied = entry["fractionApplied"].as_str().map(|s| s.trim().to_string());
             let validity_applied = entry["validityApplied"].as_str().map(|s| s.trim().to_string());
+            let horizontal_scale_applied = entry["horizontalScaleApplied"].as_f64();
+            let normalized_transform = entry["normalizedTransform"].as_bool();
 
             // Valida estrutura binária do PSD gerado (garante 8BPS + camadas + TySh)
             let dst_path = Path::new(&out_path);
@@ -854,6 +1031,8 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
                         whole_applied,
                         fraction_applied,
                         validity_applied,
+                        horizontal_scale_applied,
+                        normalized_transform,
                         file_size: Some(file_size),
                     });
                 }
@@ -868,6 +1047,8 @@ pub fn run_scantech_export_batch(request: ScantechExportRequest) -> Result<Scant
                         whole_applied,
                         fraction_applied,
                         validity_applied,
+                        horizontal_scale_applied,
+                        normalized_transform,
                         file_size: None,
                     });
                 }
@@ -939,10 +1120,16 @@ mod tests {
             output_psd_path: orig.to_string_lossy().into_owned(),
             whole_layer_id: "10".into(),
             fraction_layer_id: "11".into(),
+            decimal_layer_id: None,
+            fraction_rule_layer_id: None,
             validity_layer_id: Some("13".into()),
             whole_value: "4".into(),
             fraction_value: "99".into(),
             validity_text: Some("OFERTA VÁLIDA ATÉ 30/10".into()),
+            rotate_delta_deg: None,
+            skew_delta_deg: None,
+            safe_left_limit: None,
+            safe_right_limit: None,
         };
         let res = validate_export_job(&job);
         assert!(res.is_err());

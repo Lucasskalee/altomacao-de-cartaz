@@ -12,10 +12,13 @@ import { splitCentsToParts } from '../src/features/cartazes/presentation';
 import { indexCartazes } from '../src/features/cartazes/f7';
 import {
   applyValidityDateToLayerText,
+  detectHeaderRowIndex,
   extractCampaignItemsFromSheet,
   parseExcelDateToIso,
+  parseXlsx,
   suggestColumnMapping,
 } from '../src/features/ofertas/excel';
+import { computeWholePriceAdjustment } from '../src/components/editor/importedRenderer';
 import {
   applyExcelToScantechCampaign,
   buildOutputPsdPath,
@@ -398,3 +401,113 @@ try {
     }
   }
 );
+
+test('Sprint 07.1 — Importação de planilha Scantech real (codico, SCANTEH, Data até, DE, POR)', () => {
+  const headers = ['codico', 'SCANTEH', 'Data até', 'DE', 'POR'];
+  assert.equal(detectHeaderRowIndex([['', ''], headers]), 1);
+  const mapping = suggestColumnMapping(headers);
+  assert.equal(mapping.f7Col, 0);
+  assert.equal(mapping.descriptionCol, 1);
+  assert.equal(mapping.endDateCol, 2);
+  assert.equal(mapping.previousPriceCol, 3);
+  assert.equal(mapping.priceCol, 4);
+
+  const sheet = {
+    name: 'Scantech',
+    rows: [
+      headers,
+      // F7 29965: Guaraná Antarctica 3L (DE R$ 12,49, POR R$ 11,19)
+      ['29965', 'REFRIGERANTE GUARANA ANTARTICA TRADICIONAL 3L', '46334', '12.49', '11.19'],
+      // Float cell IEEE-754 e moeda formatada
+      ['14157', 'CERVEJA BUDWEISER LATA 350ML', '08/11/2026', 'R$ 4,69', '4.3899999999999997'],
+      // Serial date 46355 = 2026-11-29
+      ['36210', 'CERVEJA CORONA EXTRA LATA 350ML', '46355', '6.89', '4.6900000000000004'],
+    ],
+  };
+
+  const extraction = extractCampaignItemsFromSheet(sheet, 0, mapping);
+  assert.equal(extraction.validCount, 3);
+  assert.equal(extraction.invalidCount, 0);
+
+  const item1 = extraction.items[0];
+  assert.equal(item1.f7, '29965');
+  assert.equal(item1.endDateIso, '2026-11-08');
+  assert.equal(item1.previousPriceCents, 1249);
+  assert.equal(item1.priceCents, 1119);
+
+  const item2 = extraction.items[1];
+  assert.equal(item2.f7, '14157');
+  assert.equal(item2.previousPriceCents, 469);
+  assert.equal(item2.priceCents, 439);
+
+  const item3 = extraction.items[2];
+  assert.equal(item3.f7, '36210');
+  assert.equal(item3.endDateIso, '2026-11-29');
+  assert.equal(item3.previousPriceCents, 689);
+  assert.equal(item3.priceCents, 469);
+});
+
+test('Sprint 07.1 — Transformação geométrica e ajuste automático de preço no Guaraná Antarctica 3L (refrigerante sukita laranja 2l.psd)', {
+  skip: !existsSync('C:/Users/Supermercado Sol/Desktop/SCANTECH/refrigerante sukita laranja 2l.psd'),
+}, async () => {
+  const srcPsd = 'C:/Users/Supermercado Sol/Desktop/SCANTECH/refrigerante sukita laranja 2l.psd';
+  const raw = readFileSync(srcPsd);
+  const origHash = createHash('sha256').update(raw).digest('hex');
+  const buffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+
+  const fakeCanvas = (w = 1179, h = 1770): any => ({
+    width: w,
+    height: h,
+    getContext: () => ({
+      clearRect() {}, save() {}, restore() {}, drawImage() {}, putImageData() {},
+      getImageData: () => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h }),
+    }),
+    toDataURL: () => pixel,
+  });
+  initializeCanvas(fakeCanvas, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => fakeCanvas() } });
+
+  try {
+    const analysis = await analyzePsd(buffer, 'refrigerante sukita laranja 2l.psd', srcPsd);
+    const artwork = buildArtwork(analysis, analysis.suggested);
+
+    // 1. Analisa a matriz original da camada de reais ("6")
+    const wholePart = artwork.priceParts.find(p => p.role === 'whole')!;
+    assert.ok(wholePart.transform);
+    const [xx, xy, yx, yy] = wholePart.transform;
+    const origRotDeg = Math.atan2(xy, xx) * 180 / Math.PI;
+    const origSkewDeg = Math.atan2(yx, yy) * 180 / Math.PI;
+    assert.ok(Math.abs(origRotDeg - 6.17) < 0.2, `Rotação esperada ~6.17°, obtida ${origRotDeg}°`);
+    assert.ok(Math.abs(origSkewDeg - 7.13) < 0.2, `Skew esperado ~7.13°, obtido ${origSkewDeg}°`);
+
+    // 2. Substituição por "11" (R$ 11,99 e R$ 11,19): normalização de rotação e cisalhamento
+    const adj11 = computeWholePriceAdjustment(artwork, '11');
+    assert.equal(adj11.normalized, true);
+    assert.ok(Math.abs(adj11.rotateDeltaDeg - (-origRotDeg)) < 0.2);
+    assert.ok(adj11.targetSkewDeg >= 15.0 && adj11.targetSkewDeg <= 17.5);
+    assert.ok(adj11.fitsWithinSafeLimit);
+    assert.ok(adj11.horizontalScale >= 0.70 && adj11.horizontalScale <= 0.95);
+
+    // 3. Substituição por 1 dígito ("6"): preserva escala 100%
+    const adj6 = computeWholePriceAdjustment(artwork, '6');
+    assert.equal(adj6.horizontalScale, 1.0);
+    assert.ok(adj6.fitsWithinSafeLimit);
+
+    // 4. Substituição por 3 dígitos ("119"): cabe dentro do limite seguro
+    const adj119 = computeWholePriceAdjustment(artwork, '119');
+    assert.ok(adj119.fitsWithinSafeLimit);
+    assert.ok(adj119.horizontalScale >= 0.48);
+
+    // 5. Substituição por 5 dígitos ("99999"): ultrapassa limite seguro e bloqueia
+    const adjBlocked = computeWholePriceAdjustment(artwork, '99999');
+    assert.equal(adjBlocked.fitsWithinSafeLimit, false);
+
+    // 6. Confirma que o PSD original continuou 100% intacto
+    const afterHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+    assert.equal(afterHash, origHash);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});

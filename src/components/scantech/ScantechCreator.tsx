@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView } from '../editor/PosterView';
-import { repairInvertedPsdArtwork } from '../editor/importedRenderer';
+import { computeWholePriceAdjustment, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { formatCentsBr } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
 import { saveDocument } from '../../features/cartazes/storage';
@@ -8,6 +8,7 @@ import type { Cartaz, ImportedArtwork, ImportedLayerInfo, Library as LibraryData
 import {
   applyValidityDateToLayerText,
   columnLetter,
+  detectHeaderRowIndex,
   extractCampaignItemsFromSheet,
   formatIsoDateShortBr,
   parseExcelDateToIso,
@@ -221,8 +222,10 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
     const wb = parseXlsx(selected.buffer, selected.name);
     setWorkbook(wb);
     setSheetIdx(0);
-    setHeaderRow(0);
-    const headers = wb.sheets[0]?.rows[0] ?? [];
+    const initialSheet = wb.sheets[0];
+    const autoHeader = initialSheet ? detectHeaderRowIndex(initialSheet.rows) : 0;
+    setHeaderRow(autoHeader);
+    const headers = initialSheet?.rows[autoHeader] ?? [];
     setMapping(suggestColumnMapping(headers));
   };
 
@@ -453,19 +456,28 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
     }
 
     const readyViews = targetViews.filter(v => v.canExport);
-    const jobs: ScantechExportJob[] = readyViews.map(v => ({
-      itemId: v.item.id,
-      f7: v.item.f7,
-      description: v.item.description,
-      sourcePsdPath: v.item.sourcePsdPath!,
-      outputPsdPath: buildOutputPsdPath(exportFolder!, v.item),
-      wholeLayerId: v.item.wholeLayerId!,
-      fractionLayerId: v.item.fractionLayerId!,
-      validityLayerId: v.item.validityLayerId,
-      wholeValue: v.wholeValue,
-      fractionValue: v.fractionValue,
-      validityText: v.resolvedValidityText,
-    }));
+    const jobs: ScantechExportJob[] = readyViews.map(v => {
+      const adjustment = v.artwork ? computeWholePriceAdjustment(v.artwork, v.wholeValue) : null;
+      return {
+        itemId: v.item.id,
+        f7: v.item.f7,
+        description: v.item.description,
+        sourcePsdPath: v.item.sourcePsdPath!,
+        outputPsdPath: buildOutputPsdPath(exportFolder!, v.item),
+        wholeLayerId: v.item.wholeLayerId!,
+        fractionLayerId: v.item.fractionLayerId!,
+        decimalLayerId: v.item.decimalLayerId,
+        fractionRuleLayerId: v.item.fractionRuleLayerId,
+        validityLayerId: v.item.validityLayerId,
+        wholeValue: v.wholeValue,
+        fractionValue: v.fractionValue,
+        validityText: v.resolvedValidityText,
+        rotateDeltaDeg: adjustment?.rotateDeltaDeg ?? 0,
+        skewDeltaDeg: adjustment?.skewDeltaDeg ?? 0,
+        safeLeftLimit: adjustment?.safeLeftLimit ?? 42,
+        safeRightLimit: adjustment?.safeRightLimit ?? 0,
+      };
+    });
 
     const batchResult = await exportScantechPsds(jobs);
     setExportReport(batchResult);
@@ -812,7 +824,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                           <th>Sel.</th>
                           <th>F7</th>
                           <th>Produto / Arte PSD</th>
-                          <th>Preço (Reais / Cent.)</th>
+                          <th>Preço (DE / POR)</th>
                           <th>Texto de Validade</th>
                           <th>Status / Ações</th>
                         </tr>
@@ -886,6 +898,11 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                                 ) : (
                                   <div>
                                     <strong>{money(v.item.priceCents)}</strong>
+                                    {v.item.previousPriceCents && (
+                                      <small style={{ display: 'block', fontSize: 11, opacity: 0.8 }}>
+                                        DE: <del>{money(v.item.previousPriceCents)}</del>
+                                      </small>
+                                    )}
                                     <small style={{ display: 'block', fontSize: 11 }}>
                                       Reais: <code>{v.wholeValue}</code> | Cent: <code>{v.fractionValue}</code>
                                     </small>
@@ -1100,10 +1117,10 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
               {(['f7Col', 'descriptionCol', 'priceCol'] as const).map(colKey => (
                 <label key={colKey}>
                   {colKey === 'f7Col'
-                    ? 'Coluna F7'
+                    ? 'Coluna F7 (Código)'
                     : colKey === 'descriptionCol'
-                      ? 'Coluna Descrição'
-                      : 'Coluna Preço'}
+                      ? 'Coluna Descrição (SCANTECH)'
+                      : 'Coluna Preço Programado (POR)'}
                   <select
                     value={mapping[colKey]}
                     onChange={e => setMapping(prev => ({ ...prev, [colKey]: Number(e.target.value) }))}
@@ -1116,6 +1133,24 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary }: Props) {
                   </select>
                 </label>
               ))}
+
+              <label>
+                Coluna Preço Anterior DE (opcional)
+                <select
+                  value={mapping.previousPriceCol ?? -1}
+                  onChange={e => {
+                    const v = Number(e.target.value);
+                    setMapping(prev => ({ ...prev, previousPriceCol: v >= 0 ? v : null }));
+                  }}
+                >
+                  <option value={-1}>Não mapear (sem preço DE)</option>
+                  {(activeSheet.rows[headerRow] ?? []).map((h, i) => (
+                    <option key={i} value={i}>
+                      Coluna {columnLetter(i)} — {h || '(sem título)'}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               <label>
                 Coluna Data Inicial (opcional)

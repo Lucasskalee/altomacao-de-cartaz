@@ -25,6 +25,7 @@ export type ScantechItem = {
   f7: string;
   description: string;
   priceCents: number;
+  previousPriceCents?: number | null;
   startDateIso: string | null;
   endDateIso: string | null;
   customValidityText: string | null;
@@ -88,10 +89,16 @@ export type ScantechExportJob = {
   outputPsdPath: string;
   wholeLayerId: string;
   fractionLayerId: string;
+  decimalLayerId?: string | null;
+  fractionRuleLayerId?: string | null;
   validityLayerId?: string | null;
   wholeValue: string;
   fractionValue: string;
   validityText?: string | null;
+  rotateDeltaDeg?: number | null;
+  skewDeltaDeg?: number | null;
+  safeLeftLimit?: number | null;
+  safeRightLimit?: number | null;
 };
 
 export type ScantechExportJobResult = {
@@ -104,6 +111,8 @@ export type ScantechExportJobResult = {
   wholeApplied: string | null;
   fractionApplied: string | null;
   validityApplied: string | null;
+  horizontalScaleApplied?: number | null;
+  normalizedTransform?: boolean | null;
   fileSize: number | null;
 };
 

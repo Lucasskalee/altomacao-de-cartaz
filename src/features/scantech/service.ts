@@ -138,17 +138,17 @@ export function findMatchingScannedPsd(
     if (byF7) return byF7;
   }
   // 3. Procura por similaridade de palavras da descrição (ex: "CERVEJA CORONA EXTRA LATA 350ML" -> "cerveja corona extra lata 350ml.psd")
-  const stopWords = new Set(['DE', 'DA', 'DO', 'COM', 'PARA', 'EM', 'UN', 'UND', 'KG', 'LT', 'PCT', 'CX', 'FLV', 'MER']);
+  const stopWords = new Set(['DE', 'DA', 'DO', 'COM', 'PARA', 'EM', 'UN', 'UND', 'KG', 'LT', 'L', 'PCT', 'CX', 'FLV', 'MER', 'TRADICIONAL']);
   const descTokens = normName(description)
     .split(' ')
     .filter(t => t.length >= 2 && !stopWords.has(t.toUpperCase()));
-  if (descTokens.length >= 2) {
+  if (descTokens.length >= 1) {
     let best: { entry: ScannedPsdEntry; score: number } | null = null;
     for (const entry of scannedPsds) {
       const fileTokens = new Set(normName(entry.name.replace(/\.psd$/i, '')).split(' ').filter(Boolean));
       const matched = descTokens.filter(t => fileTokens.has(t)).length;
       const ratio = matched / descTokens.length;
-      if (matched >= 2 && ratio >= 0.65 && (!best || ratio > best.score)) {
+      if (matched >= 2 && ratio >= 0.5 && (!best || ratio > best.score)) {
         best = { entry, score: ratio };
       }
     }
@@ -260,6 +260,7 @@ export function applyExcelToScantechCampaign(
       f7,
       description: row.description || '(SEM DESCRIÇÃO)',
       priceCents: row.priceCents ?? 0,
+      previousPriceCents: row.previousPriceCents ?? null,
       startDateIso: row.startDateIso ?? null,
       endDateIso: row.endDateIso ?? null,
       customValidityText: existing?.customValidityText ?? null,

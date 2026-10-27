@@ -19,6 +19,7 @@ export type ColumnMapping = {
   f7Col: number;
   descriptionCol: number;
   priceCol: number;
+  previousPriceCol?: number | null;
   startDateCol?: number | null;
   endDateCol?: number | null;
 };
@@ -30,6 +31,8 @@ export type ExcelImportedItem = {
   description: string;
   priceRaw: string;
   priceCents: number | null;
+  previousPriceRaw?: string;
+  previousPriceCents?: number | null;
   startDateRaw?: string;
   startDateIso?: string | null;
   endDateRaw?: string;
@@ -273,6 +276,30 @@ export function columnLetter(index: number): string {
   return label || 'A';
 }
 
+export function detectHeaderRowIndex(rows: string[][]): number {
+  let bestRow = 0;
+  let bestScore = 0;
+  const limit = Math.min(15, rows.length);
+  for (let r = 0; r < limit; r++) {
+    const row = rows[r] ?? [];
+    let score = 0;
+    for (const rawCell of row) {
+      const text = rawCell.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+      if (!text) continue;
+      if (/\bf7\b|cod.*prod|\bcod(?:igo|ico)?\b|\breferencia\b|\bsku\b/.test(text)) score += 2;
+      else if (/\bscanteh\b|\bscantech\b|descri|produt|\bnome\b|\bitem\b|mercadoria/.test(text)) score += 2;
+      else if (/data\s*ate\b|dt.*fim|dt.*fin|data.*fim|data.*fin|validade|vencim|\bate\b/.test(text)) score += 2;
+      else if (/^de$|preco\s*de\b|preco\s*ant|valor\s*de\b/.test(text)) score += 1;
+      else if (/^por$|preco\s*por\b|preco|oferta|promoc|valor|prvenda|futuro|amanha/.test(text)) score += 2;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestRow = r;
+    }
+  }
+  return bestScore >= 2 ? bestRow : 0;
+}
+
 export function suggestColumnMapping(headers: string[]): ColumnMapping {
   const norm = headers.map(h =>
     h.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
@@ -284,19 +311,54 @@ export function suggestColumnMapping(headers: string[]): ColumnMapping {
     }
     return -1;
   };
-  let f7Col = findCol([/\bf7\b/, /cod.*prod/, /\bcodigo\b/, /\bcod\b/, /\breferencia\b/, /\bsku\b/]);
+  let f7Col = findCol([/\bf7\b/, /cod.*prod/, /\bcod(?:igo|ico)?\b/, /\breferencia\b/, /\bsku\b/]);
   if (f7Col < 0 && headers.length > 0) f7Col = 0;
-  let descriptionCol = findCol([/descri/, /produt/, /\bnome\b/, /\bitem\b/, /mercadoria/], [f7Col]);
+  let descriptionCol = findCol(
+    [/\bscanteh\b|\bscantech\b/, /descri/, /produt/, /\bnome\b/, /\bitem\b/, /mercadoria/],
+    [f7Col]
+  );
   if (descriptionCol < 0 && headers.length > 1) descriptionCol = [0, 1, 2].find(i => i !== f7Col) ?? 0;
-  let priceCol = findCol([/preco/, /oferta/, /promoc/, /valor/, /prvenda/, /futuro/, /amanha/], [f7Col, descriptionCol]);
-  if (priceCol < 0 && headers.length > 2) priceCol = [0, 1, 2, 3].find(i => i !== f7Col && i !== descriptionCol) ?? 0;
-  const startDateCol = findCol([/dt.*inic/, /data.*inic/, /\binicio\b/, /\bde\b/], [f7Col, descriptionCol, priceCol]);
-  const endDateCol = findCol([/dt.*fim/, /dt.*fin/, /data.*fim/, /data.*fin/, /validade/, /vencim/, /\bate\b/, /\bfinal\b/], [f7Col, descriptionCol, priceCol, ...(startDateCol >= 0 ? [startDateCol] : [])]);
+
+  const endDateCol = findCol(
+    [/data\s*ate\b/, /dt.*fim/, /dt.*fin/, /data.*fim/, /data.*fin/, /validade/, /vencim/, /\bate\b/, /\bfinal\b/],
+    [f7Col, descriptionCol]
+  );
+  const previousPriceCol = findCol(
+    [/^de$/, /preco\s*de\b/, /preco\s*ant/, /valor\s*de\b/, /\bde\s*r\$/],
+    [f7Col, descriptionCol, ...(endDateCol >= 0 ? [endDateCol] : [])]
+  );
+  const startDateCol = findCol(
+    [/dt.*inic/, /data.*inic/, /\binicio\b/, /data\s*de\b/],
+    [
+      f7Col,
+      descriptionCol,
+      ...(endDateCol >= 0 ? [endDateCol] : []),
+      ...(previousPriceCol >= 0 ? [previousPriceCol] : []),
+    ]
+  );
+
+  const excludeForPrice = [
+    f7Col,
+    descriptionCol,
+    ...(endDateCol >= 0 ? [endDateCol] : []),
+    ...(previousPriceCol >= 0 ? [previousPriceCol] : []),
+    ...(startDateCol >= 0 ? [startDateCol] : []),
+  ];
+  let priceCol = findCol(
+    [/^por$/, /preco\s*por\b/, /\bpor\s*r\$/, /preco/, /oferta/, /promoc/, /valor/, /prvenda/, /futuro/, /amanha/],
+    excludeForPrice
+  );
+  if (priceCol < 0 && headers.length > 2) {
+    priceCol =
+      [0, 1, 2, 3, 4, 5].find(i => i < headers.length && !excludeForPrice.includes(i)) ??
+      ([0, 1, 2, 3].find(i => i !== f7Col && i !== descriptionCol) ?? 0);
+  }
   const mapping: ColumnMapping = {
     f7Col: Math.max(0, f7Col),
     descriptionCol: Math.max(0, descriptionCol),
     priceCol: Math.max(0, priceCol),
   };
+  if (previousPriceCol >= 0) mapping.previousPriceCol = previousPriceCol;
   if (startDateCol >= 0) mapping.startDateCol = startDateCol;
   if (endDateCol >= 0) mapping.endDateCol = endDateCol;
   return mapping;
@@ -442,6 +504,10 @@ export function extractCampaignItemsFromSheet(
     const f7Raw = (row[mapping.f7Col] ?? '').trim();
     const description = (row[mapping.descriptionCol] ?? '').trim().toUpperCase();
     const priceRaw = (row[mapping.priceCol] ?? '').trim();
+    const previousPriceRaw =
+      mapping.previousPriceCol != null && mapping.previousPriceCol >= 0
+        ? (row[mapping.previousPriceCol] ?? '').trim()
+        : '';
     const startDateRaw = mapping.startDateCol != null && mapping.startDateCol >= 0 ? (row[mapping.startDateCol] ?? '').trim() : '';
     const endDateRaw = mapping.endDateCol != null && mapping.endDateCol >= 0 ? (row[mapping.endDateCol] ?? '').trim() : '';
     const issues: string[] = [];
@@ -468,6 +534,15 @@ export function extractCampaignItemsFromSheet(
         priceCents = parseExcelPriceToCents(priceRaw);
       } catch (err) {
         issues.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    let previousPriceCents: number | null = null;
+    if (previousPriceRaw) {
+      try {
+        previousPriceCents = parseExcelPriceToCents(previousPriceRaw);
+      } catch {
+        previousPriceCents = null;
       }
     }
 
@@ -509,6 +584,8 @@ export function extractCampaignItemsFromSheet(
       description,
       priceRaw,
       priceCents,
+      previousPriceRaw: previousPriceRaw || undefined,
+      previousPriceCents,
       startDateRaw: startDateRaw || undefined,
       startDateIso,
       endDateRaw: endDateRaw || undefined,
