@@ -1315,9 +1315,18 @@ mod tests {
         let out_psd = dir.path().join("export_result.psd");
 
         // Cria estrutura de PSD válido (8BPS, modo RGB 3, 300 DPI, TySh)
-        let mut valid_psd = b"8BPS\x00\x01\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x06\xea\x00\x00\x04\x9b\x00\x08\x00\x03".to_vec();
-        valid_psd.resize(1024, 0);
-        valid_psd[120..124].copy_from_slice(b"TySh");
+        let mut valid_psd = vec![0u8; 1024];
+        valid_psd[0..4].copy_from_slice(b"8BPS");
+        valid_psd[4..6].copy_from_slice(&1u16.to_be_bytes());
+        valid_psd[12..14].copy_from_slice(&3u16.to_be_bytes());
+        valid_psd[14..18].copy_from_slice(&1770u32.to_be_bytes());
+        valid_psd[18..22].copy_from_slice(&1179u32.to_be_bytes());
+        valid_psd[22..24].copy_from_slice(&8u16.to_be_bytes());
+        valid_psd[24..26].copy_from_slice(&3u16.to_be_bytes());
+        valid_psd[26..30].copy_from_slice(&0u32.to_be_bytes());
+        valid_psd[30..34].copy_from_slice(&0u32.to_be_bytes());
+        valid_psd[34..38].copy_from_slice(&500u32.to_be_bytes());
+        valid_psd[50..54].copy_from_slice(b"TySh");
         fs::write(&src_psd, &valid_psd).unwrap();
 
         let req1 = WriteScantechPsdRequest {
