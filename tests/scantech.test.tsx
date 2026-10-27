@@ -514,7 +514,7 @@ test('Sprint 07.1 — Transformação geométrica e ajuste automático de preço
 
 test('Sprint 07.1 — Aprovação de composição visual para alerta de largura (F7 29965 / Guaraná Antarctica Tradicional 3L)', () => {
   // 1. Cria campanha e adiciona item com alerta de largura
-  const campaign = createScantechCampaign('Campanha Teste Aprovação Visual', '2026-11-29');
+  let campaign = createScantechCampaign('Campanha Teste Aprovação Visual', '2026-11-29');
   
   // Simulando item Guaraná Antarctica Tradicional 3L (F7 29965)
   // Original do PSD era R$ 6,19 (1 dígito inteiro). Novo preço é R$ 11,19 (2 dígitos inteiros).
@@ -564,7 +564,7 @@ test('Sprint 07.1 — Aprovação de composição visual para alerta de largura 
   assert.equal(v.canExport, true);
 
   // 3. Invalidação por alteração de preço: usuário altera preço de R$ 11,19 para R$ 12,49
-  updateScantechItemFields(campaign, 'item-29965', { priceCents: 1249 });
+  campaign = updateScantechItemFields(campaign, 'item-29965', { priceCents: 1249 });
   assert.equal(campaign.items[0].visualApproval, null); // Aprovação limpa automaticamente no update
 
   views = buildScantechItemViews(campaign, library);
@@ -586,7 +586,7 @@ test('Sprint 07.1 — Aprovação de composição visual para alerta de largura 
   assert.equal(views[0].canExport, true);
 
   // 5. Invalidação por alteração de data de validade
-  updateScantechItemFields(campaign, 'item-29965', { endDateIso: '2026-12-15' });
+  campaign = updateScantechItemFields(campaign, 'item-29965', { endDateIso: '2026-12-15' });
   assert.equal(campaign.items[0].visualApproval, null);
 
   views = buildScantechItemViews(campaign, library);
