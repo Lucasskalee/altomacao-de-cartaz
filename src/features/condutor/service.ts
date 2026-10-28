@@ -3,6 +3,7 @@ import type { Poster } from '../../components/editor/PosterView';
 import { formatCentsBr, posterFromDocument } from '../cartazes/presentation';
 import type { Cartaz, ImportedArtwork } from '../cartazes/types';
 import { analyzePsd } from '../psd/importer';
+import { createOptimizedThumbnail, globalThumbnailCache } from './cache';
 import type {
   ConductorFileFormat,
   ConductorItemStatus,
@@ -148,9 +149,13 @@ export async function loadConductorItem(
   customIo?: {
     readCartaz?: (path: string) => Promise<string>;
     readPsd?: (path: string) => Promise<ArrayBuffer>;
+  },
+  options?: {
+    keepFullPoster?: boolean;
   }
 ): Promise<ConductorQueueItem> {
-  if (item.status === 'ready' && item.poster) {
+  const keepFull = options?.keepFullPoster !== false;
+  if (item.status === 'ready' && (!keepFull || item.poster)) {
     return item;
   }
 
@@ -173,8 +178,13 @@ export async function loadConductorItem(
       updated.category = (parsed.product as any).category || poster.category || undefined;
       updated.validityText = (parsed.product as any).validityText || poster.validityText || undefined;
       updated.originalCartaz = parsed;
-      updated.poster = poster;
-      updated.thumbnailUrl = poster.artwork?.originalPreview;
+      updated.poster = keepFull ? poster : undefined;
+      let thumb = poster.artwork ? globalThumbnailCache.get(item.sourcePath) : undefined;
+      if (!thumb && poster.artwork?.originalPreview) {
+        thumb = await createOptimizedThumbnail(poster.artwork.originalPreview);
+        globalThumbnailCache.set(item.sourcePath, thumb);
+      }
+      updated.thumbnailUrl = thumb || (keepFull ? poster.artwork?.originalPreview : undefined);
       updated.status = 'ready';
       return updated;
     }
@@ -217,13 +227,19 @@ export async function loadConductorItem(
         artwork,
       };
 
+      let thumb = globalThumbnailCache.get(item.sourcePath);
+      if (!thumb) {
+        thumb = await createOptimizedThumbnail(analysis.originalPreview);
+        globalThumbnailCache.set(item.sourcePath, thumb);
+      }
+
       updated.name = poster.name;
       updated.detail = poster.detail;
       updated.price = poster.price;
       updated.unit = poster.unit;
       updated.validityText = poster.validityText;
-      updated.poster = poster;
-      updated.thumbnailUrl = analysis.originalPreview;
+      updated.poster = keepFull ? poster : undefined;
+      updated.thumbnailUrl = thumb || (keepFull ? analysis.originalPreview : undefined);
       updated.status = 'ready';
       return updated;
     }
@@ -243,6 +259,9 @@ export async function loadQueueConcurrently(
   customIo?: {
     readCartaz?: (path: string) => Promise<string>;
     readPsd?: (path: string) => Promise<ArrayBuffer>;
+  },
+  options?: {
+    keepFullPoster?: boolean;
   }
 ): Promise<ConductorQueueItem[]> {
   const result = [...queue];
@@ -260,7 +279,7 @@ export async function loadQueueConcurrently(
   const workers = Array.from({ length: Math.min(concurrency, pendingIndices.length) }, async () => {
     while (currentIndex < pendingIndices.length) {
       const idx = pendingIndices[currentIndex++];
-      const loaded = await loadConductorItem(result[idx], customIo);
+      const loaded = await loadConductorItem(result[idx], customIo, options);
       result[idx] = loaded;
       if (onItemLoaded) {
         onItemLoaded(loaded);

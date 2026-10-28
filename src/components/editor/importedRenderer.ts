@@ -9,6 +9,9 @@ const sanitizePrice = (value: string) => {
 };
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
+export function clearArtworkImageCache(): void {
+  imageCache.clear();
+}
 function loadImage(source: string) {
   let pending = imageCache.get(source);
   if (!pending) {

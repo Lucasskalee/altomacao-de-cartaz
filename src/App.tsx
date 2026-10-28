@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { PosterView, type Poster } from './components/editor/PosterView';
 import { exportPng } from './components/editor/exportPng';
 import { Library } from './components/library/Library';
@@ -36,12 +36,82 @@ export default function App() {
   const priceWarning=poster.artwork?(invertedLayers?'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.':importedPriceWarning(poster.artwork,poster.price)):'';
   const refresh = async () => { setData(await listFiles()); f7Matches.refresh(); };
   useEffect(() => { let active = true; listFiles().then(value => { if(active) setData(value); }).catch(ex => { if(active) setError(String(ex)); }); return () => { active = false; }; }, []);
-  const handlePrintBatch = (posters: Poster[]) => {
-    setBatchPrintPosters(posters);
-    setTimeout(() => {
-      window.print();
+  const renderedPostersCountRef = useRef(0);
+  const printReadyResolveRef = useRef<(() => void) | null>(null);
+
+  const handlePosterRendered = useCallback(() => {
+    renderedPostersCountRef.current++;
+    if (
+      batchPrintPosters &&
+      renderedPostersCountRef.current >= batchPrintPosters.length &&
+      printReadyResolveRef.current
+    ) {
+      const resolve = printReadyResolveRef.current;
+      printReadyResolveRef.current = null;
+      resolve();
+    }
+  }, [batchPrintPosters]);
+
+  const handlePrintBatch = async (
+    posters: Poster[] | null,
+    options?: {
+      onReadyToPrint?: () => void;
+      onDialogClosed?: () => void;
+      keepMountedUntilConfirmed?: boolean;
+    }
+  ) => {
+    if (!posters || posters.length === 0) {
       setBatchPrintPosters(null);
-    }, 150);
+      return;
+    }
+
+    renderedPostersCountRef.current = 0;
+    setBatchPrintPosters(posters);
+
+    // Aguarda todos os canvas e fontes renderizarem sem tempo fixo arbitrário
+    await new Promise<void>(resolve => {
+      let done = false;
+      const finish = () => {
+        if (!done) {
+          done = true;
+          if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => resolve());
+            });
+          } else {
+            setTimeout(resolve, 30);
+          }
+        }
+      };
+
+      if (renderedPostersCountRef.current >= posters.length) {
+        finish();
+        return;
+      }
+
+      printReadyResolveRef.current = finish;
+      setTimeout(finish, 8000);
+    });
+
+    if (typeof document !== 'undefined' && 'fonts' in document) {
+      try {
+        await document.fonts.ready;
+      } catch {}
+    }
+
+    if (options?.onReadyToPrint) {
+      options.onReadyToPrint();
+    }
+
+    window.print();
+
+    if (options?.onDialogClosed) {
+      options.onDialogClosed();
+    }
+
+    if (!options?.keepMountedUntilConfirmed) {
+      setBatchPrintPosters(null);
+    }
   };
   const run = (action: () => Promise<void>) => {
     if (locked.current) return;
@@ -77,6 +147,6 @@ export default function App() {
     <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
-    </fieldset><div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p} isPrint={true}/></div>) : <PosterView poster={poster} isPrint={true}/>}</div>
+    </fieldset><div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p} isPrint={true} onRendered={handlePosterRendered}/></div>) : <PosterView poster={poster} isPrint={true}/>}</div>
   </div>;
 }

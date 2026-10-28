@@ -551,4 +551,290 @@ test('Condutor de Impressão — Múltiplas cópias e preservação da sequênci
   ]);
 });
 
+test('Condutor de Impressão — Cache LRU de Miniaturas com limite de itens e bytes', () => {
+  const { LruThumbnailCache } = require('../src/features/condutor/cache');
+  // Cria cache com limite de 3 itens e 1000 bytes
+  const cache = new LruThumbnailCache(3, 1000);
+
+  // Cada char em JS UTF-16 ocupa ~2 bytes na estimativa (length * 2)
+  cache.set('item1', 'A'.repeat(50)); // 100 bytes
+  cache.set('item2', 'B'.repeat(50)); // 100 bytes
+  cache.set('item3', 'C'.repeat(50)); // 100 bytes
+
+  assert.equal(cache.size(), 3);
+  assert.equal(cache.get('item1'), 'A'.repeat(50));
+
+  // Acesso a item1 torna item2 o mais antigo (LRU)
+  // Adiciona item4: deve ejetar item2
+  cache.set('item4', 'D'.repeat(50));
+  assert.equal(cache.size(), 3);
+  assert.equal(cache.has('item2'), false); // Ejetado
+  assert.equal(cache.has('item1'), true); // Preservado
+  assert.equal(cache.has('item3'), true);
+  assert.equal(cache.has('item4'), true);
+
+  // Teste de teto de bytes: item com 600 chars (1200 bytes) excede maxBytes de 1000 bytes
+  cache.set('giant', 'X'.repeat(600));
+  assert.equal(cache.has('giant'), false); // Rejeitado com segurança
+
+  // Limpeza total
+  cache.clear();
+  assert.equal(cache.size(), 0);
+  assert.equal(cache.bytes(), 0);
+});
+
+test('Condutor de Impressão — Divisão em lotes (20, 100 e 400 páginas) com proteção de memória', () => {
+  const { partitionQueueIntoBatches } = require('../src/features/condutor/batching');
+
+  // Cenário 1: Exatamente 20 páginas
+  const queue20: ConductorQueueItem[] = [];
+  for (let i = 1; i <= 20; i++) {
+    queue20.push({
+      id: `item-${i}`,
+      name: `PRODUTO ${i}`,
+      detail: '',
+      price: '9,99',
+      unit: 'UN',
+      sourcePath: `c:\\item${i}.skcartaz`,
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 1,
+      status: 'ready',
+    });
+  }
+
+  const plans20 = partitionQueueIntoBatches(queue20, 20);
+  assert.equal(plans20.length, 1);
+  assert.equal(plans20[0].pageCount, 20);
+  assert.equal(plans20[0].startIndex, 0);
+  assert.equal(plans20[0].endIndex, 19);
+
+  // Cenário 2: 100 páginas (5 lotes de 20 páginas)
+  const queue100: ConductorQueueItem[] = [];
+  for (let i = 1; i <= 50; i++) {
+    queue100.push({
+      id: `prod-${i}`,
+      name: `PRODUTO ${i}`,
+      detail: '',
+      price: '1,99',
+      unit: 'UN',
+      sourcePath: `c:\\prod${i}.skcartaz`,
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 2, // 50 produtos * 2 cópias = 100 páginas
+      status: 'ready',
+    });
+  }
+
+  const plans100 = partitionQueueIntoBatches(queue100, 20);
+  assert.equal(plans100.length, 5);
+  let totalCalculated100 = 0;
+  plans100.forEach((plan, idx) => {
+    assert.equal(plan.batchNumber, idx + 1);
+    assert.equal(plan.totalBatches, 5);
+    assert.equal(plan.pageCount, 20);
+    totalCalculated100 += plan.pageCount;
+  });
+  assert.equal(totalCalculated100, 100);
+
+  // Cenário 3: 400 páginas (20 lotes de 20 páginas) com cópias variadas
+  const queue400: ConductorQueueItem[] = [];
+  for (let i = 1; i <= 80; i++) {
+    queue400.push({
+      id: `bulk-${i}`,
+      name: `BULK ITEM ${i}`,
+      detail: '',
+      price: '5,00',
+      unit: 'KG',
+      sourcePath: `c:\\bulk${i}.skcartaz`,
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 5, // 80 produtos * 5 cópias = 400 páginas
+      status: 'ready',
+    });
+  }
+
+  const plans400 = partitionQueueIntoBatches(queue400, 20);
+  assert.equal(plans400.length, 20);
+  let totalCalculated400 = 0;
+  for (let b = 0; b < plans400.length; b++) {
+    const plan = plans400[b];
+    assert.equal(plan.batchNumber, b + 1);
+    assert.equal(plan.totalBatches, 20);
+    assert.equal(plan.pageCount, 20);
+    totalCalculated400 += plan.pageCount;
+  }
+  assert.equal(totalCalculated400, 400);
+
+  // Verifica que o primeiro item do primeiro lote é BULK ITEM 1 cópia 1
+  assert.equal(plans400[0].items[0].name, 'BULK ITEM 1');
+  assert.equal(plans400[0].items[0].copyIndex, 1);
+
+  // Verifica que o último item do último lote é BULK ITEM 80 cópia 5
+  assert.equal(plans400[19].items[19].name, 'BULK ITEM 80');
+  assert.equal(plans400[19].items[19].copyIndex, 5);
+});
+
+test('Condutor de Impressão — Preparação e ciclo de liberação de memória de lotes', async () => {
+  const { partitionQueueIntoBatches, prepareBatchPosters, releaseBatchMemory } = require('../src/features/condutor/batching');
+
+  const p1: Poster = { name: 'PRODUTO LOTE 1', detail: '', price: '10,00', unit: 'UN' };
+  const p2: Poster = { name: 'PRODUTO LOTE 2', detail: '', price: '20,00', unit: 'UN' };
+
+  const queue: ConductorQueueItem[] = [
+    {
+      id: 'item-1',
+      name: 'PRODUTO LOTE 1',
+      detail: '',
+      price: '10,00',
+      unit: 'UN',
+      sourcePath: 'c:\\1.skcartaz',
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 3,
+      status: 'ready',
+      poster: p1,
+    },
+    {
+      id: 'item-2',
+      name: 'PRODUTO LOTE 2',
+      detail: '',
+      price: '20,00',
+      unit: 'UN',
+      sourcePath: 'c:\\2.skcartaz',
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 2,
+      status: 'ready',
+      poster: p2,
+    },
+  ];
+
+  // Total 5 páginas divididas em lotes de 2 páginas -> 3 lotes (2, 2, 1)
+  const plans = partitionQueueIntoBatches(queue, 2);
+  assert.equal(plans.length, 3);
+  assert.equal(plans[0].pageCount, 2);
+  assert.equal(plans[1].pageCount, 2);
+  assert.equal(plans[2].pageCount, 1);
+
+  // Prepara Lote 1
+  const res1 = await prepareBatchPosters(plans[0], queue);
+  assert.equal(res1.posters.length, 2);
+  assert.equal(res1.errors.length, 0);
+  assert.equal(res1.posters[0].name, 'PRODUTO LOTE 1');
+  assert.equal(res1.posters[1].name, 'PRODUTO LOTE 1');
+
+  // Libera memória após lote 1
+  assert.doesNotThrow(() => releaseBatchMemory());
+
+  // Prepara Lote 2
+  const res2 = await prepareBatchPosters(plans[1], queue);
+  assert.equal(res2.posters.length, 2);
+  assert.equal(res2.posters[0].name, 'PRODUTO LOTE 1'); // 3ª cópia do produto 1
+  assert.equal(res2.posters[1].name, 'PRODUTO LOTE 2'); // 1ª cópia do produto 2
+
+  // Libera memória após lote 2
+  assert.doesNotThrow(() => releaseBatchMemory());
+
+  // Prepara Lote 3
+  const res3 = await prepareBatchPosters(plans[2], queue);
+  assert.equal(res3.posters.length, 1);
+  assert.equal(res3.posters[0].name, 'PRODUTO LOTE 2'); // 2ª cópia do produto 2
+
+  // Libera memória final
+  assert.doesNotThrow(() => releaseBatchMemory());
+});
+
+test('Condutor de Impressão — Auditoria de Memória: keepFullPoster false retém apenas metadados e miniatura', async () => {
+  const { loadConductorItem, globalThumbnailCache } = require('../src/features/condutor/service');
+
+  const psdPath = existsSync('repolho verde kg.psd')
+    ? 'repolho verde kg.psd'
+    : 'c:\\LUCAS SKALEE\\altomacao-de-cartaz\\repolho verde kg.psd';
+  if (!existsSync(psdPath)) return;
+
+  const bytes = readFileSync(psdPath);
+  const queueItem = createQueueItemFromFilePath(psdPath, 'external_file', bytes.byteLength);
+
+  // Carregamento de segundo plano para fila grande (keepFullPoster: false)
+  const backgroundLoaded = await loadConductorItem(
+    queueItem,
+    {
+      readPsd: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    },
+    { keepFullPoster: false }
+  );
+
+  assert.equal(backgroundLoaded.status, 'ready');
+  assert.equal(backgroundLoaded.poster, undefined, 'Fila não deve reter o Poster de 10 MB em memória na lista');
+  assert.ok(backgroundLoaded.thumbnailUrl, 'Miniatura deve estar presente');
+  assert.equal(backgroundLoaded.name, 'REPOLHO');
+  assert.equal(backgroundLoaded.price, '2,99');
+
+  // Carregamento sob demanda para lote de impressão (keepFullPoster: true)
+  const printLoaded = await loadConductorItem(
+    backgroundLoaded,
+    {
+      readPsd: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    },
+    { keepFullPoster: true }
+  );
+
+  assert.equal(printLoaded.status, 'ready');
+  assert.ok(printLoaded.poster, 'Poster de alta resolução deve ser carregado sob demanda para o lote');
+  assert.ok(printLoaded.poster.artwork?.staticBackground, 'Arte integral pronta para o canvas de 300 DPI');
+});
+
+test('Condutor de Impressão — Alternância entre Grade e Lista preserva cache de miniaturas sem reprocessar', () => {
+  const { globalThumbnailCache } = require('../src/features/condutor/cache');
+
+  // Popula uma chave no cache global
+  const testKey = 'c:\\cartazes\\oferta_teste.psd';
+  const testThumb = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+  globalThumbnailCache.set(testKey, testThumb);
+
+  const initialSize = globalThumbnailCache.size();
+  assert.equal(globalThumbnailCache.get(testKey), testThumb);
+
+  // Simula múltiplas transições de visualização (Grid -> List -> Grid -> List)
+  for (let i = 0; i < 5; i++) {
+    const fromCache = globalThumbnailCache.get(testKey);
+    assert.equal(fromCache, testThumb);
+  }
+
+  // O cache não aumentou nem duplicou entradas
+  assert.equal(globalThumbnailCache.size(), initialSize);
+});
+
+test('Condutor de Impressão — Repetição e cancelamento de lote preservam integridade, ordenação e cópias da fila', () => {
+  const { partitionQueueIntoBatches } = require('../src/features/condutor/batching');
+
+  const originalQueue: ConductorQueueItem[] = [
+    { id: '1', name: 'ITEM 1', detail: '', price: '1,00', unit: 'UN', sourcePath: 'c:\\1', sourceType: 'editor', fileFormat: 'skcartaz', copies: 3, status: 'ready' },
+    { id: '2', name: 'ITEM 2', detail: '', price: '2,00', unit: 'UN', sourcePath: 'c:\\2', sourceType: 'editor', fileFormat: 'skcartaz', copies: 2, status: 'ready' },
+    { id: '3', name: 'ITEM 3', detail: '', price: '3,00', unit: 'UN', sourcePath: 'c:\\3', sourceType: 'editor', fileFormat: 'skcartaz', copies: 4, status: 'ready' },
+  ];
+
+  // Particiona com lote de 4 páginas
+  const plans = partitionQueueIntoBatches(originalQueue, 4);
+  assert.equal(plans.length, 3); // 3+2+4 = 9 páginas / 4 = 3 lotes (4, 4, 1)
+
+  // Ao simular repetição do Lote 2:
+  const batch2ItemsFirstAttempt = plans[1].items.map(it => `${it.name}-copia${it.copyIndex}`);
+  const batch2ItemsSecondAttempt = plans[1].items.map(it => `${it.name}-copia${it.copyIndex}`);
+
+  // Itens, ordem e índices de cópias são idênticos entre tentativas
+  assert.deepEqual(batch2ItemsFirstAttempt, batch2ItemsSecondAttempt);
+  assert.deepEqual(batch2ItemsFirstAttempt, ['ITEM 2-copia2', 'ITEM 3-copia1', 'ITEM 3-copia2', 'ITEM 3-copia3']);
+
+  // Ao simular cancelamento no meio do fluxo:
+  // A fila original não sofreu mutações
+  assert.equal(originalQueue.length, 3);
+  assert.equal(originalQueue[0].copies, 3);
+  assert.equal(originalQueue[1].copies, 2);
+  assert.equal(originalQueue[2].copies, 4);
+});
+
+
+
 
