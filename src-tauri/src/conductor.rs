@@ -170,3 +170,57 @@ pub fn read_conductor_psd(path: String) -> Result<Response, String> {
     Ok(Response::new(bytes))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scans_compatible_files_in_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let sk_file = dir.path().join("oferta.skcartaz");
+        fs::write(&sk_file, b"{\"schemaVersion\":1}").unwrap();
+
+        let psd_file = dir.path().join("arte.psd");
+        let mut psd_bytes = vec![0u8; 30];
+        psd_bytes[..4].copy_from_slice(b"8BPS");
+        fs::write(&psd_file, psd_bytes).unwrap();
+
+        let ignored = dir.path().join("imagem.png");
+        fs::write(&ignored, b"png").unwrap();
+
+        let results = scan_conductor_folder_disk(dir.path()).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].format, "psd");
+        assert_eq!(results[1].format, "skcartaz");
+    }
+
+    #[test]
+    fn reads_cartaz_and_rejects_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_file = dir.path().join("cartaz.skcartaz");
+        fs::write(&valid_file, "{\"schemaVersion\":1,\"test\":true}").unwrap();
+
+        let content = read_conductor_cartaz(valid_file.to_string_lossy().into_owned()).unwrap();
+        assert!(content.contains("\"schemaVersion\""));
+
+        let invalid_file = dir.path().join("corrompido.skcartaz");
+        fs::write(&invalid_file, "{}").unwrap();
+        assert!(read_conductor_cartaz(invalid_file.to_string_lossy().into_owned()).is_err());
+    }
+
+    #[test]
+    fn reads_psd_and_validates_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_psd = dir.path().join("valido.psd");
+        let mut psd_bytes = vec![0u8; 30];
+        psd_bytes[..4].copy_from_slice(b"8BPS");
+        fs::write(&valid_psd, psd_bytes).unwrap();
+
+        assert!(read_conductor_psd(valid_psd.to_string_lossy().into_owned()).is_ok());
+
+        let invalid_psd = dir.path().join("falso.psd");
+        fs::write(&invalid_psd, vec![0u8; 30]).unwrap();
+        assert!(read_conductor_psd(invalid_psd.to_string_lossy().into_owned()).is_err());
+    }
+}
+
