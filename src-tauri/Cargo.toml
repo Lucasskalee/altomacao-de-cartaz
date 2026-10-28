@@ -1,6 +1,6 @@
 [package]
 name = "skalee-cartazes-a5"
-version = "0.8.0"
+version = "0.8.1"
 description = "Editor de cartazes A5 para Windows"
 authors = ["Skalee"]
 edition = "2021"

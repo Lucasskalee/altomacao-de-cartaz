@@ -14,15 +14,15 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows x64 · Skalee Cartazes A5 v0.8.0
+    name: Windows x64 · Skalee Cartazes A5 v0.8.1
     runs-on: windows-latest
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
-      APP_VERSION: '0.8.0'
-      ARTIFACT_NAME: Skalee-Cartazes-A5-v0.8.0-Windows-x64
-      INSTALLER_NAME: Skalee-Cartazes-A5-0.8.0-windows-x64-setup.exe
-      MSI_NAME: Skalee-Cartazes-A5-0.8.0-windows-x64.msi
+      APP_VERSION: '0.8.1'
+      ARTIFACT_NAME: Skalee-Cartazes-A5-v0.8.1-Windows-x64
+      INSTALLER_NAME: Skalee-Cartazes-A5-0.8.1-windows-x64-setup.exe
+      MSI_NAME: Skalee-Cartazes-A5-0.8.1-windows-x64.msi
     defaults:
       run:
         shell: pwsh

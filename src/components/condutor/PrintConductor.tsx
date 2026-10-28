@@ -53,18 +53,19 @@ function compactPath(fullPath: string): string {
 export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [showSidePreview, setShowSidePreview] = useState(true);
   const [showLibraryModal, setShowLibraryModal] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
   const [selectedLibraryPaths, setSelectedLibraryPaths] = useState<Set<string>>(new Set());
   const [notification, setNotification] = useState<string | null>(null);
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
 
-  // Enlarged preview modal state
+  // Modal de prévia ampliada
   const [enlargedItem, setEnlargedItem] = useState<ConductorQueueItem | null>(null);
   const [enlargedPoster, setEnlargedPoster] = useState<Poster | null>(null);
   const [loadingEnlarged, setLoadingEnlarged] = useState(false);
 
-  // Batch print state
+  // Estado de execução de impressão em lotes
   const [batchSize, setBatchSize] = useState<number>(20);
   const [batchExecution, setBatchExecution] = useState<{
     allPlans: ConductorBatchPlan[];
@@ -77,7 +78,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
   const processingRef = useRef(false);
 
-  // Automatically select first item if none is selected
+  // Seleciona automaticamente o primeiro item se nenhum estiver selecionado
   useEffect(() => {
     if (queue.length > 0 && (!selectedId || !queue.some(i => i.id === selectedId))) {
       setSelectedId(queue[0].id);
@@ -86,7 +87,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     }
   }, [queue, selectedId]);
 
-  // Progressive background loader for idle items (keeps heap lightweight by not retaining full posters in queue)
+  // Carregador em segundo plano com keepFullPoster: false para proteger o consumo de memória
   useEffect(() => {
     const hasIdle = queue.some(item => item.status === 'idle');
     if (!hasIdle || processingRef.current) return;
@@ -114,7 +115,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     return queue.find(it => it.id === selectedId) ?? null;
   }, [queue, selectedId]);
 
-  // Side-panel preview on demand
+  // Prévia sob demanda do cartaz selecionado
   const [selectedPoster, setSelectedPoster] = useState<Poster | null>(null);
   useEffect(() => {
     let active = true;
@@ -138,7 +139,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     };
   }, [selectedId, selectedItem]);
 
-  // Summary statistics
+  // Resumo de contadores
   const summary = useMemo(() => {
     let totalCopies = 0;
     let readyCount = 0;
@@ -161,7 +162,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     };
   }, [queue]);
 
-  // Open enlarged modal
+  // Abertura do modal de prévia ampliada
   const handleOpenEnlarged = (item: ConductorQueueItem) => {
     setEnlargedItem(item);
     if (item.poster) {
@@ -182,7 +183,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     setEnlargedPoster(null);
   };
 
-  // Handler: Add individual files from disk/network
+  // Manipulador: Adicionar arquivos avulsos
   const handleAddFiles = async () => {
     const paths = await chooseConductorFiles();
     if (!paths || paths.length === 0) return;
@@ -206,7 +207,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     }
 
     if (duplicateCount > 0 && addedCount > 0) {
-      setNotification(`${addedCount} arquivo(s) adicionado(s). ${duplicateCount} já estavam na fila.`);
+      setNotification(`${addedCount} arquivo(s) adicionado(s). ${duplicateCount} já constavam na fila.`);
     } else if (duplicateCount > 0 && addedCount === 0) {
       setNotification(`Todos os ${duplicateCount} arquivo(s) selecionados já estão na fila de impressão.`);
     } else {
@@ -214,7 +215,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     }
   };
 
-  // Handler: Add entire folder
+  // Manipulador: Adicionar pasta inteira
   const handleAddFolder = async () => {
     const folderPath = await chooseConductorFolder();
     if (!folderPath) return;
@@ -245,14 +246,14 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
     if (duplicateCount > 0) {
       setNotification(
-        `Pasta varrida: ${addedCount} arquivo(s) adicionado(s). ${duplicateCount} já estavam na fila.`
+        `Pasta varrida: ${addedCount} arquivo(s) adicionado(s). ${duplicateCount} já constavam na fila.`
       );
     } else {
       setNotification(`Pasta varrida: ${addedCount} cartaz(es) adicionado(s) à fila.`);
     }
   };
 
-  // Handler: Add selected items from Meus Cartazes
+  // Manipulador: Adicionar de Meus Cartazes
   const handleConfirmAddFromLibrary = () => {
     if (!libraryData || selectedLibraryPaths.size === 0) {
       setShowLibraryModal(false);
@@ -287,17 +288,16 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     setShowLibraryModal(false);
 
     if (duplicateCount > 0) {
-      setNotification(`${addedCount} cartaz(es) da biblioteca adicionados. ${duplicateCount} já estavam na fila.`);
+      setNotification(`${addedCount} cartaz(es) da biblioteca adicionados. ${duplicateCount} já constavam na fila.`);
     } else {
       setNotification(`${addedCount} cartaz(es) da biblioteca adicionados à fila.`);
     }
   };
 
-  // Handler: Start printing (Controlled batch execution)
+  // Manipulador: Iniciar impressão com controle de lotes
   const handlePrintConductor = async () => {
     if (queue.length === 0) return;
 
-    // Ensure pending items have basic metadata loaded
     let currentQueue = queue;
     if (queue.some(it => it.status === 'idle' || it.status === 'loading')) {
       setNotification('Concluindo carregamento dos cartazes antes de imprimir…');
@@ -315,7 +315,6 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
       );
     }
 
-    // Se existirem erros ou ausentes, alertar e solicitar confirmação
     if (skippedErrors.length > 0) {
       const summaryMsg =
         `Resumo antes de imprimir:\n\n` +
@@ -336,7 +335,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     setNotification(
       plans.length > 1
         ? `Iniciando impressão em lotes: ${plans.length} lotes de até ${batchSize} páginas A5 (Total: ${totalCopies} folhas).`
-        : `Preparando lote único de ${totalCopies} folhas A5…`
+        : `Preparando lote de ${totalCopies} folha(s) A5…`
     );
 
     setBatchExecution({
@@ -378,7 +377,6 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     const newPrintedCount = batchExecution.printedPagesCount + currentPlan.pageCount;
     const nextIndex = batchExecution.currentIndex + 1;
 
-    // Se era o último lote, finaliza e libera tudo
     if (nextIndex >= batchExecution.allPlans.length) {
       await onPrintBatch(null);
       releaseBatchMemory();
@@ -389,7 +387,6 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
       return;
     }
 
-    // Libera a memória do lote anterior antes de preparar o seguinte
     await onPrintBatch(null);
     releaseBatchMemory();
 
@@ -459,7 +456,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
     );
   };
 
-  // Library modal filtered items
+  // Filtragem da biblioteca de Meus Cartazes
   const filteredLibraryEntries = useMemo(() => {
     if (!libraryData) return [];
     const q = librarySearch.trim().toLowerCase();
@@ -478,11 +475,12 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
   return (
     <section className="panel print-conductor" aria-label="Condutor de Impressão">
+      {/* Cabeçalho Principal */}
       <div className="library-heading">
         <div>
           <h2>Condutor de Impressão</h2>
           <p>
-            Monte filas personalizadas com arquivos de qualquer pasta local ou rede Windows (UNC), ajuste cópias, reordene e imprima em formato A5.
+            Monte filas personalizadas com arquivos locais ou de rede (UNC), ajuste cópias, reordene e imprima em formato A5.
           </p>
         </div>
         <div className="toolbar">
@@ -516,8 +514,9 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
         </div>
       </div>
 
+      {/* Notificação Temporária */}
       {notification && (
-        <div className="import-warning" style={{ margin: '14px 0' }} role="status">
+        <div className="import-warning" style={{ margin: '0 0 16px 0' }} role="status">
           <span>{notification}</span>
           <button
             type="button"
@@ -530,7 +529,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
         </div>
       )}
 
-      {/* Batch Execution Progress Banner */}
+      {/* Banner de Execução em Lotes */}
       {batchExecution && (
         <div
           role="region"
@@ -543,7 +542,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 ? '#fffbeb'
                 : batchExecution.status === 'ready'
                 ? '#f0fdf4'
-                : '#eef4ff',
+                : '#eff6ff',
             border:
               batchExecution.status === 'dialog_open'
                 ? '2px solid #ca8a04'
@@ -551,10 +550,10 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 ? '2px solid #d97706'
                 : batchExecution.status === 'ready'
                 ? '2px solid #16a34a'
-                : '2px solid #3b82f6',
-            borderRadius: 8,
+                : '2px solid #2563eb',
+            borderRadius: 10,
             padding: '16px 20px',
-            margin: '12px 0 16px 0',
+            margin: '0 0 16px 0',
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14 }}>
@@ -594,24 +593,24 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
               <p style={{ margin: '4px 0 0 0', fontSize: 13, color: '#334155', lineHeight: 1.5 }}>
                 {batchExecution.status === 'preparing' && (
-                  <span>Carregando composições em alta fidelidade e aguardando renderização dos canvas…</span>
+                  <span>Carregando composições em alta resolução e renderizando canvas…</span>
                 )}
                 {batchExecution.status === 'ready' && (
-                  <span>Todas as páginas e fontes foram renderizadas. Abrindo diálogo do Windows…</span>
+                  <span>Páginas e fontes renderizadas. Abrindo diálogo do Windows…</span>
                 )}
                 {batchExecution.status === 'dialog_open' && (
-                  <span>O diálogo de impressão do Windows está aberto. Selecione a impressora e clique em Imprimir.</span>
+                  <span>O diálogo de impressão do Windows está ativo. Selecione a impressora e confirme.</span>
                 )}
                 {batchExecution.status === 'waiting_confirmation' && (
                   <span>
-                    O diálogo de impressão foi fechado. <strong>Confira as folhas na bandeja da impressora.</strong> Só confirme o lote quando as impressões saírem corretamente.
+                    O diálogo foi concluído. <strong>Confira as folhas na bandeja da impressora.</strong> Só confirme o lote quando as impressões saírem corretamente.
                   </span>
                 )}
               </p>
 
-              <div style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>
+              <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>
                 Folhas confirmadas até agora: <strong>{batchExecution.printedPagesCount}</strong> de{' '}
-                <strong>{summary.totalCopies}</strong> folhas totais. Memória do lote anterior liberada.
+                <strong>{summary.totalCopies}</strong> folhas totais. Memória do lote anterior descartada.
               </div>
 
               {batchExecution.errors.length > 0 && (
@@ -643,7 +642,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 className="subtle"
                 disabled={batchExecution.status === 'preparing'}
                 onClick={() => run(handleRepeatCurrentBatch)}
-                title="Reenviar este lote para a impressora se houve atolamento de papel ou erro no driver"
+                title="Reenviar este lote se houve atolamento ou falha no driver"
               >
                 ↻ Repetir este lote
               </button>
@@ -660,143 +659,135 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
         </div>
       )}
 
-      {/* Summary statistics */}
-      <div className="import-stats" aria-live="polite">
-        <span>
-          <strong>{summary.totalDistinct}</strong> cartazes na fila
-        </span>
-        <span>
-          <strong>{summary.totalCopies}</strong> folhas A5 totais
-        </span>
-        <span>
-          <strong>{summary.readyCount}</strong> prontos para impressão
-        </span>
-        {summary.errorCount > 0 && (
-          <span style={{ background: '#fde8e8', color: '#9e233b' }}>
-            <strong style={{ color: '#9e233b' }}>{summary.errorCount}</strong> com erro / inacessíveis
-          </span>
-        )}
-        {isProcessingQueue && (
-          <span>
-            <strong>{summary.loadingCount}</strong> carregando…
-          </span>
-        )}
-      </div>
-
-      {/* Empty State */}
+      {/* Estado Vazio */}
       {queue.length === 0 ? (
-        <div className="empty" style={{ textAlign: 'center', padding: '48px 16px' }}>
-          <p style={{ fontSize: 16, fontWeight: 600, color: '#34415a', marginBottom: 8 }}>
+        <div className="empty" style={{ textAlign: 'center', padding: '64px 20px', background: '#ffffff' }}>
+          <p style={{ fontSize: 16, fontWeight: 700, color: '#1e293b', marginBottom: 8 }}>
             A fila do Condutor de Impressão está vazia.
           </p>
-          <p style={{ color: '#68778f', maxWidth: 540, margin: '0 auto 20px' }}>
-            Clique em <strong>+ Adicionar Arquivos</strong> ou <strong>+ Adicionar Pasta</strong> para incluir cartazes (.skcartaz ou .psd) de qualquer pasta do Windows, ou adicione direto do Editor e de Meus Cartazes.
+          <p style={{ color: '#64748b', maxWidth: 540, margin: '0 auto 24px', fontSize: 14 }}>
+            Adicione arquivos (.skcartaz ou .psd) de qualquer pasta do Windows, selecione uma pasta inteira ou escolha cartazes salvos em <strong>Meus Cartazes</strong>.
           </p>
           <div className="toolbar" style={{ justifyContent: 'center' }}>
-            <button onClick={() => run(handleAddFiles)}>Adicionar Arquivos</button>
+            <button onClick={() => run(handleAddFiles)}>+ Adicionar Arquivos</button>
             <button className="subtle" onClick={() => run(handleAddFolder)}>
-              Adicionar Pasta Inteira
+              + Adicionar Pasta Inteira
             </button>
           </div>
         </div>
       ) : (
-        <div
-          className="offer-workspace"
-          style={{
-            gridTemplateColumns: viewMode === 'grid' ? '1fr' : 'minmax(0, 1fr) 370px',
-            alignItems: 'start',
-          }}
-        >
-          {/* Main Queue View */}
-          <div>
-            {/* Sticky Queue Toolbar */}
-            <div
-              className="library-toolbar"
-              style={{
-                position: 'sticky',
-                top: 0,
-                zIndex: 10,
-                background: '#ffffff',
-                padding: '12px 14px',
-                borderRadius: 8,
-                marginBottom: 14,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                border: '1px solid #e2e8f0',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 10,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <select
-                  aria-label="Modo de visualização"
-                  value={viewMode}
-                  onChange={e => setViewMode(e.target.value as 'list' | 'grid')}
-                  style={{ padding: '6px 10px', fontSize: 13, borderRadius: 6 }}
-                >
-                  <option value="list">☰ Lista</option>
-                  <option value="grid">☷ Grade</option>
-                </select>
-                <span style={{ fontSize: 12, color: '#64748b' }}>
-                  {viewMode === 'list' ? 'Arraste ou use setas para reordenar' : 'Cartazes organizados em cartões'}
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <label
-                  style={{
-                    fontSize: 12,
-                    color: '#4b5563',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    background: '#f1f5f9',
-                    padding: '4px 8px',
-                    borderRadius: 4,
-                  }}
-                  title="Quantidade máxima de páginas A5 renderizadas por lote de impressão para proteção de memória"
-                >
-                  <span>Lote:</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={batchSize}
-                    onChange={e => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!isNaN(val)) setBatchSize(Math.max(1, Math.min(50, val)));
-                    }}
-                    style={{ width: 44, padding: '2px 4px', textAlign: 'center', fontSize: 12 }}
-                  />
-                  <span>págs</span>
-                </label>
+        <>
+          {/* Barra de Ferramentas Fixa (Sticky Toolbar) */}
+          <div className="conductor-toolbar">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              {/* Alternador Lista / Grade */}
+              <div className="conductor-view-toggle" role="group" aria-label="Modo de visualização">
                 <button
-                  disabled={summary.readyCount === 0 || !!batchExecution}
-                  style={{ padding: '8px 18px', fontSize: 13, fontWeight: 700 }}
-                  onClick={() => run(handlePrintConductor)}
+                  type="button"
+                  className={viewMode === 'list' ? 'active' : ''}
+                  onClick={() => setViewMode('list')}
+                  title="Visualização em Lista compacta e detalhada"
                 >
-                  {summary.totalCopies > batchSize
-                    ? `Imprimir em Lotes (${Math.ceil(summary.totalCopies / batchSize)} lotes · ${summary.totalCopies} folhas)`
-                    : `Imprimir Condutor (${summary.totalCopies} folhas A5)`}
+                  ☰ Lista
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === 'grid' ? 'active' : ''}
+                  onClick={() => setViewMode('grid')}
+                  title="Visualização em Grade de cartões"
+                >
+                  ☷ Grade
                 </button>
               </div>
+
+              {/* Botão de alternar prévia lateral */}
+              {viewMode === 'list' && (
+                <button
+                  type="button"
+                  className="conductor-action-btn"
+                  onClick={() => setShowSidePreview(prev => !prev)}
+                  title={showSidePreview ? 'Ocultar painel de prévia lateral para expandir a tabela' : 'Exibir painel de prévia lateral'}
+                >
+                  {showSidePreview ? '◨ Ocultar Prévia' : '◧ Ver Prévia'}
+                </button>
+              )}
             </div>
 
-            {/* List Mode View */}
+            {/* Resumo Rápido */}
+            <div className="conductor-quick-stats">
+              <span className="stat-pill">
+                <strong>{summary.totalDistinct}</strong> cartazes na fila
+              </span>
+              <span className="stat-pill">
+                <strong>{summary.totalCopies}</strong> folhas A5 totais
+              </span>
+              <span className="stat-pill">
+                <strong style={{ color: '#16a34a' }}>{summary.readyCount}</strong> prontos
+              </span>
+              {summary.errorCount > 0 && (
+                <span className="stat-pill error">
+                  <strong>{summary.errorCount}</strong> inacessíveis
+                </span>
+              )}
+              {isProcessingQueue && (
+                <span className="stat-pill">
+                  <strong>{summary.loadingCount}</strong> carregando…
+                </span>
+              )}
+            </div>
+
+            {/* Configuração de Lote e Botão de Impressão */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <label className="conductor-batch-control" title="Quantidade máxima de páginas A5 renderizadas por lote para proteger a memória">
+                <span>Lote:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={batchSize}
+                  onChange={e => {
+                    const val = parseInt(e.target.value, 10);
+                    if (!isNaN(val)) setBatchSize(Math.max(1, Math.min(50, val)));
+                  }}
+                />
+                <span>págs</span>
+              </label>
+
+              <button
+                type="button"
+                className="conductor-btn-print"
+                disabled={summary.readyCount === 0 || !!batchExecution}
+                onClick={() => run(handlePrintConductor)}
+              >
+                {summary.totalCopies > batchSize
+                  ? `Imprimir em Lotes (${Math.ceil(summary.totalCopies / batchSize)} lotes · ${summary.totalCopies} folhas)`
+                  : `Imprimir Condutor (${summary.totalCopies} folhas A5)`}
+              </button>
+            </div>
+          </div>
+
+          {/* Área Principal de Trabalho */}
+          <div
+            className="conductor-workspace"
+            style={{
+              gridTemplateColumns: showSidePreview && viewMode === 'list' ? 'minmax(0, 1fr) 350px' : '1fr',
+            }}
+          >
+            {/* Modo Lista Profissional */}
             {viewMode === 'list' && (
-              <div className="import-table-wrap">
-                <table className="import-table">
+              <div className="conductor-table-wrap">
+                <table className="conductor-table">
                   <thead>
                     <tr>
-                      <th style={{ width: 64 }}>Ordem</th>
-                      <th style={{ width: 54 }}>Prévia</th>
-                      <th>Produto / Cartaz</th>
-                      <th>Origem / Caminho</th>
-                      <th style={{ width: 90 }}>Preço</th>
-                      <th style={{ width: 110 }}>Cópias</th>
-                      <th style={{ width: 70 }}>Ação</th>
+                      <th style={{ width: 62, textAlign: 'center' }}>#</th>
+                      <th style={{ width: 50, textAlign: 'center' }}>Prévia</th>
+                      <th style={{ minWidth: 200 }}>Produto / Descrição</th>
+                      <th style={{ width: 110 }}>Categoria</th>
+                      <th style={{ width: 90, textAlign: 'right' }}>Preço</th>
+                      <th style={{ width: 60, textAlign: 'center' }}>Unidade</th>
+                      <th style={{ minWidth: 160 }}>Arquivo / Origem</th>
+                      <th style={{ width: 105, textAlign: 'center' }}>Cópias</th>
+                      <th style={{ width: 75, textAlign: 'center' }}>Ações</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -806,178 +797,108 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                       return (
                         <tr
                           key={item.id}
-                          className={isSelected ? 'folder selected' : ''}
-                          style={{
-                            background: isSelected ? '#edf3fe' : undefined,
-                            cursor: 'pointer',
-                          }}
+                          className={isSelected ? 'selected' : ''}
                           onClick={() => setSelectedId(item.id)}
+                          style={{ cursor: 'pointer' }}
                         >
-                          {/* Order buttons */}
+                          {/* 1. Ordem e controles de reordenação */}
                           <td onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                            <div className="conductor-order-cell">
                               <button
                                 type="button"
-                                className="subtle"
+                                className="conductor-arrow-btn"
                                 disabled={index === 0}
-                                style={{ padding: '2px 6px', fontSize: 10, lineHeight: 1 }}
-                                title="Subir na fila de impressão"
                                 onClick={() => setQueue(q => moveQueueItem(q, index, index - 1))}
+                                title="Mover para cima"
                               >
                                 ▲
                               </button>
-                              <span style={{ fontSize: 11, fontWeight: 700, color: '#4b5563' }}>
-                                #{index + 1}
-                              </span>
+                              <span className="conductor-order-num">#{index + 1}</span>
                               <button
                                 type="button"
-                                className="subtle"
+                                className="conductor-arrow-btn"
                                 disabled={index === queue.length - 1}
-                                style={{ padding: '2px 6px', fontSize: 10, lineHeight: 1 }}
-                                title="Descer na fila de impressão"
                                 onClick={() => setQueue(q => moveQueueItem(q, index, index + 1))}
+                                title="Mover para baixo"
                               >
                                 ▼
                               </button>
                             </div>
                           </td>
 
-                          {/* Thumbnail with zoom click */}
-                          <td onClick={e => e.stopPropagation()} style={{ textAlign: 'center' }}>
+                          {/* 2. Miniatura proporcional do cartaz */}
+                          <td onClick={e => e.stopPropagation()}>
                             <div
-                              style={{
-                                width: 44,
-                                height: 60,
-                                background: '#f8fafc',
-                                borderRadius: 4,
-                                overflow: 'hidden',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                border: '1px solid #cbd5e1',
-                                cursor: 'pointer',
-                                margin: '0 auto',
-                              }}
+                              className="conductor-thumb-wrap"
                               onClick={() => handleOpenEnlarged(item)}
                               title="Clique para ver prévia ampliada"
                             >
                               {item.thumbnailUrl ? (
-                                <img
-                                  src={item.thumbnailUrl}
-                                  alt={item.name}
-                                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                                />
+                                <img src={item.thumbnailUrl} alt={item.name} />
                               ) : item.status === 'error' ? (
-                                <span style={{ color: '#9e233b', fontSize: 16 }}>⚠</span>
+                                <span style={{ color: '#ef4444', fontSize: 13 }}>⚠</span>
                               ) : item.status === 'loading' ? (
-                                <span style={{ fontSize: 10, color: '#68778f' }}>…</span>
+                                <span style={{ fontSize: 10, color: '#94a3b8' }}>…</span>
                               ) : (
-                                <span style={{ fontSize: 9, color: '#68778f' }}>A5</span>
+                                <span style={{ fontSize: 9, color: '#94a3b8' }}>A5</span>
                               )}
                             </div>
                           </td>
 
-                          {/* Product Info - Horizontal single line name without vertical break */}
+                          {/* 3. Nome e descrição do produto (horizontal sem quebra) */}
                           <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <div
-                                style={{
-                                  fontWeight: 700,
-                                  fontSize: 13,
-                                  color: '#0f172a',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  maxWidth: 240,
-                                }}
-                                title={item.name}
-                              >
-                                {item.name}
-                              </div>
-                              <span
-                                style={{
-                                  fontSize: 10,
-                                  padding: '1px 5px',
-                                  borderRadius: 4,
-                                  background: item.fileFormat === 'psd' ? '#eef2ff' : '#f0fdf4',
-                                  color: item.fileFormat === 'psd' ? '#4338ca' : '#15803d',
-                                  fontWeight: 700,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                .{item.fileFormat}
-                              </span>
-                              {item.f7 && (
-                                <span className="code-cell" style={{ fontSize: 10, padding: '1px 4px' }}>
-                                  F7: {item.f7}
-                                </span>
-                              )}
+                            <div className="conductor-product-name" title={item.name}>
+                              {item.name}
                             </div>
                             {item.detail && (
-                              <small
-                                style={{
-                                  color: '#64748b',
-                                  display: 'block',
-                                  marginTop: 2,
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  maxWidth: 240,
-                                }}
-                              >
+                              <div className="conductor-product-detail" title={item.detail}>
                                 {item.detail}
-                              </small>
+                              </div>
                             )}
                             {item.status === 'error' && (
-                              <small style={{ color: '#9e233b', fontWeight: 600, display: 'block', marginTop: 4 }}>
+                              <small style={{ color: '#dc2626', fontWeight: 600, display: 'block', marginTop: 2, fontSize: 10 }}>
                                 ⚠ {item.errorMessage || 'Falha de leitura'}
                               </small>
                             )}
                           </td>
 
-                          {/* Origin Path - Compact with full path tooltip */}
+                          {/* 4. Categoria, quando disponível (não inventa se ausente) */}
                           <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                            {item.category ? (
+                              <span className="conductor-badge category" title={`Categoria: ${item.category}`}>
+                                {item.category}
+                              </span>
+                            ) : (
+                              <span style={{ color: '#cbd5e1', fontSize: 12 }}>—</span>
+                            )}
+                          </td>
+
+                          {/* 5. Preço horizontal */}
+                          <td style={{ textAlign: 'right' }}>
+                            <span className="conductor-price">
+                              {item.price ? `R$ ${item.price}` : '—'}
+                            </span>
+                          </td>
+
+                          {/* 6. Tamanho ou unidade do produto */}
+                          <td style={{ textAlign: 'center' }}>
+                            <span className="conductor-unit">{item.unit || 'UN'}</span>
+                          </td>
+
+                          {/* 7. Arquivo e caminho de origem com tooltip */}
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                              <span className={`conductor-badge ${item.fileFormat}`}>
+                                .{item.fileFormat}
+                              </span>
                               {isNetwork && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    background: '#fef3c7',
-                                    color: '#92400e',
-                                    padding: '1px 4px',
-                                    borderRadius: 3,
-                                    fontWeight: 700,
-                                  }}
-                                >
+                                <span className="conductor-badge network">
                                   Rede UNC
                                 </span>
                               )}
-                              {item.sourceType === 'library' && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    background: '#e0f2fe',
-                                    color: '#0369a1',
-                                    padding: '1px 4px',
-                                    borderRadius: 3,
-                                    fontWeight: 700,
-                                  }}
-                                >
-                                  Biblioteca
-                                </span>
-                              )}
-                              {item.sourceType === 'editor' && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    background: '#f3e8ff',
-                                    color: '#7e22ce',
-                                    padding: '1px 4px',
-                                    borderRadius: 3,
-                                    fontWeight: 700,
-                                  }}
-                                >
-                                  Editor
+                              {item.f7 && (
+                                <span className="code-cell" style={{ fontSize: 10, padding: '1px 4px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 3 }}>
+                                  F7: {item.f7}
                                 </span>
                               )}
                             </div>
@@ -985,11 +906,11 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                               style={{
                                 fontSize: 11,
                                 color: '#64748b',
-                                maxWidth: 220,
                                 whiteSpace: 'nowrap',
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
-                                display: 'inline-block',
+                                display: 'block',
+                                maxWidth: 220,
                               }}
                               title={item.sourcePath}
                             >
@@ -997,31 +918,16 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                             </span>
                           </td>
 
-                          {/* Price */}
-                          <td>
-                            {item.price ? (
-                              <strong style={{ fontSize: 13, color: '#0f172a' }}>R$ {item.price}</strong>
-                            ) : (
-                              <small style={{ color: '#9ca3af' }}>—</small>
-                            )}
-                            {item.unit && (
-                              <small style={{ display: 'block', color: '#64748b', fontSize: 11 }}>{item.unit}</small>
-                            )}
-                          </td>
-
-                          {/* Copies */}
+                          {/* 8. Quantidade de cópias */}
                           <td onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <div className="conductor-copies-stepper">
                               <button
                                 type="button"
-                                className="subtle"
                                 disabled={item.copies <= 1}
-                                style={{ padding: '3px 7px', fontSize: 12 }}
-                                onClick={() =>
-                                  setQueue(q => updateQueueItemCopies(q, item.id, item.copies - 1))
-                                }
+                                onClick={() => setQueue(q => updateQueueItemCopies(q, item.id, item.copies - 1))}
+                                title="Diminuir cópias"
                               >
-                                -
+                                −
                               </button>
                               <input
                                 type="number"
@@ -1029,32 +935,26 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                                 max={999}
                                 value={item.copies}
                                 onChange={e =>
-                                  setQueue(q =>
-                                    updateQueueItemCopies(q, item.id, parseInt(e.target.value, 10) || 1)
-                                  )
+                                  setQueue(q => updateQueueItemCopies(q, item.id, parseInt(e.target.value, 10) || 1))
                                 }
-                                style={{ width: 42, textAlign: 'center', padding: '3px 2px', fontSize: 12 }}
+                                title="Quantidade de cópias"
                               />
                               <button
                                 type="button"
-                                className="subtle"
-                                style={{ padding: '3px 7px', fontSize: 12 }}
-                                onClick={() =>
-                                  setQueue(q => updateQueueItemCopies(q, item.id, item.copies + 1))
-                                }
+                                onClick={() => setQueue(q => updateQueueItemCopies(q, item.id, item.copies + 1))}
+                                title="Aumentar cópias"
                               >
                                 +
                               </button>
                             </div>
                           </td>
 
-                          {/* Actions */}
+                          {/* 9. Botões de visualizar e remover */}
                           <td onClick={e => e.stopPropagation()}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
                               <button
                                 type="button"
-                                className="subtle"
-                                style={{ padding: '4px 6px', fontSize: 11 }}
+                                className="conductor-action-btn"
                                 title="Ver prévia ampliada"
                                 onClick={() => handleOpenEnlarged(item)}
                               >
@@ -1062,12 +962,11 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                               </button>
                               <button
                                 type="button"
-                                className="remove"
-                                aria-label={`Remover ${item.name}`}
+                                className="conductor-action-btn danger"
                                 title="Remover da fila"
                                 onClick={() => setQueue(q => removeQueueItem(q, item.id))}
                               >
-                                ×
+                                ✕
                               </button>
                             </div>
                           </td>
@@ -1079,51 +978,21 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
               </div>
             )}
 
-            {/* Grid Mode View */}
+            {/* Modo Grade Modernizado */}
             {viewMode === 'grid' && (
-              <div
-                className="cards grid"
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))',
-                  gap: 14,
-                }}
-              >
+              <div className="conductor-grid">
                 {queue.map((item, index) => {
                   const isSelected = item.id === selectedId;
                   const isNetwork = item.sourcePath.startsWith('\\\\');
                   return (
                     <article
                       key={item.id}
-                      className="cartaz-card"
-                      style={{
-                        border: isSelected ? '2px solid #2563eb' : '1px solid #cbd5e1',
-                        borderRadius: 8,
-                        padding: 10,
-                        background: isSelected ? '#f8faff' : '#ffffff',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 8,
-                        boxShadow: '0 1px 4px rgba(0,0,0,0.05)',
-                        position: 'relative',
-                      }}
+                      className={`conductor-card ${isSelected ? 'selected' : ''}`}
                       onClick={() => setSelectedId(item.id)}
                     >
-                      {/* Card Thumbnail */}
+                      {/* Moldura de Prévia Centralizada */}
                       <div
-                        style={{
-                          position: 'relative',
-                          width: '100%',
-                          height: 180,
-                          background: '#f8fafc',
-                          borderRadius: 6,
-                          overflow: 'hidden',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                          border: '1px solid #e2e8f0',
-                        }}
+                        className="conductor-card-preview"
                         onClick={e => {
                           e.stopPropagation();
                           handleOpenEnlarged(item);
@@ -1131,17 +1000,13 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                         title="Clique para ver prévia ampliada"
                       >
                         {item.thumbnailUrl ? (
-                          <img
-                            src={item.thumbnailUrl}
-                            alt={item.name}
-                            style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }}
-                          />
+                          <img src={item.thumbnailUrl} alt={item.name} />
                         ) : item.status === 'error' ? (
-                          <span style={{ color: '#9e233b', fontSize: 24 }}>⚠</span>
+                          <span style={{ color: '#ef4444', fontSize: 22 }}>⚠</span>
                         ) : item.status === 'loading' ? (
-                          <span style={{ fontSize: 12, color: '#64748b' }}>Carregando…</span>
+                          <span style={{ fontSize: 11, color: '#94a3b8' }}>Carregando…</span>
                         ) : (
-                          <span style={{ fontSize: 12, color: '#64748b' }}>A5</span>
+                          <span style={{ fontSize: 11, color: '#94a3b8' }}>A5</span>
                         )}
 
                         <span
@@ -1169,7 +1034,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                             right: 6,
                             background: 'rgba(255, 255, 255, 0.9)',
                             border: '1px solid #cbd5e1',
-                            padding: '2px 6px',
+                            padding: '2px 5px',
                             fontSize: 11,
                             borderRadius: 4,
                           }}
@@ -1179,44 +1044,33 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                         </button>
                       </div>
 
-                      {/* Card Info */}
+                      {/* Informações do Produto */}
                       <div>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: 13,
-                            color: '#0f172a',
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                          }}
-                          title={item.name}
-                        >
+                        <div className="conductor-product-name" title={item.name}>
                           {item.name}
                         </div>
                         {item.detail && (
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: '#64748b',
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              marginTop: 2,
-                            }}
-                          >
+                          <div className="conductor-product-detail" title={item.detail}>
                             {item.detail}
                           </div>
                         )}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-                          <span style={{ fontWeight: 800, fontSize: 14, color: '#1e3a8a' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                          <span className="conductor-price">
                             {item.price ? `R$ ${item.price}` : '—'}
                           </span>
-                          <span style={{ fontSize: 11, color: '#64748b' }}>{item.unit || 'UN'}</span>
+                          <span className="conductor-unit">{item.unit || 'UN'}</span>
                         </div>
                       </div>
 
-                      {/* Path tooltip */}
+                      {/* Categoria e Origem */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        {item.category && (
+                          <span className="conductor-badge category">{item.category}</span>
+                        )}
+                        <span className={`conductor-badge ${item.fileFormat}`}>.{item.fileFormat}</span>
+                        {isNetwork && <span className="conductor-badge network">Rede</span>}
+                      </div>
+
                       <div
                         style={{
                           fontSize: 10,
@@ -1227,55 +1081,52 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                         }}
                         title={item.sourcePath}
                       >
-                        {isNetwork ? '🌐 ' : '📁 '}
                         {compactPath(item.sourcePath)}
                       </div>
 
-                      {/* Copies & Reorder row */}
+                      {/* Rodapé: Cópias e Reordenação */}
                       <div
                         style={{
                           display: 'flex',
                           justifyContent: 'space-between',
                           alignItems: 'center',
                           marginTop: 'auto',
-                          paddingTop: 6,
+                          paddingTop: 8,
                           borderTop: '1px solid #f1f5f9',
                         }}
                         onClick={e => e.stopPropagation()}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                        <div className="conductor-copies-stepper">
                           <button
                             type="button"
-                            className="subtle"
                             disabled={item.copies <= 1}
-                            style={{ padding: '2px 6px', fontSize: 11 }}
-                            onClick={() =>
-                              setQueue(q => updateQueueItemCopies(q, item.id, item.copies - 1))
-                            }
+                            onClick={() => setQueue(q => updateQueueItemCopies(q, item.id, item.copies - 1))}
                           >
-                            -
+                            −
                           </button>
-                          <span style={{ fontSize: 12, fontWeight: 700, minWidth: 20, textAlign: 'center' }}>
-                            {item.copies}
-                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={999}
+                            value={item.copies}
+                            onChange={e =>
+                              setQueue(q => updateQueueItemCopies(q, item.id, parseInt(e.target.value, 10) || 1))
+                            }
+                          />
                           <button
                             type="button"
-                            className="subtle"
-                            style={{ padding: '2px 6px', fontSize: 11 }}
-                            onClick={() =>
-                              setQueue(q => updateQueueItemCopies(q, item.id, item.copies + 1))
-                            }
+                            onClick={() => setQueue(q => updateQueueItemCopies(q, item.id, item.copies + 1))}
                           >
                             +
                           </button>
                         </div>
 
-                        <div style={{ display: 'flex', gap: 2 }}>
+                        <div style={{ display: 'flex', gap: 3 }}>
                           <button
                             type="button"
-                            className="subtle"
+                            className="conductor-arrow-btn"
                             disabled={index === 0}
-                            style={{ padding: '2px 5px', fontSize: 10 }}
+                            style={{ padding: '3px 6px' }}
                             title="Mover para esquerda"
                             onClick={() => setQueue(q => moveQueueItem(q, index, index - 1))}
                           >
@@ -1283,9 +1134,9 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                           </button>
                           <button
                             type="button"
-                            className="subtle"
+                            className="conductor-arrow-btn"
                             disabled={index === queue.length - 1}
-                            style={{ padding: '2px 5px', fontSize: 10 }}
+                            style={{ padding: '3px 6px' }}
                             title="Mover para direita"
                             onClick={() => setQueue(q => moveQueueItem(q, index, index + 1))}
                           >
@@ -1293,12 +1144,12 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                           </button>
                           <button
                             type="button"
-                            className="remove"
-                            style={{ marginLeft: 4 }}
+                            className="conductor-action-btn danger"
+                            style={{ marginLeft: 2 }}
                             title="Remover"
                             onClick={() => setQueue(q => removeQueueItem(q, item.id))}
                           >
-                            ×
+                            ✕
                           </button>
                         </div>
                       </div>
@@ -1307,64 +1158,124 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 })}
               </div>
             )}
-          </div>
 
-          {/* Side Preview Panel (in List Mode) */}
-          {viewMode === 'list' && (
-            <div className="offer-preview-box" style={{ position: 'sticky', top: 14 }}>
-              <h3>Prévia do Cartaz Selecionado</h3>
-              {selectedItem ? (
-                <>
-                  <div style={{ marginBottom: 10, fontSize: 12 }}>
-                    <strong>{selectedItem.name}</strong>
-                    {selectedItem.detail && <span> · {selectedItem.detail}</span>}
-                    {selectedItem.price && <span> · R$ {selectedItem.price}</span>}
-                    <div style={{ fontSize: 11, color: '#68778f', marginTop: 4 }}>
-                      Cópias configuradas: <strong>{selectedItem.copies}</strong> folha(s) A5
+            {/* Painel de Prévia Lateral (em Modo Lista) */}
+            {showSidePreview && viewMode === 'list' && (
+              <aside className="conductor-side-panel" aria-label="Prévia do cartaz selecionado">
+                <h3>
+                  <span>Prévia do Cartaz</span>
+                  {selectedItem && (
+                    <button
+                      type="button"
+                      className="conductor-action-btn"
+                      onClick={() => handleOpenEnlarged(selectedItem)}
+                      title="Ver prévia ampliada"
+                    >
+                      🔍 Ampliar
+                    </button>
+                  )}
+                </h3>
+
+                {selectedItem ? (
+                  <>
+                    <div style={{ marginBottom: 10, fontSize: 12 }}>
+                      <strong style={{ color: '#0f172a' }}>{selectedItem.name}</strong>
+                      {selectedItem.detail && <span style={{ color: '#64748b' }}> · {selectedItem.detail}</span>}
                     </div>
-                  </div>
 
-                  <div className="paper-wrap" style={{ height: 460 }}>
-                    {selectedPoster ? (
-                      <PosterView poster={selectedPoster} />
-                    ) : selectedItem.status === 'loading' ? (
-                      <div style={{ textAlign: 'center', padding: 40, color: '#68778f' }}>
-                        <p>Carregando arte do cartaz…</p>
-                      </div>
-                    ) : selectedItem.status === 'error' ? (
-                      <div style={{ textAlign: 'center', padding: 24, color: '#9e233b' }}>
-                        <p style={{ fontWeight: 700 }}>Erro ao carregar cartaz:</p>
-                        <p style={{ fontSize: 12 }}>{selectedItem.errorMessage}</p>
-                        <button
-                          type="button"
-                          className="subtle"
-                          style={{ marginTop: 12 }}
-                          onClick={() => {
-                            run(async () => {
-                              const reloaded = await loadConductorItem(selectedItem, undefined, { keepFullPoster: true });
-                              setQueue(q => q.map(it => (it.id === reloaded.id ? reloaded : it)));
-                            });
-                          }}
-                        >
-                          Tentar recarregar
-                        </button>
-                      </div>
-                    ) : (
-                      <div style={{ textAlign: 'center', padding: 40, color: '#68778f' }}>
-                        <p>Aguardando leitura do arquivo…</p>
-                      </div>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="empty">Selecione um cartaz na tabela para ver a prévia.</p>
-              )}
-            </div>
-          )}
-        </div>
+                    <div className="paper-wrap">
+                      {selectedPoster ? (
+                        <PosterView poster={selectedPoster} />
+                      ) : selectedItem.status === 'loading' ? (
+                        <div style={{ textAlign: 'center', padding: 30, color: '#64748b' }}>
+                          <p>Carregando arte…</p>
+                        </div>
+                      ) : selectedItem.status === 'error' ? (
+                        <div style={{ textAlign: 'center', padding: 20, color: '#dc2626' }}>
+                          <p style={{ fontWeight: 700, fontSize: 12 }}>Erro ao carregar:</p>
+                          <p style={{ fontSize: 11 }}>{selectedItem.errorMessage}</p>
+                          <button
+                            type="button"
+                            className="subtle"
+                            style={{ marginTop: 8 }}
+                            onClick={() => {
+                              run(async () => {
+                                const reloaded = await loadConductorItem(selectedItem, undefined, { keepFullPoster: true });
+                                setQueue(q => q.map(it => (it.id === reloaded.id ? reloaded : it)));
+                              });
+                            }}
+                          >
+                            Tentar recarregar
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ textAlign: 'center', padding: 30, color: '#64748b' }}>
+                          <p>Aguardando leitura…</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Dados Reais do Arquivo */}
+                    <dl className="conductor-side-details">
+                      <dt>Arquivo:</dt>
+                      <dd title={selectedItem.sourcePath}>{compactPath(selectedItem.sourcePath)}</dd>
+                      <dt>Formato:</dt>
+                      <dd>{selectedItem.fileFormat.toUpperCase()}</dd>
+                      {selectedItem.fileSize ? (
+                        <>
+                          <dt>Tamanho:</dt>
+                          <dd>
+                            {selectedItem.fileSize > 1024 * 1024
+                              ? `${(selectedItem.fileSize / (1024 * 1024)).toFixed(1)} MB`
+                              : `${(selectedItem.fileSize / 1024).toFixed(0)} KB`}
+                          </dd>
+                        </>
+                      ) : null}
+                      {selectedPoster?.artwork?.canvas ? (
+                        <>
+                          <dt>Resolução:</dt>
+                          <dd>
+                            {selectedPoster.artwork.canvas.width} × {selectedPoster.artwork.canvas.height} px
+                            {selectedPoster.artwork.canvas.resolutionPpi ? ` (${selectedPoster.artwork.canvas.resolutionPpi} DPI)` : ''}
+                          </dd>
+                        </>
+                      ) : null}
+                      {selectedItem.category && (
+                        <>
+                          <dt>Categoria:</dt>
+                          <dd>{selectedItem.category}</dd>
+                        </>
+                      )}
+                      <dt>Preço:</dt>
+                      <dd>R$ {selectedItem.price || '—'} / {selectedItem.unit || 'UN'}</dd>
+                      {selectedItem.f7 && (
+                        <>
+                          <dt>Código F7:</dt>
+                          <dd>{selectedItem.f7}</dd>
+                        </>
+                      )}
+                      {selectedItem.validityText && (
+                        <>
+                          <dt>Validade:</dt>
+                          <dd>{selectedItem.validityText}</dd>
+                        </>
+                      )}
+                      <dt>Cópias:</dt>
+                      <dd><strong>{selectedItem.copies}</strong> folha(s) A5</dd>
+                    </dl>
+                  </>
+                ) : (
+                  <p className="empty" style={{ padding: '30px 10px', fontSize: 12 }}>
+                    Selecione um cartaz na tabela para inspecionar a prévia.
+                  </p>
+                )}
+              </aside>
+            )}
+          </div>
+        </>
       )}
 
-      {/* Enlarged Modal Preview */}
+      {/* Modal de Prévia Ampliada sob Demanda */}
       {enlargedItem && (
         <div className="modal-backdrop" onClick={handleCloseEnlarged}>
           <div
@@ -1372,11 +1283,11 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
             role="dialog"
             aria-modal="true"
             aria-label="Prévia ampliada do cartaz"
-            style={{ maxWidth: 580, maxHeight: '92vh', overflowY: 'auto' }}
+            style={{ maxWidth: 580, maxHeight: '92vh', overflowY: 'auto', background: '#ffffff' }}
             onClick={e => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h2 style={{ margin: 0, fontSize: 18 }}>Prévia Ampliada — {enlargedItem.name}</h2>
+              <h2 style={{ margin: 0, fontSize: 17, color: '#0f172a' }}>Prévia Ampliada — {enlargedItem.name}</h2>
               <button type="button" className="subtle" onClick={handleCloseEnlarged}>
                 ✕ Fechar
               </button>
@@ -1387,63 +1298,81 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 display: 'flex',
                 justifyContent: 'center',
                 background: '#f8fafc',
+                border: '1px solid #e2e8f0',
                 padding: 16,
                 borderRadius: 8,
                 marginBottom: 16,
               }}
             >
               {loadingEnlarged ? (
-                <p style={{ color: '#64748b', padding: 40 }}>Carregando composição em alta fidelidade…</p>
+                <p style={{ color: '#64748b', padding: 40 }}>Carregando composição em alta resolução…</p>
               ) : enlargedPoster ? (
-                <div style={{ maxWidth: 300, boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
+                <div style={{ maxWidth: 300, boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }}>
                   <PosterView poster={enlargedPoster} />
                 </div>
               ) : enlargedItem.thumbnailUrl ? (
                 <img
                   src={enlargedItem.thumbnailUrl}
                   alt={enlargedItem.name}
-                  style={{ maxWidth: 280, borderRadius: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}
+                  style={{ maxWidth: 280, borderRadius: 4, boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }}
                 />
               ) : (
-                <p style={{ color: '#ef4444' }}>Não foi possível carregar a prévia deste cartaz.</p>
+                <p style={{ color: '#dc2626' }}>Não foi possível renderizar a prévia deste cartaz.</p>
               )}
             </div>
 
-            <div
-              style={{
-                fontSize: 13,
-                color: '#334155',
-                display: 'grid',
-                gridTemplateColumns: '120px 1fr',
-                gap: '6px 12px',
-                background: '#f1f5f9',
-                padding: 12,
-                borderRadius: 6,
-              }}
+            <dl
+              className="conductor-side-details"
+              style={{ gridTemplateColumns: '90px 1fr', fontSize: 12 }}
             >
-              <strong>Arquivo:</strong>
-              <span style={{ wordBreak: 'break-all', fontSize: 12 }}>{enlargedItem.sourcePath}</span>
-              <strong>Formato:</strong>
-              <span>{enlargedItem.fileFormat.toUpperCase()}</span>
-              <strong>Preço:</strong>
-              <span>R$ {enlargedItem.price || '—'} / {enlargedItem.unit || 'UN'}</span>
+              <dt>Caminho:</dt>
+              <dd>{enlargedItem.sourcePath}</dd>
+              <dt>Formato:</dt>
+              <dd>{enlargedItem.fileFormat.toUpperCase()}</dd>
+              {enlargedItem.fileSize ? (
+                <>
+                  <dt>Tamanho:</dt>
+                  <dd>
+                    {enlargedItem.fileSize > 1024 * 1024
+                      ? `${(enlargedItem.fileSize / (1024 * 1024)).toFixed(1)} MB`
+                      : `${(enlargedItem.fileSize / 1024).toFixed(0)} KB`}
+                  </dd>
+                </>
+              ) : null}
+              {enlargedPoster?.artwork?.canvas ? (
+                <>
+                  <dt>Resolução:</dt>
+                  <dd>
+                    {enlargedPoster.artwork.canvas.width} × {enlargedPoster.artwork.canvas.height} px
+                    {enlargedPoster.artwork.canvas.resolutionPpi ? ` (${enlargedPoster.artwork.canvas.resolutionPpi} DPI)` : ''}
+                  </dd>
+                </>
+              ) : null}
+              {enlargedItem.category && (
+                <>
+                  <dt>Categoria:</dt>
+                  <dd>{enlargedItem.category}</dd>
+                </>
+              )}
+              <dt>Preço:</dt>
+              <dd>R$ {enlargedItem.price || '—'} / {enlargedItem.unit || 'UN'}</dd>
               {enlargedItem.f7 && (
                 <>
-                  <strong>Código F7:</strong>
-                  <span>{enlargedItem.f7}</span>
+                  <dt>Código F7:</dt>
+                  <dd>{enlargedItem.f7}</dd>
                 </>
               )}
               {enlargedItem.validityText && (
                 <>
-                  <strong>Validade:</strong>
-                  <span>{enlargedItem.validityText}</span>
+                  <dt>Validade:</dt>
+                  <dd>{enlargedItem.validityText}</dd>
                 </>
               )}
-              <strong>Cópias na fila:</strong>
-              <span>{enlargedItem.copies} folha(s) A5</span>
-            </div>
+              <dt>Cópias:</dt>
+              <dd>{enlargedItem.copies} folha(s) A5</dd>
+            </dl>
 
-            <div className="toolbar" style={{ marginTop: 20, justifyContent: 'flex-end' }}>
+            <div className="toolbar" style={{ marginTop: 18, justifyContent: 'flex-end' }}>
               <button type="button" onClick={handleCloseEnlarged}>
                 Fechar
               </button>
@@ -1452,13 +1381,13 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
         </div>
       )}
 
-      {/* Modal: Select from Library */}
+      {/* Modal: Adicionar da Biblioteca */}
       {showLibraryModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="lib-modal-title">
-          <div className="modal price-confirmation" style={{ width: 'min(760px, 94vw)' }}>
-            <h3 id="lib-modal-title">Adicionar Cartazes de "Meus Cartazes"</h3>
-            <p style={{ color: '#68778f', margin: '4px 0 16px' }}>
-              Selecione os cartazes salvos na sua biblioteca para adicionar à fila de impressão.
+          <div className="modal price-confirmation" style={{ width: 'min(760px, 94vw)', background: '#ffffff' }}>
+            <h3 id="lib-modal-title" style={{ color: '#0f172a' }}>Adicionar Cartazes de "Meus Cartazes"</h3>
+            <p style={{ color: '#64748b', margin: '4px 0 16px' }}>
+              Selecione os cartazes salvos na biblioteca local para incluir na fila de impressão.
             </p>
 
             <div className="library-toolbar" style={{ marginBottom: 12 }}>
@@ -1486,8 +1415,8 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
               </button>
             </div>
 
-            <div className="import-table-wrap" style={{ maxHeight: '45vh' }}>
-              <table className="import-table">
+            <div className="import-table-wrap" style={{ maxHeight: '45vh', background: '#ffffff' }}>
+              <table className="conductor-table">
                 <thead>
                   <tr>
                     <th style={{ width: 40 }}></th>
@@ -1507,7 +1436,8 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                     return (
                       <tr
                         key={entry.path}
-                        style={{ cursor: 'pointer', background: isChecked ? '#edf3fe' : undefined }}
+                        className={isChecked ? 'selected' : ''}
+                        style={{ cursor: 'pointer' }}
                         onClick={() => {
                           const next = new Set(selectedLibraryPaths);
                           if (next.has(entry.path)) next.delete(entry.path);
@@ -1519,13 +1449,13 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                           <input
                             type="checkbox"
                             checked={isChecked}
-                            onChange={() => {}} // Handled by tr onClick
+                            onChange={() => {}}
                           />
                         </td>
                         <td>
                           <strong>{doc?.product.name || entry.name}</strong>
                           {doc?.product.complement && (
-                            <small>{doc.product.complement}</small>
+                            <small style={{ color: '#64748b', display: 'block' }}>{doc.product.complement}</small>
                           )}
                         </td>
                         <td className="code-cell">{doc?.product.productCode || '—'}</td>
@@ -1535,7 +1465,7 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                   })}
                   {filteredLibraryEntries.length === 0 && (
                     <tr>
-                      <td colSpan={4} style={{ textAlign: 'center', padding: 24, color: '#68778f' }}>
+                      <td colSpan={4} style={{ textAlign: 'center', padding: 24, color: '#64748b' }}>
                         Nenhum cartaz encontrado com os critérios de busca.
                       </td>
                     </tr>
