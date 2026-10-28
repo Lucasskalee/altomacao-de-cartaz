@@ -1,4 +1,4 @@
-import type { Cartaz } from './types';
+import type { Cartaz, ImportedArtwork, ImportedLayout } from './types';
 import type { Poster } from '../../components/editor/PosterView';
 
 export function formatCentsBr(priceCents: number): string {
@@ -18,11 +18,21 @@ export function splitCentsToParts(priceCents: number): { whole: string; fraction
 /** Explicit printed fields shared by preview, print, thumbnails and PNG. */
 export function posterFromDocument(document: Cartaz): Poster {
   const product = document.product;
+  const artwork: ImportedArtwork | undefined =
+    document.layout.template === 'imported-psd' ? (document.layout as ImportedLayout).artwork : undefined;
   return {
     name: product.name,
     detail: product.complement,
     price: formatCentsBr(product.priceCents),
     unit: product.unit,
-    artwork: document.layout.template === 'imported-psd' ? document.layout.artwork : undefined,
+    category:
+      ((product as any).category as string) ||
+      artwork?.templateParts?.find(p => p.role === 'category')?.originalText ||
+      '',
+    validityText:
+      ((product as any).validityText as string) ||
+      artwork?.priceParts?.find(p => p.role === 'validity')?.originalText ||
+      '',
+    artwork,
   };
 }

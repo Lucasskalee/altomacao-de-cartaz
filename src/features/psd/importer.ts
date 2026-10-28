@@ -1,13 +1,15 @@
 import { readPsd, type Layer, type Psd, type RGB, type RGBA, type FRGB } from 'ag-psd';
-import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole } from '../cartazes/types';
+import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole } from '../cartazes/types';
 
 export const PSD_MAX_BYTES = 25 * 1024 * 1024;
 export type PsdRoleMap = Partial<Record<ImportedPriceRole, string>>;
+export type PsdTemplateRoleMap = Partial<Record<ImportedTextRole, string>>;
 export type PsdProductMetadata = { name: string; complement: string; unit: string; price: string; validityText: string };
 export type PsdAnalysis = {
   fileName: string; sourcePath?: string | null; hash: string; width: number; height: number; resolutionPpi: number;
   originalPreview: string; layers: ImportedLayerInfo[]; suggested: PsdRoleMap; metadata: PsdProductMetadata; warnings: string[];
   psd: Psd; runtime: Map<string, Layer>;
+  templateSuggested?: PsdTemplateRoleMap;
 };
 
 export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): Promise<PsdAnalysis> {
@@ -34,7 +36,8 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   if (!metadata.price) warnings.push('O preço original não pôde ser reconhecido automaticamente nas camadas. Informe o preço e confirme o mapeamento.');
   const resolutionPpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? 72;
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2,'0')).join('');
-  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: psd.canvas.toDataURL('image/png'), layers, suggested, metadata, warnings, psd, runtime };
+  const templateSuggested = suggestTemplateLayers(layers, suggested);
+  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: psd.canvas.toDataURL('image/png'), layers, suggested, metadata, warnings, psd, runtime, templateSuggested };
 }
 
 function flatten(source: Layer[], depth: number, prefix: string, parentVisible: boolean, runtime: Map<string, Layer>, result: ImportedLayerInfo[]) {
@@ -100,6 +103,62 @@ function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
   };
 }
 
+export function suggestTemplateLayers(
+  layers: ImportedLayerInfo[],
+  priceRoles: PsdRoleMap
+): PsdTemplateRoleMap {
+  const excluded = new Set(Object.values(priceRoles).filter(Boolean) as string[]);
+  const visible = layers.filter(layer => layer.visible && layer.type === 'text' && !excluded.has(layer.id));
+
+  const brushLayers = visible.filter(l => /brush/i.test(l.font ?? ''));
+  const titleCandidate =
+    brushLayers.find(l => l.bounds.top >= 200 && l.bounds.top <= 800) ??
+    [...visible]
+      .filter(l => l.bounds.top >= 200 && l.bounds.top <= 800)
+      .sort((a, b) => (b.bounds.right - b.bounds.left) * (b.bounds.bottom - b.bounds.top) - (a.bounds.right - a.bounds.left) * (a.bounds.bottom - a.bounds.top))[0];
+
+  const titleId = titleCandidate?.id;
+
+  const categoryCandidate =
+    visible.find(
+      l =>
+        l.id !== titleId &&
+        l.bounds.top < (titleCandidate ? titleCandidate.bounds.top : 500) &&
+        (/cerveja|refrigerante|bebida|horti|alimento|mercearia|limpeza|padaria|acougue|açougue/i.test(l.text ?? l.name) ||
+          /arial/i.test(l.font ?? ''))
+    ) ?? visible.find(l => l.id !== titleId && l.bounds.top < (titleCandidate ? titleCandidate.bounds.top : 480));
+
+  const categoryId = categoryCandidate?.id;
+
+  const volumePattern = /^(?:\d+\s*(?:L|ML|KG|G)|PET|LATA|LONG\s*NECK|CX|PCT)$/i;
+  const packagingCandidate = visible.find(
+    l =>
+      l.id !== titleId &&
+      l.id !== categoryId &&
+      (volumePattern.test((l.text ?? l.name).trim()) || (l.bounds.top > 800 && /brush/i.test(l.font ?? '')))
+  );
+
+  const packagingId = packagingCandidate?.id;
+
+  const complementCandidate = visible.find(
+    l =>
+      l.id !== titleId &&
+      l.id !== categoryId &&
+      l.id !== packagingId &&
+      (titleCandidate ? l.bounds.top > titleCandidate.bounds.top : l.bounds.top > 400) &&
+      l.bounds.top < 1000
+  );
+
+  const complementId = complementCandidate?.id;
+
+  return {
+    category: categoryId,
+    title: titleId,
+    complement: complementId,
+    packaging: packagingId,
+  };
+}
+
 export function extractPriceFromRoles(layers: ImportedLayerInfo[], roles: PsdRoleMap): string {
   if (!roles.whole || !roles.fraction) return '';
   const wholeLayer = layers.find(layer => layer.id === roles.whole);
@@ -133,12 +192,23 @@ export function extractMetadata(layers: ImportedLayerInfo[], roles: PsdRoleMap):
   return { name, complement, unit, price, validityText };
 }
 
-export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): ImportedArtwork {
+export function buildArtwork(
+  analysis: PsdAnalysis,
+  roles: PsdRoleMap,
+  templateRoles?: PsdTemplateRoleMap
+): ImportedArtwork {
   if (!roles.whole || !roles.fraction) throw new Error('Selecione as camadas de reais e centavos.');
-  const selected = new Set(Object.values(roles).filter(Boolean));
+  const selected = new Set(Object.values(roles).filter(Boolean) as string[]);
   if (selected.size !== Object.values(roles).filter(Boolean).length) throw new Error('Cada função do preço deve usar uma camada diferente.');
-  const staticBackground = composeStatic(analysis, selected);
+  const templateSelected = new Set(templateRoles ? (Object.values(templateRoles).filter(Boolean) as string[]) : []);
+  const allExcluded = new Set([...selected, ...templateSelected]);
+  const staticBackground = composeStatic(analysis, allExcluded);
   const priceParts = (Object.entries(roles) as [ImportedPriceRole,string | undefined][]).flatMap(([role,id]) => id ? [partFromLayer(role,id,analysis)] : []);
+  const templateParts = templateRoles
+    ? (Object.entries(templateRoles) as [ImportedTextRole, string | undefined][]).flatMap(([role, id]) =>
+        id ? [partFromLayer(role, id, analysis)] : []
+      )
+    : undefined;
   const warnings = [...analysis.warnings], preparation: string[] = [];
   const wholePart = priceParts.find(item => item.role === 'whole');
   const fractionPart = priceParts.find(item => item.role === 'fraction');
@@ -169,6 +239,7 @@ export function buildArtwork(analysis: PsdAnalysis, roles: PsdRoleMap): Imported
     source: { fileName: analysis.fileName, sha256: analysis.hash, sourcePath: analysis.sourcePath ?? null },
     canvas: { width: analysis.width, height: analysis.height, resolutionPpi: analysis.resolutionPpi, fit: 'contain' },
     staticBackground, originalPreview: analysis.originalPreview, priceParts, layers: analysis.layers, warnings,
+    templateParts, isReferenceTemplate: Boolean(templateParts && templateParts.length > 0),
   };
 }
 
@@ -199,22 +270,24 @@ function blend(mode: Layer['blendMode']): GlobalCompositeOperation {
   return supported[mode ?? 'normal'] ?? 'source-over';
 }
 
-function partFromLayer(role: ImportedPriceRole, id: string, analysis: PsdAnalysis): ImportedPricePart {
+function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): ImportedPricePart {
   const layer = analysis.runtime.get(id); if (!layer) throw new Error('Camada mapeada não encontrada.');
   const info = analysis.layers.find(item => item.id === id)!;
   const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
   const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
+  const stroke = layer.effects?.stroke?.find(item => item.enabled !== false);
   const distance = shadow?.distance?.value ?? 0, angle = (shadow?.angle ?? 120) * Math.PI / 180;
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
     color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined, role),
     shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
+    stroke: stroke ? { size: stroke.size?.value ?? 0, color: '#000000' } : undefined,
   };
 }
 
-function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedPriceRole): string {
-  if (!color) return role === 'validity' ? '#000000' : '#c74624';
+function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedRole): string {
+  if (!color) return (role === 'validity' || role === 'category' || role === 'complement' || role === 'title') ? '#000000' : '#c74624';
   const raw = 'fr' in color ? [color.fr,color.fg,color.fb] : [color.r,color.g,color.b];
   const values = raw.map(value => Math.round(Math.max(0,Math.min(255, value <= 1 ? value * 255 : value))));
   return `#${values.map(value => value.toString(16).padStart(2,'0')).join('')}`;

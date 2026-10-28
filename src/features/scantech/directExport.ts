@@ -376,3 +376,132 @@ export async function exportScantechPsdsDirect(
     results,
   };
 }
+
+export type DerivedPsdPayload = {
+  sourcePsdPath: string;
+  outputPsdPath: string;
+  allowSamePath?: boolean;
+  category?: string;
+  title: string;
+  complement?: string;
+  packaging?: string;
+  whole: string;
+  fraction: string;
+  validityText?: string;
+  roles: {
+    categoryLayerId?: string;
+    titleLayerId?: string;
+    complementLayerId?: string;
+    packagingLayerId?: string;
+    wholeLayerId?: string;
+    fractionLayerId?: string;
+    validityLayerId?: string;
+  };
+};
+
+export async function exportDerivedPsdDirect(
+  payload: DerivedPsdPayload,
+  io: ScantechDirectExportIo = defaultDirectExportIo
+): Promise<{ ok: boolean; error?: string; outputPsdPath: string }> {
+  if (!payload.sourcePsdPath || !payload.sourcePsdPath.trim()) {
+    return { ok: false, error: 'Arquivo PSD de referência não informado.', outputPsdPath: payload.outputPsdPath };
+  }
+  if (!payload.outputPsdPath || !payload.outputPsdPath.trim()) {
+    return { ok: false, error: 'Caminho de saída do PSD não informado.', outputPsdPath: payload.outputPsdPath };
+  }
+  const normSrc = payload.sourcePsdPath.replace(/\\/g, '/').toLowerCase();
+  const normDst = payload.outputPsdPath.replace(/\\/g, '/').toLowerCase();
+  if (normSrc === normDst && !payload.allowSamePath) {
+    return { ok: false, error: 'Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD de referência original.', outputPsdPath: payload.outputPsdPath };
+  }
+
+  ensureCanvasInitialized();
+
+  let rawBuffer: ArrayBuffer;
+  try {
+    rawBuffer = await io.readSourcePsd(payload.sourcePsdPath);
+  } catch (e) {
+    return { ok: false, error: `Falha ao ler o PSD de referência: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+  }
+
+  let psd: Psd;
+  try {
+    psd = readPsd(rawBuffer, { useImageData: true, throwForMissingFeatures: false });
+  } catch (e) {
+    return { ok: false, error: `Falha ao interpretar o PSD: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+  }
+
+  if (payload.roles.wholeLayerId) {
+    const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
+    if (wholeLayer && wholeLayer.text) {
+      wholeLayer.text.text = payload.whole.trim();
+    }
+  }
+
+  if (payload.roles.fractionLayerId) {
+    const fractionLayer = resolveLayerByPath(psd, payload.roles.fractionLayerId);
+    if (fractionLayer && fractionLayer.text) {
+      fractionLayer.text.text = payload.fraction.trim();
+    }
+  }
+
+  if (payload.category && payload.roles.categoryLayerId) {
+    const catLayer = resolveLayerByPath(psd, payload.roles.categoryLayerId);
+    if (catLayer && catLayer.text) {
+      catLayer.text.text = payload.category.trim();
+    }
+  }
+
+  if (payload.title && payload.roles.titleLayerId) {
+    const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
+    if (titleLayer && titleLayer.text) {
+      titleLayer.text.text = payload.title.trim();
+    }
+  }
+
+  if (payload.complement && payload.roles.complementLayerId) {
+    const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
+    if (compLayer && compLayer.text) {
+      compLayer.text.text = payload.complement.trim();
+    }
+  }
+
+  if (payload.packaging && payload.roles.packagingLayerId) {
+    const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
+    if (packLayer && packLayer.text) {
+      packLayer.text.text = payload.packaging.trim();
+    }
+  }
+
+  if (payload.validityText) {
+    let valLayer = resolveLayerByPath(psd, payload.roles.validityLayerId);
+    if (!valLayer || !valLayer.text) {
+      valLayer = findFirstTextLayerMatching(psd, /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i);
+    }
+    if (valLayer && valLayer.text) {
+      valLayer.text.text = payload.validityText.trim();
+    }
+  }
+
+  let outBytes: ArrayBuffer;
+  try {
+    outBytes = writePsd(psd, { invalidateTextLayers: true });
+  } catch (e) {
+    return { ok: false, error: `Falha ao serializar PSD atualizado: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+  }
+
+  try {
+    if (payload.allowSamePath && normSrc === normDst) {
+      try {
+        await io.writeOutputPsd(payload.outputPsdPath + '.bak', payload.sourcePsdPath, new Uint8Array(rawBuffer));
+      } catch {
+        // backup do PSD anterior
+      }
+    }
+    await io.writeOutputPsd(payload.outputPsdPath, payload.sourcePsdPath, new Uint8Array(outBytes));
+  } catch (e) {
+    return { ok: false, error: `Falha ao gravar PSD derivado: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+  }
+
+  return { ok: true, outputPsdPath: payload.outputPsdPath };
+}

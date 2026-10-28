@@ -244,13 +244,21 @@ export function importedPriceWarning(artwork: ImportedArtwork, price: string): s
   return '';
 }
 
+export type DynamicPosterTexts = {
+  category?: string;
+  name?: string;
+  complement?: string;
+  unit?: string;
+};
+
 export async function drawImported(
   canvas: HTMLCanvasElement,
   artwork: ImportedArtwork,
   price: string,
   outputWidth = 886,
   outputHeight = 1260,
-  validityText?: string
+  validityText?: string,
+  dynamicTexts?: DynamicPosterTexts
 ) {
   canvas.width = outputWidth;
   canvas.height = outputHeight;
@@ -264,7 +272,10 @@ export async function drawImported(
   const background = await loadImage(artwork.staticBackground);
   context.drawImage(background, offsetX, offsetY, artwork.canvas.width * scale, artwork.canvas.height * scale);
   if ('fonts' in document) {
-    await document.fonts.load(`${Math.max(12, 500 * scale)}px Zullia`).catch(() => []);
+    await Promise.all([
+      document.fonts.load(`${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
+      document.fonts.load(`${Math.max(12, 200 * scale)}px "Brush Hand New"`).catch(() => []),
+    ]);
   }
   const { whole, fraction } = sanitizePrice(price);
   const parts = normalizePsdPriceParts(artwork);
@@ -273,7 +284,12 @@ export async function drawImported(
   context.translate(offsetX, offsetY);
   context.scale(scale, scale);
   for (const part of parts) {
-    drawPart(context, part, whole, fraction, wholeAdjustment, validityText);
+    drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts);
+  }
+  if (artwork.templateParts) {
+    for (const part of artwork.templateParts) {
+      drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts);
+    }
   }
   context.restore();
 }
@@ -284,7 +300,8 @@ function drawPart(
   whole: string,
   fraction: string,
   wholeAdjustment: WholePriceAdjustment,
-  validityText?: string
+  validityText?: string,
+  dynamicTexts?: DynamicPosterTexts
 ) {
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
@@ -296,6 +313,34 @@ function drawPart(
     context.shadowOffsetY = part.shadow.dy;
     context.shadowBlur = part.shadow.blur;
     context.shadowColor = part.shadow.color;
+  }
+  if (part.role === 'category') {
+    const text = (dynamicTexts?.category ?? part.originalText ?? '').trim();
+    if (!text) { context.restore(); return; }
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true);
+    context.restore();
+    return;
+  }
+  if (part.role === 'title') {
+    const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
+    if (!text) { context.restore(); return; }
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false);
+    context.restore();
+    return;
+  }
+  if (part.role === 'complement') {
+    const text = (dynamicTexts?.complement ?? part.originalText ?? '').trim();
+    if (!text) { context.restore(); return; }
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true);
+    context.restore();
+    return;
+  }
+  if (part.role === 'packaging') {
+    const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
+    if (!text) { context.restore(); return; }
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false);
+    context.restore();
+    return;
   }
   if (part.role === 'fractionRule') {
     context.fillRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
@@ -403,6 +448,50 @@ function drawPart(
     context.fillText(value, b.left, b.bottom);
   }
   context.restore();
+}
+
+function drawTextLayer(
+  context: CanvasRenderingContext2D,
+  part: ImportedPricePart,
+  text: string,
+  fallbackFont: string,
+  strokeOutline: boolean
+) {
+  const b = part.bounds;
+  const height = Math.max(1, b.bottom - b.top);
+  const fontName = part.fontFamily ? `${quoteFont(part.fontFamily)}, ${fallbackFont}` : fallbackFont;
+
+  if (part.transform && part.fontSize) {
+    const [a, bm, c, d, e, f] = part.transform;
+    context.transform(a, bm, c, d, e, f);
+    context.font = `400 ${part.fontSize}px ${fontName}`;
+    context.textAlign = 'center';
+    context.textBaseline = 'alphabetic';
+    if (strokeOutline) {
+      context.save();
+      context.lineWidth = (part.stroke?.size ?? 4) * 2;
+      context.strokeStyle = part.stroke?.color ?? '#000000';
+      context.strokeText(text, 0, 0);
+      context.restore();
+    }
+    context.fillText(text, 0, 0);
+    return;
+  }
+
+  const fontSize = height * 0.85;
+  context.font = `bold ${fontSize}px ${fontName}`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  const cx = (b.left + b.right) / 2;
+  const cy = (b.top + b.bottom) / 2;
+  if (strokeOutline) {
+    context.save();
+    context.lineWidth = 4;
+    context.strokeStyle = '#000000';
+    context.strokeText(text, cx, cy);
+    context.restore();
+  }
+  context.fillText(text, cx, cy);
 }
 
 function quoteFont(value: string) {

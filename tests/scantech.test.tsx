@@ -31,6 +31,7 @@ import {
   updateScantechItemFields,
   validateExportJobBasics,
 } from '../src/features/scantech/service';
+import { exportDerivedPsdDirect } from '../src/features/scantech/directExport';
 
 const pixel =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
@@ -83,8 +84,31 @@ test('Sprint 07 — Referência cerveja corona extra lata 350ml.psd: detecta rea
     assert.equal(analysis.metadata.validityText, 'OFERTA VÁLIDA ATÉ 25/10');
     assert.equal(analysis.metadata.unit, '269ML');
 
-    const artwork = buildArtwork(analysis, analysis.suggested);
+    // Stage 1: Detecção automática das camadas de referência (Categoria, Título estilizado, Complemento, Embalagem)
+    assert.deepEqual(analysis.templateSuggested, {
+      category: '2',
+      title: '3',
+      complement: '5',
+      packaging: '7',
+    });
+
+    const artwork = buildArtwork(analysis, analysis.suggested, analysis.templateSuggested);
     assert.equal(artwork.compatibility, 'ready');
+    assert.equal(artwork.isReferenceTemplate, true);
+    assert.equal(artwork.templateParts?.length, 4);
+    const catPart = artwork.templateParts?.find(p => p.role === 'category');
+    assert.equal(catPart?.layerId, '2');
+    assert.equal(catPart?.originalText, 'CERVEJA');
+    const titlePart = artwork.templateParts?.find(p => p.role === 'title');
+    assert.equal(titlePart?.layerId, '3');
+    assert.equal(titlePart?.originalText, 'CORONA');
+    const compPart = artwork.templateParts?.find(p => p.role === 'complement');
+    assert.equal(compPart?.layerId, '5');
+    assert.equal(compPart?.originalText, 'EXTRA / LATA');
+    const packPart = artwork.templateParts?.find(p => p.role === 'packaging');
+    assert.equal(packPart?.layerId, '7');
+    assert.equal(packPart?.originalText, '269ML');
+
     const valPart = artwork.priceParts.find(p => p.role === 'validity');
     assert.ok(valPart);
     assert.equal(valPart.layerId, '13');
@@ -1235,6 +1259,61 @@ test('Sprint 07.3 — Gravação de PSD real e sobrescrita segura quando o desti
     const resOverSrc = await executeScantechDirectExportJob(jobOverSrc);
     assert.equal(resOverSrc.ok, false);
     assert.ok(resOverSrc.error?.includes('Bloqueado por segurança'));
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test('Editor: Criação de novo cartaz derivado de PSD de referência preserva original e atualiza camadas de texto e preço', {
+  skip: !existsSync('cerveja corona extra lata 350ml.psd'),
+}, async () => {
+  const srcPsd = resolve('cerveja corona extra lata 350ml.psd');
+  const origHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+  const workDir = join(tmpdir(), 'skalee-derived-test-' + Date.now());
+  mkdirSync(workDir, { recursive: true });
+  const targetPsd = join(workDir, '99999 - CORONA GELADA.psd');
+
+  try {
+    const payload = {
+      sourcePsdPath: srcPsd,
+      outputPsdPath: targetPsd,
+      category: 'BEBIDAS ESPECIAIS',
+      title: 'CORONA EXTRA GELADA',
+      complement: 'LATA 350ML',
+      packaging: '350ML',
+      whole: '5',
+      fraction: '49',
+      validityText: 'OFERTA VÁLIDA ATÉ 30/11/2026',
+      roles: {
+        categoryLayerId: '2',
+        titleLayerId: '3',
+        complementLayerId: '5',
+        packagingLayerId: '7',
+        wholeLayerId: '10',
+        fractionLayerId: '11',
+        validityLayerId: '13',
+      },
+    };
+
+    const res = await exportDerivedPsdDirect(payload);
+    assert.equal(res.ok, true, `Exportação derivada falhou: ${res.error}`);
+    assert.ok(existsSync(targetPsd), 'Novo arquivo PSD deve existir no destino.');
+
+    const bytes = readFileSync(targetPsd);
+    assert.equal(bytes.subarray(0, 4).toString('ascii'), '8BPS', 'Assinatura PSD válida.');
+
+    const reopened = readPsd(bytes, { skipLayerImageData: true, skipCompositeImageData: true });
+    assert.equal(reopened.children?.[2]?.text?.text?.trim(), 'BEBIDAS ESPECIAIS', 'Categoria atualizada.');
+    assert.equal(reopened.children?.[3]?.text?.text?.trim(), 'CORONA EXTRA GELADA', 'Título estilizado atualizado.');
+    assert.equal(reopened.children?.[5]?.text?.text?.trim(), 'LATA 350ML', 'Complemento atualizado.');
+    assert.equal(reopened.children?.[7]?.text?.text?.trim(), '350ML', 'Embalagem atualizada.');
+    assert.equal(reopened.children?.[10]?.text?.text?.trim(), '5', 'Reais atualizados.');
+    assert.equal(reopened.children?.[11]?.text?.text?.trim(), '49', 'Centavos atualizados.');
+    assert.equal(reopened.children?.[13]?.text?.text?.trim(), 'OFERTA VÁLIDA ATÉ 30/11/2026', 'Validade atualizada.');
+
+    // PSD de referência original permanece 100% intacto
+    const afterHash = createHash('sha256').update(readFileSync(srcPsd)).digest('hex');
+    assert.equal(afterHash, origHash, 'PSD original de referência não sofreu nenhuma modificação.');
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
