@@ -110,7 +110,8 @@ export async function prepareBatchPosters(
   customIo?: {
     readCartaz?: (path: string) => Promise<string>;
     readPsd?: (path: string) => Promise<ArrayBuffer>;
-  }
+  },
+  onItemFailed?: (failedItem: ConductorQueueItem, errorMessage: string) => void
 ): Promise<{ posters: Poster[]; errors: string[] }> {
   const posters: Poster[] = [];
   const errors: string[] = [];
@@ -131,7 +132,11 @@ export async function prepareBatchPosters(
       if (loaded.status === 'ready' && loaded.poster) {
         itemMap.set(id, loaded);
       } else {
-        errors.push(`${original.name} (${original.sourcePath}): ${loaded.errorMessage || 'Falha de leitura'}`);
+        const errMsg = loaded.errorMessage || 'Falha de leitura do arquivo original';
+        errors.push(`${original.name} (${original.sourcePath}): ${errMsg}`);
+        if (onItemFailed) {
+          onItemFailed(original, errMsg);
+        }
       }
     }
   }

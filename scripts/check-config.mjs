@@ -10,7 +10,7 @@ const cargo = readFileSync('src-tauri/Cargo.toml','utf8');
 const workflow = readFileSync('.github/workflows/windows-exe.yml','utf8');
 const rustVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
 const workflowVersion = workflow.match(/APP_VERSION:\s*'([^']+)'/)?.[1];
-assert.equal(pkg.version, '0.9.0', 'Expected Sprint 09.0 version');
+assert.equal(pkg.version, '0.9.1', 'Expected v0.9.1 version');
 assert.equal(config.version, pkg.version, 'Tauri/npm versions must match');
 assert.equal(lock.version, pkg.version, 'Lockfile version must match');
 assert.equal(lock.packages[''].version, pkg.version);

@@ -101,11 +101,13 @@ fn err(e: impl std::fmt::Display) -> String {
 pub(crate) fn clean_windows_path(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{}", stripped))
+        PathBuf::from(format!(r"\\{}", stripped.replace('/', "\\")))
     } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
+        PathBuf::from(stripped.replace('/', "\\"))
+    } else if s.starts_with("//") {
+        PathBuf::from(format!(r"\\{}", &s[2..].replace('/', "\\")))
     } else {
-        p.to_path_buf()
+        PathBuf::from(s.replace('/', "\\"))
     }
 }
 

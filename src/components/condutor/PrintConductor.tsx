@@ -8,10 +8,13 @@ import {
   chooseConductorFolder,
   createQueueItemFromCartaz,
   createQueueItemFromFilePath,
+  extractFileBaseName,
   findDuplicateInQueue,
+  inferFormatFromPath,
   loadConductorItem,
   loadQueueConcurrently,
   moveQueueItem,
+  relocateQueueItem,
   removeQueueItem,
   scanConductorFolder,
   updateQueueItemCopies,
@@ -142,25 +145,98 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
   // Resumo de contadores
   const summary = useMemo(() => {
     let totalCopies = 0;
+    let readyCopies = 0;
     let readyCount = 0;
     let errorCount = 0;
     let loadingCount = 0;
 
     for (const item of queue) {
-      totalCopies += item.copies || 1;
-      if (item.status === 'ready') readyCount++;
-      else if (item.status === 'error') errorCount++;
-      else loadingCount++;
+      const copies = Math.max(1, item.copies || 1);
+      totalCopies += copies;
+      if (item.status === 'ready') {
+        readyCount++;
+        readyCopies += copies;
+      } else if (item.status === 'error') {
+        errorCount++;
+      } else {
+        loadingCount++;
+      }
     }
 
     return {
       totalDistinct: queue.length,
       totalCopies,
+      readyCopies,
       readyCount,
       errorCount,
       loadingCount,
     };
   }, [queue]);
+
+  // Manipulador: Localizar ou atualizar caminho de um arquivo específico sem perder a fila
+  const handleRelocateItem = async (itemId: string) => {
+    const paths = await chooseConductorFiles();
+    if (!paths || paths.length === 0) return;
+    const newPath = paths[0];
+
+    const targetItem = queue.find(it => it.id === itemId);
+    if (!targetItem) return;
+
+    const fileName = extractFileBaseName(newPath);
+    const cleanTitle = fileName.replace(/\.(skcartaz|psd)$/i, '');
+
+    setQueue(prev => relocateQueueItem(prev, itemId, newPath));
+    setNotification(`Localizando arquivo para "${cleanTitle.toUpperCase()}"…`);
+
+    try {
+      const interimItem = relocateQueueItem(queue, itemId, newPath).find(it => it.id === itemId);
+      if (!interimItem) return;
+      const loaded = await loadConductorItem(interimItem, undefined, { keepFullPoster: false });
+      setQueue(prev => prev.map(it => (it.id === itemId ? loaded : it)));
+      if (loaded.status === 'ready') {
+        setNotification(`Arquivo atualizado com sucesso: "${cleanTitle.toUpperCase()}" pronto para impressão.`);
+      } else {
+        setNotification(`Falha ao ler novo arquivo: ${loaded.errorMessage || 'Arquivo inválido'}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setQueue(prev =>
+        prev.map(it => (it.id === itemId ? { ...it, status: 'error', errorMessage: msg } : it))
+      );
+      setNotification(`Erro ao atualizar arquivo: ${msg}`);
+    }
+  };
+
+  // Manipulador: Tentar recarregar arquivo individual (em caso de restauração de rede ou disco)
+  const handleReloadItem = async (itemId: string) => {
+    const targetItem = queue.find(it => it.id === itemId);
+    if (!targetItem) return;
+
+    setQueue(prev =>
+      prev.map(it => (it.id === itemId ? { ...it, status: 'loading', errorMessage: undefined } : it))
+    );
+    setNotification(`Recarregando "${targetItem.name}"…`);
+
+    try {
+      const loaded = await loadConductorItem(
+        { ...targetItem, status: 'loading', errorMessage: undefined },
+        undefined,
+        { keepFullPoster: false }
+      );
+      setQueue(prev => prev.map(it => (it.id === itemId ? loaded : it)));
+      if (loaded.status === 'ready') {
+        setNotification(`Cartaz "${loaded.name}" recarregado com sucesso.`);
+      } else {
+        setNotification(`Falha ao recarregar: ${loaded.errorMessage || 'Arquivo inacessível'}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setQueue(prev =>
+        prev.map(it => (it.id === itemId ? { ...it, status: 'error', errorMessage: msg } : it))
+      );
+      setNotification(`Erro ao recarregar: ${msg}`);
+    }
+  };
 
   // Abertura do modal de prévia ampliada
   const handleOpenEnlarged = (item: ConductorQueueItem) => {
@@ -349,8 +425,18 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
     const { posters: firstBatchPosters, errors: firstBatchErrors } = await prepareBatchPosters(
       firstPlan,
-      currentQueue
+      currentQueue,
+      undefined,
+      (failedItem, errMsg) => {
+        setQueue(q => q.map(it => (it.id === failedItem.id ? { ...it, status: 'error', errorMessage: errMsg } : it)));
+      }
     );
+
+    if (firstBatchPosters.length === 0) {
+      setBatchExecution(null);
+      setNotification('Nenhum cartaz pôde ser preparado neste lote. Verifique os erros individuais na fila.');
+      return;
+    }
 
     setBatchExecution(prev => (prev ? {
       ...prev,
@@ -406,7 +492,11 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
 
     const { posters: nextPosters, errors: nextErrors } = await prepareBatchPosters(
       nextPlan,
-      queue
+      queue,
+      undefined,
+      (failedItem, errMsg) => {
+        setQueue(q => q.map(it => (it.id === failedItem.id ? { ...it, status: 'error', errorMessage: errMsg } : it)));
+      }
     );
 
     setBatchExecution(prev => (prev ? {
@@ -719,13 +809,13 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 <strong>{summary.totalDistinct}</strong> cartazes na fila
               </span>
               <span className="stat-pill">
-                <strong>{summary.totalCopies}</strong> folhas A5 totais
+                <strong>{summary.readyCopies}</strong> de <strong>{summary.totalCopies}</strong> folhas A5 prontas
               </span>
               <span className="stat-pill">
                 <strong style={{ color: '#16a34a' }}>{summary.readyCount}</strong> prontos
               </span>
               {summary.errorCount > 0 && (
-                <span className="stat-pill error">
+                <span className="stat-pill error" title="Cartazes com arquivo ausente ou corrompido">
                   <strong>{summary.errorCount}</strong> inacessíveis
                 </span>
               )}
@@ -759,9 +849,9 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 disabled={summary.readyCount === 0 || !!batchExecution}
                 onClick={() => run(handlePrintConductor)}
               >
-                {summary.totalCopies > batchSize
-                  ? `Imprimir em Lotes (${Math.ceil(summary.totalCopies / batchSize)} lotes · ${summary.totalCopies} folhas)`
-                  : `Imprimir Condutor (${summary.totalCopies} folhas A5)`}
+                {summary.readyCopies > batchSize
+                  ? `Imprimir em Lotes (${Math.ceil(summary.readyCopies / batchSize)} lotes · ${summary.readyCopies} folhas)`
+                  : `Imprimir Condutor (${summary.readyCopies} folha${summary.readyCopies === 1 ? '' : 's'} A5)`}
               </button>
             </div>
           </div>
@@ -856,9 +946,37 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                               </div>
                             )}
                             {item.status === 'error' && (
-                              <small style={{ color: '#dc2626', fontWeight: 600, display: 'block', marginTop: 2, fontSize: 10 }}>
-                                ⚠ {item.errorMessage || 'Falha de leitura'}
-                              </small>
+                              <div style={{ marginTop: 4 }}>
+                                <small style={{ color: '#dc2626', fontWeight: 600, display: 'block', fontSize: 10 }}>
+                                  ⚠ {item.errorMessage || 'Falha de leitura'}
+                                </small>
+                                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                  <button
+                                    type="button"
+                                    className="subtle"
+                                    style={{ fontSize: 10, padding: '2px 6px' }}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      run(() => handleRelocateItem(item.id));
+                                    }}
+                                    title="Localizar outro arquivo para este item mantendo a posição e cópias"
+                                  >
+                                    📁 Localizar arquivo…
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="subtle"
+                                    style={{ fontSize: 10, padding: '2px 6px' }}
+                                    onClick={e => {
+                                      e.stopPropagation();
+                                      run(() => handleReloadItem(item.id));
+                                    }}
+                                    title="Tentar ler novamente do mesmo caminho"
+                                  >
+                                    ↻ Tentar novamente
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </td>
 
@@ -1084,6 +1202,34 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                         {compactPath(item.sourcePath)}
                       </div>
 
+                      {item.status === 'error' && (
+                        <div style={{ margin: '4px 0', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '6px 8px' }}>
+                          <small style={{ color: '#dc2626', fontWeight: 600, display: 'block', fontSize: 10, lineHeight: 1.3 }}>
+                            ⚠ {item.errorMessage || 'Falha de leitura'}
+                          </small>
+                          <div style={{ display: 'flex', gap: 4, marginTop: 6 }} onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              className="subtle"
+                              style={{ fontSize: 10, padding: '2px 5px', flex: 1 }}
+                              onClick={() => run(() => handleRelocateItem(item.id))}
+                              title="Localizar outro arquivo para este item mantendo a posição e cópias"
+                            >
+                              📁 Localizar…
+                            </button>
+                            <button
+                              type="button"
+                              className="subtle"
+                              style={{ fontSize: 10, padding: '2px 5px' }}
+                              onClick={() => run(() => handleReloadItem(item.id))}
+                              title="Tentar ler novamente do mesmo caminho"
+                            >
+                              ↻
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Rodapé: Cópias e Reordenação */}
                       <div
                         style={{
@@ -1194,19 +1340,22 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                         <div style={{ textAlign: 'center', padding: 20, color: '#dc2626' }}>
                           <p style={{ fontWeight: 700, fontSize: 12 }}>Erro ao carregar:</p>
                           <p style={{ fontSize: 11 }}>{selectedItem.errorMessage}</p>
-                          <button
-                            type="button"
-                            className="subtle"
-                            style={{ marginTop: 8 }}
-                            onClick={() => {
-                              run(async () => {
-                                const reloaded = await loadConductorItem(selectedItem, undefined, { keepFullPoster: true });
-                                setQueue(q => q.map(it => (it.id === reloaded.id ? reloaded : it)));
-                              });
-                            }}
-                          >
-                            Tentar recarregar
-                          </button>
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="subtle"
+                              onClick={() => run(() => handleReloadItem(selectedItem.id))}
+                            >
+                              ↻ Tentar recarregar
+                            </button>
+                            <button
+                              type="button"
+                              className="subtle"
+                              onClick={() => run(() => handleRelocateItem(selectedItem.id))}
+                            >
+                              📁 Localizar arquivo…
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <div style={{ textAlign: 'center', padding: 30, color: '#64748b' }}>
@@ -1218,7 +1367,18 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                     {/* Dados Reais do Arquivo */}
                     <dl className="conductor-side-details">
                       <dt>Arquivo:</dt>
-                      <dd title={selectedItem.sourcePath}>{compactPath(selectedItem.sourcePath)}</dd>
+                      <dd title={selectedItem.sourcePath} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{compactPath(selectedItem.sourcePath)}</span>
+                        <button
+                          type="button"
+                          className="subtle"
+                          style={{ fontSize: 10, padding: '1px 6px', flexShrink: 0 }}
+                          onClick={() => run(() => handleRelocateItem(selectedItem.id))}
+                          title="Localizar outro arquivo para este item mantendo a fila"
+                        >
+                          Alterar…
+                        </button>
+                      </dd>
                       <dt>Formato:</dt>
                       <dd>{selectedItem.fileFormat.toUpperCase()}</dd>
                       {selectedItem.fileSize ? (

@@ -12,6 +12,7 @@ import {
   loadQueueConcurrently,
   moveQueueItem,
   normalizeConductorPath,
+  relocateQueueItem,
   removeQueueItem,
   updateQueueItemCopies,
 } from '../src/features/condutor/service';
@@ -19,7 +20,7 @@ import type { ConductorQueueItem } from '../src/features/condutor/types';
 import type { Cartaz } from '../src/features/cartazes/types';
 import type { Poster } from '../src/components/editor/PosterView';
 import { readFileSync, existsSync } from 'node:fs';
-import { initializeCanvas } from 'ag-psd';
+import { initializeCanvas, writePsd } from 'ag-psd';
 
 const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const fakeCanvas = (w = 886, h = 1240): any => ({
@@ -44,6 +45,22 @@ const fakeCanvas = (w = 886, h = 1240): any => ({
   }),
   toDataURL: () => pixel,
 });
+
+function createValidMockPsdBuffer(): ArrayBuffer {
+  const psd = {
+    width: 148,
+    height: 210,
+    children: [
+      {
+        name: 'Camada 1',
+        canvas: fakeCanvas(148, 210),
+      },
+    ],
+    canvas: fakeCanvas(148, 210),
+  };
+  const buf = writePsd(psd as any);
+  return (buf as any).buffer ? (buf as any).buffer.slice((buf as any).byteOffset, (buf as any).byteOffset + (buf as any).byteLength) : buf;
+}
 
 if (typeof document === 'undefined' || !('createElement' in (globalThis as any).document)) {
   Object.defineProperty(globalThis, 'document', {
@@ -833,6 +850,244 @@ test('Condutor de Impressão — Repetição e cancelamento de lote preservam in
   assert.equal(originalQueue[0].copies, 3);
   assert.equal(originalQueue[1].copies, 2);
   assert.equal(originalQueue[2].copies, 4);
+});
+
+test('Condutor de Impressão — Correção: 11 cartazes PSD com keepFullPoster false são impressos sem erro', async () => {
+  const { partitionQueueIntoBatches, prepareBatchPosters } = require('../src/features/condutor/batching');
+
+  const validPsdBuffer = createValidMockPsdBuffer();
+
+  // 1. Cria 11 itens na fila
+  const items: ConductorQueueItem[] = Array.from({ length: 11 }, (_, i) =>
+    createQueueItemFromFilePath(`c:\\cartazes\\oferta_psd_${i + 1}.psd`, 'external_file')
+  );
+
+  assert.equal(items.length, 11);
+  assert.equal(items.every(it => it.status === 'idle'), true);
+
+  // 2. Carregamento em segundo plano da fila com keepFullPoster: false (para proteger consumo de memória)
+  const backgroundLoaded = await loadQueueConcurrently(
+    items,
+    2,
+    undefined,
+    {
+      readPsd: async () => validPsdBuffer.slice(0),
+    },
+    { keepFullPoster: false }
+  );
+
+  // Todos os 11 cartazes estão no status 'ready', mas poster em alta resolução é undefined para economizar RAM
+  assert.equal(backgroundLoaded.length, 11);
+  assert.equal(backgroundLoaded.every(it => it.status === 'ready'), true);
+  assert.equal(backgroundLoaded.every(it => it.poster === undefined), true);
+  assert.equal(backgroundLoaded.every(it => !!it.thumbnailUrl), true);
+
+  // 3. buildConductorPrintBatch NÃO deve marcar os 11 cartazes como 'Arquivo ainda não carregado ou inacessível'
+  const printBatch = buildConductorPrintBatch(backgroundLoaded);
+  assert.equal(printBatch.distinctItemsCount, 11, 'Todos os 11 cartazes prontos devem ser contabilizados');
+  assert.equal(printBatch.totalCopies, 11, 'Total de cópias deve ser 11');
+  assert.equal(printBatch.skippedErrors.length, 0, 'Nenhum erro deve ser gerado para cartazes ready');
+
+  // 4. Divisão em lotes e preparação sob demanda com keepFullPoster: true
+  const plans = partitionQueueIntoBatches(backgroundLoaded, 20);
+  assert.equal(plans.length, 1, '11 páginas cabem em 1 lote de até 20 páginas');
+  assert.equal(plans[0].pageCount, 11);
+
+  const prepared = await prepareBatchPosters(
+    plans[0],
+    backgroundLoaded,
+    {
+      readPsd: async () => validPsdBuffer.slice(0),
+    }
+  );
+
+  assert.equal(prepared.errors.length, 0);
+  assert.equal(prepared.posters.length, 11, 'Todos os 11 cartazes originais de alta resolução devem estar prontos para impressão');
+  assert.equal(prepared.posters[0].artwork?.compatibility, 'ready');
+});
+
+test('Condutor de Impressão — Localizar e recuperar arquivo ausente preservando a fila e cópias', async () => {
+  const item1: ConductorQueueItem = {
+    id: 'item-1',
+    name: 'CARTAZ 1',
+    detail: '',
+    price: '10,00',
+    unit: 'UN',
+    sourcePath: 'c:\\cartaz1.skcartaz',
+    sourceType: 'external_file',
+    fileFormat: 'skcartaz',
+    copies: 3,
+    status: 'ready',
+  };
+
+  const itemMissing: ConductorQueueItem = {
+    id: 'item-missing',
+    name: 'ARQUIVO SUMIDO',
+    detail: '',
+    price: '',
+    unit: 'UN',
+    sourcePath: 'z:\\nao_existe.psd',
+    sourceType: 'external_file',
+    fileFormat: 'psd',
+    copies: 5,
+    status: 'error',
+    errorMessage: 'Arquivo PSD não encontrado ou inacessível.',
+  };
+
+  const item3: ConductorQueueItem = {
+    id: 'item-3',
+    name: 'CARTAZ 3',
+    detail: '',
+    price: '30,00',
+    unit: 'UN',
+    sourcePath: 'c:\\cartaz3.skcartaz',
+    sourceType: 'external_file',
+    fileFormat: 'skcartaz',
+    copies: 2,
+    status: 'ready',
+  };
+
+  let queue = [item1, itemMissing, item3];
+
+  // Localiza novo arquivo para o item-missing
+  const newPath = 'd:\\recuperados\\novo_repolho.psd';
+  queue = relocateQueueItem(queue, 'item-missing', newPath);
+
+  // A posição #2 e as 5 cópias foram preservadas
+  assert.equal(queue.length, 3);
+  assert.equal(queue[1].id, 'item-missing');
+  assert.equal(queue[1].sourcePath, newPath);
+  assert.equal(queue[1].copies, 5, 'Quantidade de cópias foi mantida');
+  assert.equal(queue[1].status, 'idle', 'Status deve voltar para idle para reprocessamento');
+
+  // Os outros itens permanecem intactos
+  assert.equal(queue[0].id, 'item-1');
+  assert.equal(queue[0].copies, 3);
+  assert.equal(queue[2].id, 'item-3');
+  assert.equal(queue[2].copies, 2);
+
+  // Carrega o arquivo localizado
+  const validPsd = createValidMockPsdBuffer();
+
+  const reloaded = await loadConductorItem(queue[1], {
+    readPsd: async () => validPsd.slice(0),
+  });
+
+  assert.equal(reloaded.status, 'ready');
+  assert.equal(reloaded.name, 'NOVO_REPOLHO');
+});
+
+test('Condutor de Impressão — Erros individuais não impedem a impressão de outros arquivos válidos', async () => {
+  const { prepareBatchPosters, partitionQueueIntoBatches } = require('../src/features/condutor/batching');
+
+  const p1: Poster = { name: 'VALIDO 1', detail: '', price: '1,00', unit: 'UN' };
+  const p2: Poster = { name: 'VALIDO 2', detail: '', price: '2,00', unit: 'UN' };
+
+  // Fila com 11 itens: 10 válidos e 1 com erro
+  const queue: ConductorQueueItem[] = [];
+  for (let i = 1; i <= 10; i++) {
+    queue.push({
+      id: `valido-${i}`,
+      name: `PRODUTO VALIDO ${i}`,
+      detail: '',
+      price: `${i},00`,
+      unit: 'UN',
+      sourcePath: `c:\\valido_${i}.skcartaz`,
+      sourceType: 'external_file',
+      fileFormat: 'skcartaz',
+      copies: 1,
+      status: 'ready',
+      poster: i === 1 ? p1 : p2,
+    });
+  }
+
+  // Insere item com erro na posição 5
+  queue.splice(4, 0, {
+    id: 'invalido-5',
+    name: 'CORROMPIDO',
+    detail: '',
+    price: '',
+    unit: 'UN',
+    sourcePath: '\\\\REDE\\corrompido.skcartaz',
+    sourceType: 'external_file',
+    fileFormat: 'skcartaz',
+    copies: 2,
+    status: 'error',
+    errorMessage: 'JSON corrompido no servidor de rede.',
+  });
+
+  assert.equal(queue.length, 11);
+
+  // buildConductorPrintBatch isola o erro e calcula os 10 válidos
+  const batch = buildConductorPrintBatch(queue);
+  assert.equal(batch.distinctItemsCount, 10);
+  assert.equal(batch.totalCopies, 10);
+  assert.equal(batch.skippedErrors.length, 1);
+  assert.ok(batch.skippedErrors[0].includes('CORROMPIDO'));
+  assert.ok(batch.skippedErrors[0].includes('JSON corrompido'));
+
+  // A impressão divide e prepara apenas os válidos
+  const plans = partitionQueueIntoBatches(queue, 20);
+  assert.equal(plans[0].pageCount, 10);
+
+  const prepared = await prepareBatchPosters(plans[0], queue);
+  assert.equal(prepared.posters.length, 10);
+  assert.equal(prepared.errors.length, 0);
+});
+
+test('Condutor de Impressão — Caminhos UNC e locais funcionam na preparação e impressão A5', async () => {
+  const { prepareBatchPosters, partitionQueueIntoBatches } = require('../src/features/condutor/batching');
+
+  const uncItem: ConductorQueueItem = {
+    id: 'unc-1',
+    name: 'CARTAZ REDE UNC',
+    detail: 'A5',
+    price: '9,90',
+    unit: 'KG',
+    sourcePath: '\\\\SERVIDOR_FLV\\Compartilhado\\Artes\\repolho.psd',
+    sourceType: 'external_file',
+    fileFormat: 'psd',
+    copies: 2,
+    status: 'ready',
+  };
+
+  const localItem: ConductorQueueItem = {
+    id: 'local-1',
+    name: 'CARTAZ LOCAL',
+    detail: 'A5',
+    price: '4,50',
+    unit: 'UN',
+    sourcePath: 'D:\\Cartazes\\alface.skcartaz',
+    sourceType: 'external_file',
+    fileFormat: 'skcartaz',
+    copies: 3,
+    status: 'ready',
+  };
+
+  const queue = [uncItem, localItem];
+  const validPsd = createValidMockPsdBuffer();
+
+  const plans = partitionQueueIntoBatches(queue, 20);
+  assert.equal(plans[0].pageCount, 5); // 2 cópias UNC + 3 cópias Local
+
+  const prepared = await prepareBatchPosters(plans[0], queue, {
+    readPsd: async path => {
+      assert.ok(path.startsWith('\\\\SERVIDOR_FLV'));
+      return validPsd.slice(0);
+    },
+    readCartaz: async path => {
+      assert.ok(path.startsWith('D:\\Cartazes'));
+      return sampleCartazJson;
+    },
+  });
+
+  assert.equal(prepared.posters.length, 5);
+  // Preserva sequência exata: 2 cópias do cartaz de rede seguidas de 3 cópias do cartaz local
+  assert.equal(prepared.posters[0].artwork?.compatibility, 'ready');
+  assert.equal(prepared.posters[1].artwork?.compatibility, 'ready');
+  assert.equal(prepared.posters[2].name, 'MANGA TOMMY');
+  assert.equal(prepared.posters[3].name, 'MANGA TOMMY');
+  assert.equal(prepared.posters[4].name, 'MANGA TOMMY');
 });
 
 

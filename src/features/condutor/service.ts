@@ -324,6 +324,31 @@ export function removeQueueItem(queue: ConductorQueueItem[], id: string): Conduc
   return queue.filter(item => item.id !== id);
 }
 
+export function relocateQueueItem(
+  queue: ConductorQueueItem[],
+  id: string,
+  newPath: string
+): ConductorQueueItem[] {
+  const fileName = extractFileBaseName(newPath);
+  const format = inferFormatFromPath(newPath);
+  const cleanTitle = fileName.replace(/\.(skcartaz|psd)$/i, '');
+
+  return queue.map(item => {
+    if (item.id !== id) return item;
+    return {
+      ...item,
+      name: cleanTitle.toUpperCase(),
+      sourcePath: newPath,
+      fileFormat: format,
+      status: 'idle',
+      errorMessage: undefined,
+      poster: undefined,
+      thumbnailUrl: undefined,
+      originalCartaz: undefined,
+    };
+  });
+}
+
 export function buildConductorPrintBatch(queue: ConductorQueueItem[]): ConductorPrintBatchResult {
   const posters: Poster[] = [];
   const skippedErrors: string[] = [];
@@ -331,18 +356,32 @@ export function buildConductorPrintBatch(queue: ConductorQueueItem[]): Conductor
   let distinctItemsCount = 0;
 
   for (const item of queue) {
-    if (item.status === 'error' || !item.poster) {
-      const reason = item.errorMessage || 'Arquivo ainda não carregado ou inacessível';
+    if (item.status === 'error') {
+      const reason = item.errorMessage || 'Arquivo inacessível ou com erro';
       skippedErrors.push(`${item.name} (${item.sourcePath}): ${reason}`);
       continue;
     }
 
+    if (item.status === 'idle' || item.status === 'loading') {
+      const reason = item.errorMessage || 'Arquivo ainda não carregado ou em processamento';
+      skippedErrors.push(`${item.name} (${item.sourcePath}): ${reason}`);
+      continue;
+    }
+
+    // O cartaz está no status 'ready': arquivo verificado e acessível
     distinctItemsCount++;
     const count = Math.max(1, item.copies || 1);
     totalCopies += count;
 
-    for (let c = 0; c < count; c++) {
-      posters.push(item.poster);
+    let poster = item.poster;
+    if (!poster && item.originalCartaz) {
+      poster = posterFromDocument(item.originalCartaz);
+    }
+
+    if (poster) {
+      for (let c = 0; c < count; c++) {
+        posters.push(poster);
+      }
     }
   }
 
