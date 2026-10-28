@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Skalee Cartazes A5",
-  "version": "0.8.1",
+  "productName": "Skalee Cartaz",
+  "version": "0.9.0",
   "identifier": "dev.skalee.cartazes",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Skalee Cartazes A5",
+        "title": "Skalee Cartaz",
         "width": 1180,
         "height": 850,
         "minWidth": 850,
