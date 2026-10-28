@@ -1,7 +1,7 @@
 import { readPsd, type Layer, type Psd, type RGB, type RGBA, type FRGB } from 'ag-psd';
 import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole } from '../cartazes/types';
 
-export const PSD_MAX_BYTES = 25 * 1024 * 1024;
+export const PSD_MAX_BYTES = 80 * 1024 * 1024;
 export type PsdRoleMap = Partial<Record<ImportedPriceRole, string>>;
 export type PsdTemplateRoleMap = Partial<Record<ImportedTextRole, string>>;
 export type PsdProductMetadata = { name: string; complement: string; unit: string; price: string; validityText: string };
@@ -13,12 +13,12 @@ export type PsdAnalysis = {
 };
 
 export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): Promise<PsdAnalysis> {
-  if (bytes.byteLength < 26 || bytes.byteLength > PSD_MAX_BYTES) throw new Error('O PSD deve ter entre 26 bytes e 25 MB.');
+  if (bytes.byteLength < 26 || bytes.byteLength > PSD_MAX_BYTES) throw new Error('O PSD deve ter entre 26 bytes e 80 MB.');
   const signature = new TextDecoder('ascii').decode(bytes.slice(0, 4));
   if (signature !== '8BPS') throw new Error('Arquivo inválido: assinatura PSD não encontrada.');
   let psd: Psd;
   try {
-    psd = readPsd(bytes, { skipThumbnail: true, skipLinkedFilesData: true, totalMemoryLimit: 256 * 1024 * 1024, throwForMissingFeatures: false });
+    psd = readPsd(bytes, { skipThumbnail: true, skipLinkedFilesData: true, totalMemoryLimit: 512 * 1024 * 1024, throwForMissingFeatures: false });
   } catch (error) { throw new Error(`Não foi possível interpretar o PSD: ${String(error)}`); }
   if (psd.width < 1 || psd.height < 1 || psd.width > 10_000 || psd.height > 10_000) throw new Error('Dimensões PSD fora do limite de 10.000 × 10.000 px.');
   if (psd.bitsPerChannel !== 8 || psd.colorMode !== 3) throw new Error('O piloto aceita somente PSD RGB com 8 bits por canal.');

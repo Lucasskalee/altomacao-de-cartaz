@@ -3,6 +3,7 @@ import './dbf.test';
 import './updates.test';
 import './offers.test';
 import './scantech.test';
+import './conductor.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
 import { priceToCents, fileName, MAX_DOCUMENT_CHARS } from '../src/features/cartazes/validation';
