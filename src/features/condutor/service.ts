@@ -65,6 +65,9 @@ export function createQueueItemFromFilePath(
     fileSize,
     copies: 1,
     status: 'idle',
+    paperFormat: 'A5',
+    orientation: 'portrait',
+    createdAt: Date.now(),
   };
 }
 
@@ -94,6 +97,9 @@ export function createQueueItemFromCartaz(
     poster,
     thumbnailUrl: poster.artwork?.originalPreview,
     originalCartaz: cartaz,
+    paperFormat: (cartaz.layout?.paper as any) || 'A5',
+    orientation: (cartaz.layout?.orientation as any) || 'portrait',
+    createdAt: cartaz.metadata?.createdAt ? Date.parse(cartaz.metadata.createdAt) : Date.now(),
   };
 }
 
@@ -116,6 +122,9 @@ export function createQueueItemFromPoster(
     status: 'ready',
     poster,
     thumbnailUrl: poster.artwork?.originalPreview,
+    paperFormat: 'A5',
+    orientation: 'portrait',
+    createdAt: Date.now(),
   };
 }
 

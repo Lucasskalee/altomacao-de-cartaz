@@ -16,6 +16,17 @@ import { PrintConductor } from './components/condutor/PrintConductor';
 import { createQueueItemFromCartaz, createQueueItemFromPoster, findDuplicateInQueue } from './features/condutor/service';
 import type { ConductorQueueItem } from './features/condutor/types';
 import { createDocument, serialize } from './features/cartazes/serialization';
+import type { PaperSize, Orientation, PosterFormatConfig } from './features/formatos/types';
+import {
+  applyDynamicPrintStyles,
+  removeDynamicPrintStyles,
+  getFormatDimensionsMm,
+  getFormatLabel,
+  checkPosterResolution,
+} from './features/formatos/service';
+import { addPrintHistoryEntries, updatePrintHistoryStatus } from './features/history/service';
+import { PrintHistoryModal } from './components/history/PrintHistoryModal';
+import { expandExpositorToA3Posters } from './features/formatos/expositor';
 
 function getDemoLibrary(): LibraryData {
   const root = 'C:\\Skalee\\Cartazes';
@@ -74,6 +85,34 @@ export default function App() {
   const [batchPrintPosters, setBatchPrintPosters] = useState<Poster[] | null>(null);
   const [showFormatMenu, setShowFormatMenu] = useState(() => (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('formatMenu') === '1' : false));
   const formatMenuRef = useRef<HTMLDivElement>(null);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showCustomModal, setShowCustomModal] = useState(false);
+  const [confirmationModal, setConfirmationModal] = useState<{
+    entryIds: string[];
+    productName: string;
+    formatLabel: string;
+    copies: number;
+  } | null>(null);
+  const [customWInput, setCustomWInput] = useState('148');
+  const [customHInput, setCustomHInput] = useState('210');
+  const [customOrientInput, setCustomOrientInput] = useState<Orientation>('portrait');
+
+  const activeFormat: PosterFormatConfig = {
+    paper: editor.document.layout.paper || 'A5',
+    orientation: editor.document.layout.orientation || 'portrait',
+    customWidthMm: editor.document.layout.customWidthMm,
+    customHeightMm: editor.document.layout.customHeightMm,
+  };
+
+  const handleSelectFormat = (paper: PaperSize, orientation: Orientation = 'portrait', customW?: number, customH?: number) => {
+    editor.changeLayout({
+      paper,
+      orientation,
+      customWidthMm: customW,
+      customHeightMm: customH,
+    });
+    setShowFormatMenu(false);
+  };
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -90,6 +129,9 @@ export default function App() {
   const imported=editor.document.layout.template==='imported-psd';
   const invertedLayers=poster.artwork?hasInvertedPsdPriceParts(poster.artwork):false;
   const priceWarning=poster.artwork?(invertedLayers?'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.':importedPriceWarning(poster.artwork,poster.price)):'';
+  const resolutionCheck = poster.artwork?.canvas?.width && poster.artwork?.canvas?.height
+    ? checkPosterResolution(activeFormat, poster.artwork.canvas.width, poster.artwork.canvas.height)
+    : null;
   const refresh = async () => {
     try {
       setData(await listFiles());
@@ -143,12 +185,16 @@ export default function App() {
       onReadyToPrint?: () => void;
       onDialogClosed?: () => void;
       keepMountedUntilConfirmed?: boolean;
+      formatConfig?: PosterFormatConfig;
     }
   ) => {
     if (!posters || posters.length === 0) {
       setBatchPrintPosters(null);
       return;
     }
+
+    const effectiveFormat = options?.formatConfig || activeFormat;
+    applyDynamicPrintStyles(effectiveFormat);
 
     renderedPostersCountRef.current = 0;
     setBatchPrintPosters(posters);
@@ -197,6 +243,7 @@ export default function App() {
     if (!options?.keepMountedUntilConfirmed) {
       setBatchPrintPosters(null);
     }
+    removeDynamicPrintStyles();
   };
   const run = (action: () => Promise<void>) => {
     if (locked.current) return;
@@ -229,83 +276,121 @@ export default function App() {
             title="Formato atual do papel para os cartazes"
           >
             <span className="sk-status-dot" style={{ background: '#2563eb' }} />
-            <span>Formato: <strong>A5 Vertical (148 × 210 mm)</strong></span>
+            <span>Formato: <strong>{getFormatLabel(activeFormat)}</strong></span>
             <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>▼</span>
           </button>
 
           {showFormatMenu && (
             <div className="sk-format-dropdown" role="listbox" aria-label="Formatos oficiais do Skalee Cartaz">
               <div className="sk-format-dropdown-heading">Formatos Oficiais</div>
-              
+
               {/* 1. A6 Vertical */}
               <button
                 type="button"
-                className="sk-format-option"
-                disabled
-                title="Suporte planejado para as próximas etapas"
+                className={`sk-format-option ${activeFormat.paper === 'A6' ? 'active' : ''}`}
+                onClick={() => handleSelectFormat('A6', 'portrait')}
                 role="option"
-                aria-selected={false}
+                aria-selected={activeFormat.paper === 'A6'}
               >
                 <span>A6 Vertical (105 × 148 mm)</span>
-                <span className="sk-format-badge soon">Em breve</span>
+                {activeFormat.paper === 'A6' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
               </button>
 
-              {/* 2. A5 Vertical (Ativo) */}
+              {/* 2. A5 Vertical */}
               <button
                 type="button"
-                className="sk-format-option active"
-                onClick={() => setShowFormatMenu(false)}
+                className={`sk-format-option ${activeFormat.paper === 'A5' ? 'active' : ''}`}
+                onClick={() => handleSelectFormat('A5', 'portrait')}
                 role="option"
-                aria-selected={true}
+                aria-selected={activeFormat.paper === 'A5'}
               >
                 <span>A5 Vertical (148 × 210 mm)</span>
-                <span className="sk-format-badge active">Ativo</span>
+                {activeFormat.paper === 'A5' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
               </button>
 
               {/* 3. A4 Vertical */}
               <button
                 type="button"
-                className="sk-format-option"
-                disabled
-                title="Suporte planejado para as próximas etapas"
+                className={`sk-format-option ${activeFormat.paper === 'A4' ? 'active' : ''}`}
+                onClick={() => handleSelectFormat('A4', 'portrait')}
                 role="option"
-                aria-selected={false}
+                aria-selected={activeFormat.paper === 'A4'}
               >
                 <span>A4 Vertical (210 × 297 mm)</span>
-                <span className="sk-format-badge soon">Em breve</span>
+                {activeFormat.paper === 'A4' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
               </button>
 
               {/* 4. A3 Vertical */}
               <button
                 type="button"
-                className="sk-format-option"
-                disabled
-                title="Suporte planejado para as próximas etapas"
+                className={`sk-format-option ${activeFormat.paper === 'A3' ? 'active' : ''}`}
+                onClick={() => handleSelectFormat('A3', 'portrait')}
                 role="option"
-                aria-selected={false}
+                aria-selected={activeFormat.paper === 'A3'}
               >
                 <span>A3 Vertical (297 × 420 mm)</span>
-                <span className="sk-format-badge soon">Em breve</span>
+                {activeFormat.paper === 'A3' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
               </button>
 
               {/* 5. Expositor A3 2x2 */}
               <button
                 type="button"
-                className="sk-format-option"
-                disabled
-                title="Uma arte distribuída em 4 folhas A3 verticais (2 colunas × 2 linhas)"
+                className={`sk-format-option ${activeFormat.paper === 'expositor-a3-2x2' ? 'active' : ''}`}
+                onClick={() => handleSelectFormat('expositor-a3-2x2', 'portrait')}
                 role="option"
-                aria-selected={false}
+                aria-selected={activeFormat.paper === 'expositor-a3-2x2'}
+                title="Uma arte distribuída em 4 folhas A3 verticais (2 colunas × 2 linhas)"
               >
                 <div>
                   <div>Expositor A3 2×2 (594 × 840 mm)</div>
-                  <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 1 }}>4 folhas A3 em 2 colunas × 2 linhas</div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>4 folhas A3 em 2 colunas × 2 linhas</div>
                 </div>
-                <span className="sk-format-badge soon">Em breve</span>
+                {activeFormat.paper === 'expositor-a3-2x2' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
+              </button>
+
+              <div className="sk-format-dropdown-heading" style={{ marginTop: 6 }}>Opção Adicional</div>
+
+              {/* 6. Formato Personalizado */}
+              <button
+                type="button"
+                className={`sk-format-option ${activeFormat.paper === 'custom' ? 'active' : ''}`}
+                onClick={() => {
+                  setShowFormatMenu(false);
+                  setShowCustomModal(true);
+                }}
+                role="option"
+                aria-selected={activeFormat.paper === 'custom'}
+              >
+                <span>Personalizado (largura × altura mm)…</span>
+                {activeFormat.paper === 'custom' && (
+                  <span className="sk-format-badge active">Ativo</span>
+                )}
               </button>
             </div>
           )}
         </div>
+
+        {/* Botão de Histórico de Impressão */}
+        <button
+          type="button"
+          className="editor-btn subtle"
+          onClick={() => setShowHistoryModal(true)}
+          title="Consultar histórico local e persistente de impressões"
+          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
+        >
+          <span>📋</span>
+          <span>Histórico</span>
+        </button>
 
         {/* Indicador de Operação Local */}
         <div
@@ -616,6 +701,23 @@ export default function App() {
                 <span>4. Ações de Saída</span>
               </div>
 
+              {resolutionCheck?.isInsufficient && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: '8px 10px',
+                    background: '#fffbeb',
+                    border: '1px solid #fde68a',
+                    borderRadius: 6,
+                    color: '#b45309',
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  ⚠️ <strong>Aviso de Resolução:</strong> {resolutionCheck.warning}
+                </div>
+              )}
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <button
                   type="button"
@@ -623,11 +725,56 @@ export default function App() {
                   style={{ justifyContent: 'center', height: 40, fontSize: 13 }}
                   disabled={Boolean(priceWarning)}
                   onClick={() => run(async () => {
-                    validPoster();
-                    window.print();
+                    const p = validPoster();
+                    const isExpositor = activeFormat.paper === 'expositor-a3-2x2';
+
+                    // 1. Registra no histórico como 'requested'
+                    const entries = addPrintHistoryEntries([{
+                      productName: p.name,
+                      f7: editor.document.product.productCode ? String(editor.document.product.productCode) : undefined,
+                      formatLabel: getFormatLabel(activeFormat),
+                      paper: activeFormat.paper,
+                      orientation: activeFormat.orientation,
+                      copies: isExpositor ? 4 : 1,
+                      status: 'requested',
+                    }]);
+                    const entryIds = entries.map(e => e.id);
+
+                    if (isExpositor) {
+                      // Divide o Expositor A3 2×2 em 4 folhas A3 verticais com overlap e marcas
+                      const expositorPosters = expandExpositorToA3Posters(p);
+                      await handlePrintBatch(expositorPosters, {
+                        formatConfig: { paper: 'A3', orientation: 'portrait' },
+                        onReadyToPrint: () => {
+                          updatePrintHistoryStatus(entryIds, 'sent');
+                        },
+                        onDialogClosed: () => {
+                          setConfirmationModal({
+                            entryIds,
+                            productName: p.name,
+                            formatLabel: 'Expositor A3 2×2 (4 folhas A3)',
+                            copies: 4,
+                          });
+                        },
+                      });
+                    } else {
+                      applyDynamicPrintStyles(activeFormat);
+                      try {
+                        updatePrintHistoryStatus(entryIds, 'sent');
+                        window.print();
+                        setConfirmationModal({
+                          entryIds,
+                          productName: p.name,
+                          formatLabel: getFormatLabel(activeFormat),
+                          copies: 1,
+                        });
+                      } finally {
+                        removeDynamicPrintStyles();
+                      }
+                    }
                   })}
                 >
-                  🖨️ Imprimir A5
+                  🖨️ Imprimir {getFormatLabel(activeFormat)}
                 </button>
 
                 <button
@@ -649,6 +796,10 @@ export default function App() {
                   const p = validPoster();
                   setQueue(items => [...items, p]);
                   const item = createQueueItemFromPoster(p);
+                  item.paperFormat = activeFormat.paper;
+                  item.orientation = activeFormat.orientation;
+                  item.customWidthMm = activeFormat.customWidthMm;
+                  item.customHeightMm = activeFormat.customHeightMm;
                   setConductorQueue(items => [...items, item]);
                   setMessage(`"${p.name}" adicionado ao Condutor de Impressão (${conductorQueue.length + 1} na fila).`);
                 })}
@@ -686,17 +837,19 @@ export default function App() {
               )}
 
               <p style={{ margin: '14px 0 0 0', fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
-                Impressão: papel A5 vertical, escala 100%, margens nenhuma e desative cabeçalhos/rodapés.
+                Impressão: papel {getFormatLabel(activeFormat)}, escala 100%, margens nenhuma e desative cabeçalhos/rodapés.
               </p>
             </div>
           </section>
 
-          {/* Coluna 2: Hero Preview A5 Real */}
+          {/* Coluna 2: Hero Preview Proporcional Real */}
           <section className="editor-panel" aria-label="Prévia visual do cartaz">
             <div className="editor-preview-heading">
               <div>
                 <h2>Pré-visualização do Cartaz</h2>
-                <p>Proporção A5 Real · 148 × 210 mm (300 DPI)</p>
+                <p>
+                  Proporção {getFormatLabel(activeFormat)} · {getFormatDimensionsMm(activeFormat).width} × {getFormatDimensionsMm(activeFormat).height} mm (300 DPI)
+                </p>
               </div>
               <span className="status" style={{ fontSize: 11, padding: '4px 10px' }}>
                 Documento Editável Local
@@ -704,7 +857,7 @@ export default function App() {
             </div>
 
             <div className="editor-canvas-wrap">
-              <PosterView poster={poster} />
+              <PosterView poster={poster} formatConfig={activeFormat} />
             </div>
           </section>
         </div>
@@ -744,6 +897,145 @@ export default function App() {
     <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
-    </fieldset><div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p} isPrint={true} onRendered={handlePosterRendered}/></div>) : <PosterView poster={poster} isPrint={true}/>}</div>
+    </fieldset>
+
+    {/* Modal de Formato Personalizado */}
+    {showCustomModal && (
+      <div className="modal-backdrop">
+        <form
+          className="panel modal sk-lib-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Configurar Formato Personalizado"
+          onSubmit={e => {
+            e.preventDefault();
+            const w = Math.max(50, Math.min(2000, Number(customWInput) || 148));
+            const h = Math.max(50, Math.min(2000, Number(customHInput) || 210));
+            handleSelectFormat('custom', customOrientInput, w, h);
+            setShowCustomModal(false);
+          }}
+        >
+          <h2>Formato de Papel Personalizado</h2>
+          <p style={{ margin: '4px 0 16px', fontSize: 12.5, color: '#64748b' }}>
+            Configure as dimensões físicas da folha em milímetros (mm).
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155' }}>
+              Largura (mm)
+              <input
+                type="number"
+                min={50}
+                max={2000}
+                required
+                className="editor-input"
+                style={{ marginTop: 6 }}
+                value={customWInput}
+                onChange={e => setCustomWInput(e.target.value)}
+              />
+            </label>
+
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155' }}>
+              Altura (mm)
+              <input
+                type="number"
+                min={50}
+                max={2000}
+                required
+                className="editor-input"
+                style={{ marginTop: 6 }}
+                value={customHInput}
+                onChange={e => setCustomHInput(e.target.value)}
+              />
+            </label>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 6 }}>
+              Orientação
+            </span>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="custom-orient"
+                  checked={customOrientInput === 'portrait'}
+                  onChange={() => setCustomOrientInput('portrait')}
+                />
+                Vertical (Retrato)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="custom-orient"
+                  checked={customOrientInput === 'landscape'}
+                  onChange={() => setCustomOrientInput('landscape')}
+                />
+                Horizontal (Paisagem)
+              </label>
+            </div>
+          </div>
+
+          <div className="toolbar" style={{ marginTop: 22, justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="editor-btn subtle" onClick={() => setShowCustomModal(false)}>
+              Cancelar
+            </button>
+            <button type="submit" className="editor-btn primary">
+              Aplicar Formato
+            </button>
+          </div>
+        </form>
+      </div>
+    )}
+
+    {/* Modal de Confirmação Manual de Impressão */}
+    {confirmationModal && (
+      <div className="modal-backdrop">
+        <div
+          className="panel modal sk-lib-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirmar Impressão Física"
+          style={{ maxWidth: 460 }}
+        >
+          <h2 style={{ color: '#1e40af', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>🖨️</span> Confirmar Saída na Impressora
+          </h2>
+          <p style={{ margin: '12px 0 16px', fontSize: 13, lineHeight: 1.5, color: '#334155' }}>
+            A impressão de <strong>"{confirmationModal.productName}"</strong> ({confirmationModal.formatLabel}) saiu corretamente na impressora física?
+          </p>
+          <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', marginBottom: 18 }}>
+            ℹ️ A confirmação manual do operador garante que apenas cartazes efetivamente impressos contem como confirmados no histórico.
+          </div>
+          <div className="toolbar" style={{ justifyContent: 'flex-end', gap: 8 }}>
+            <button
+              type="button"
+              className="editor-btn subtle"
+              onClick={() => setConfirmationModal(null)}
+              title="Registrar apenas como 'Enviada' sem confirmar saída física"
+            >
+              ✕ Não Confirmar / Falha
+            </button>
+            <button
+              type="button"
+              className="editor-btn primary"
+              onClick={() => {
+                updatePrintHistoryStatus(confirmationModal.entryIds, 'confirmed');
+                setConfirmationModal(null);
+                setMessage(`Impressão de "${confirmationModal.productName}" confirmada pelo operador.`);
+              }}
+              title="Confirmar que o papel saiu corretamente da impressora"
+            >
+              ✓ Sim, Confirmar Impressão
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Modal de Histórico de Impressão */}
+    <PrintHistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} />
+
+    <div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p} isPrint={true} onRendered={handlePosterRendered}/></div>) : <PosterView poster={poster} isPrint={true}/>}</div>
   </div>;
 }

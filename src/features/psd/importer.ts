@@ -12,6 +12,25 @@ export type PsdAnalysis = {
   templateSuggested?: PsdTemplateRoleMap;
 };
 
+function canvasWithWhiteBackground(sourceCanvas: HTMLCanvasElement): string {
+  if (typeof document === 'undefined') return sourceCanvas.toDataURL('image/png');
+  const canvas = document.createElement('canvas');
+  canvas.width = sourceCanvas.width;
+  canvas.height = sourceCanvas.height;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    if (typeof ctx.fillRect === 'function') {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    if (typeof ctx.drawImage === 'function') {
+      ctx.drawImage(sourceCanvas, 0, 0);
+    }
+    return canvas.toDataURL('image/png');
+  }
+  return sourceCanvas.toDataURL('image/png');
+}
+
 export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): Promise<PsdAnalysis> {
   if (bytes.byteLength < 26 || bytes.byteLength > PSD_MAX_BYTES) throw new Error('O PSD deve ter entre 26 bytes e 80 MB.');
   const signature = new TextDecoder('ascii').decode(bytes.slice(0, 4));
@@ -37,7 +56,7 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   const resolutionPpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? 72;
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2,'0')).join('');
   const templateSuggested = suggestTemplateLayers(layers, suggested);
-  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: psd.canvas.toDataURL('image/png'), layers, suggested, metadata, warnings, psd, runtime, templateSuggested };
+  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: canvasWithWhiteBackground(psd.canvas), layers, suggested, metadata, warnings, psd, runtime, templateSuggested };
 }
 
 function flatten(source: Layer[], depth: number, prefix: string, parentVisible: boolean, runtime: Map<string, Layer>, result: ImportedLayerInfo[]) {
@@ -246,7 +265,10 @@ export function buildArtwork(
 function composeStatic(analysis: PsdAnalysis, excluded: Set<string>): string {
   const canvas = document.createElement('canvas'); canvas.width = analysis.width; canvas.height = analysis.height;
   const context = canvas.getContext('2d'); if (!context) throw new Error('Canvas indisponível para compor a arte.');
-  context.clearRect(0,0,canvas.width,canvas.height);
+  if (typeof context.fillRect === 'function') {
+    context.fillStyle = '#FFFFFF';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
   drawLayers(context, analysis.psd.children ?? [], '', excluded, true);
   return canvas.toDataURL('image/png');
 }

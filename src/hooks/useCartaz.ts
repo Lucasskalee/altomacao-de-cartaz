@@ -59,6 +59,10 @@ export function useCartaz() {
       else setDocument(d => ({ ...d, product: { ...d.product, [field]: field === 'productCode' ? digitsOnly(value) : value } }));
       setDirty(true);
     },
+    changeLayout(patch: Partial<Cartaz['layout']>) {
+      setDocument(d => ({ ...d, layout: { ...d.layout, ...patch } as Cartaz['layout'] }));
+      setDirty(true);
+    },
     async newDocument() { if (await confirmDiscard()) { load(createDocument(), null, true); return true; } return false; },
     async openReferencePsd() {
       if (!await confirmDiscard()) return false;

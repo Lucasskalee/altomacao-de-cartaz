@@ -19,6 +19,7 @@ import {
 import type { ConductorQueueItem } from '../src/features/condutor/types';
 import type { Cartaz } from '../src/features/cartazes/types';
 import type { Poster } from '../src/components/editor/PosterView';
+import { partitionQueueIntoBatches } from '../src/features/condutor/batching';
 import { readFileSync, existsSync } from 'node:fs';
 import { initializeCanvas, writePsd } from 'ag-psd';
 
@@ -31,7 +32,9 @@ const fakeCanvas = (w = 886, h = 1240): any => ({
     save() {},
     restore() {},
     drawImage() {},
+    fillRect() {},
     putImageData() {},
+    fillStyle: '#000000',
     createImageData: (cw: number, ch: number) => ({
       data: new Uint8ClampedArray(cw * ch * 4),
       width: cw,
@@ -1088,6 +1091,64 @@ test('Condutor de Impressão — Caminhos UNC e locais funcionam na preparação
   assert.equal(prepared.posters[2].name, 'MANGA TOMMY');
   assert.equal(prepared.posters[3].name, 'MANGA TOMMY');
   assert.equal(prepared.posters[4].name, 'MANGA TOMMY');
+});
+
+test('Condutor de Impressão — Separação adequada de lotes por formato de papel', () => {
+  // Fila mista: 2 itens A5, 1 item A4, 1 item A5
+  const queue: ConductorQueueItem[] = [
+    {
+      id: 'item-a5-1',
+      sourcePath: 'C:\\cartaz1.psd',
+      name: 'PRODUTO 1',
+      price: '1,99',
+      copies: 2,
+      status: 'ready',
+      paperFormat: 'A5',
+      orientation: 'portrait',
+    },
+    {
+      id: 'item-a5-2',
+      sourcePath: 'C:\\cartaz2.psd',
+      name: 'PRODUTO 2',
+      price: '2,99',
+      copies: 1,
+      status: 'ready',
+      paperFormat: 'A5',
+      orientation: 'portrait',
+    },
+    {
+      id: 'item-a4-1',
+      sourcePath: 'C:\\cartaz3.psd',
+      name: 'PRODUTO 3',
+      price: '3,99',
+      copies: 3,
+      status: 'ready',
+      paperFormat: 'A4',
+      orientation: 'portrait',
+    },
+    {
+      id: 'item-a5-3',
+      sourcePath: 'C:\\cartaz4.psd',
+      name: 'PRODUTO 4',
+      price: '4,99',
+      copies: 1,
+      status: 'ready',
+      paperFormat: 'A5',
+      orientation: 'portrait',
+    },
+  ];
+
+  const batches = partitionQueueIntoBatches(queue, 50);
+  // Agrupa os itens do mesmo formato juntos para envio homogêneo à impressora (Lote A5 e Lote A4)
+  assert.equal(batches.length, 2);
+
+  // Lote 1: A5 (PRODUTO 1, 2 e 4 -> 4 páginas no total)
+  assert.equal(batches[0].formatConfig?.paper, 'A5');
+  assert.equal(batches[0].pageCount, 4);
+
+  // Lote 2: A4 (PRODUTO 3 -> 3 páginas no total)
+  assert.equal(batches[1].formatConfig?.paper, 'A4');
+  assert.equal(batches[1].pageCount, 3);
 });
 
 

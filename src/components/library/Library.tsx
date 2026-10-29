@@ -5,6 +5,8 @@ import * as storage from '../../features/cartazes/storage';
 import { PosterView } from '../editor/PosterView';
 import { getF7, indexCartazes, matchesCartazSearch, withoutF7 } from '../../features/cartazes/f7';
 import { posterFromDocument } from '../../features/cartazes/presentation';
+import { getLatestPrintMap } from '../../features/history/service';
+import type { PaperSize } from '../../features/formatos/types';
 
 const PsdImport = lazy(() => import('./PsdImport').then(module => ({ default: module.PsdImport })));
 
@@ -40,9 +42,15 @@ export function Library({
     return data.root;
   });
   const [query, setQuery] = useState('');
+  const [f7Query, setF7Query] = useState('');
+  const [descQuery, setDescQuery] = useState('');
+  const [paperFormat, setPaperFormat] = useState<'all' | 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2' | 'custom'>('all');
+  const [createdDateFilter, setCreatedDateFilter] = useState<'all' | 'today' | '7days' | '30days'>('all');
+  const [printedDateFilter, setPrintedDateFilter] = useState<'all' | 'today' | '7days' | 'never' | 'printed'>('all');
   const [onlyWithoutF7, setOnlyWithoutF7] = useState(false);
   const [fileFormat, setFileFormat] = useState<'all' | 'skcartaz' | 'psd'>('all');
-  const [sort, setSort] = useState('date');
+  const [sort, setSort] = useState<'date' | 'date_asc' | 'name' | 'name_desc'>('date');
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [view, setView] = useState<'grid' | 'list'>(() => {
     if (typeof window !== 'undefined') {
       const v = new URLSearchParams(window.location.search).get('view');
@@ -56,10 +64,32 @@ export function Library({
   const [deleting, setDeleting] = useState<{ entry: Entry; isFolder: boolean } | null>(null);
   const [importingPsd, setImportingPsd] = useState(false);
 
+  const printDateMap = useMemo(() => getLatestPrintMap(), [data.entries]);
+
   const indexed = useMemo(() => indexCartazes(data.entries), [data.entries]);
   const byPath = useMemo(() => new Map(indexed.map(item => [item.path, item])), [indexed]);
   const uncodedPaths = useMemo(() => new Set(withoutF7(indexed).map(item => item.path)), [indexed]);
-  const globalSearch = Boolean(query.trim() || onlyWithoutF7 || fileFormat !== 'all');
+  const hasActiveLibraryFilters = Boolean(
+    query.trim() ||
+      f7Query.trim() ||
+      descQuery.trim() ||
+      paperFormat !== 'all' ||
+      createdDateFilter !== 'all' ||
+      printedDateFilter !== 'all' ||
+      onlyWithoutF7 ||
+      fileFormat !== 'all' ||
+      sort !== 'date'
+  );
+  const globalSearch = Boolean(
+    query.trim() ||
+      f7Query.trim() ||
+      descQuery.trim() ||
+      paperFormat !== 'all' ||
+      createdDateFilter !== 'all' ||
+      printedDateFilter !== 'all' ||
+      onlyWithoutF7 ||
+      fileFormat !== 'all'
+  );
 
   const folders = useMemo(
     () => data.entries.filter(e => e.folder).sort((a, b) => a.path.localeCompare(b.path, 'pt-BR')),
@@ -86,30 +116,78 @@ export function Library({
   const active = folder === data.root || folders.some(e => e.path === folder) ? folder : data.root;
 
   const rows = useMemo(() => {
+    const now = Date.now();
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const todayMs = startOfToday.getTime();
+
+    const f7Clean = f7Query.trim().toLowerCase();
+    const descClean = descQuery.trim().toLowerCase();
+
     return data.entries
       .filter(e => !e.folder && (globalSearch || storage.parent(e.path) === active))
       .filter(e => {
+        const item = byPath.get(e.path);
+        const doc = item?.document;
+
+        // 1. Somente sem F7
         if (onlyWithoutF7 && !uncodedPaths.has(e.path)) return false;
-        
-        // Filtro por formato de arquivo
+
+        // 2. Pesquisa específica por código F7
+        if (f7Clean) {
+          const code = doc?.product.productCode ? String(doc.product.productCode).toLowerCase() : '';
+          if (!code.includes(f7Clean)) return false;
+        }
+
+        // 3. Pesquisa específica por descrição / produto
+        if (descClean) {
+          const pName = (doc?.product.name || e.name).toLowerCase();
+          const pComp = (doc?.product.complement || '').toLowerCase();
+          if (!pName.includes(descClean) && !pComp.includes(descClean)) return false;
+        }
+
+        // 4. Filtro por formato de papel (A5, A4, A3, custom)
+        if (paperFormat !== 'all') {
+          const pPaper = doc?.layout?.paper || 'A5';
+          if (pPaper !== paperFormat) return false;
+        }
+
+        // 5. Filtro por data de cadastro/modificação
+        if (createdDateFilter !== 'all') {
+          const mod = e.modifiedAt || (doc?.metadata?.createdAt ? Date.parse(doc.metadata.createdAt) : 0);
+          if (createdDateFilter === 'today' && mod < todayMs) return false;
+          if (createdDateFilter === '7days' && mod < now - 7 * 24 * 60 * 60 * 1000) return false;
+          if (createdDateFilter === '30days' && mod < now - 30 * 24 * 60 * 60 * 1000) return false;
+        }
+
+        // 6. Filtro por data de impressão
+        if (printedDateFilter !== 'all') {
+          const pName = doc?.product.name?.trim().toLowerCase() || '';
+          const lastPrint = printDateMap.get(e.path) ?? (pName ? printDateMap.get(`name:${pName}`) : undefined);
+          if (printedDateFilter === 'never' && lastPrint) return false;
+          if (printedDateFilter === 'printed' && !lastPrint) return false;
+          if (printedDateFilter === 'today' && (!lastPrint || lastPrint < todayMs)) return false;
+          if (printedDateFilter === '7days' && (!lastPrint || lastPrint < now - 7 * 24 * 60 * 60 * 1000)) return false;
+        }
+
+        // 7. Filtro por formato de arquivo (.psd / .skcartaz)
         if (fileFormat === 'psd') {
-          const isPsd = e.name.toLowerCase().endsWith('.psd') || byPath.get(e.path)?.document.layout.template === 'imported-psd';
+          const isPsd = e.name.toLowerCase().endsWith('.psd') || doc?.layout.template === 'imported-psd';
           if (!isPsd) return false;
         } else if (fileFormat === 'skcartaz') {
-          const isPsd = e.name.toLowerCase().endsWith('.psd') || byPath.get(e.path)?.document.layout.template === 'imported-psd';
+          const isPsd = e.name.toLowerCase().endsWith('.psd') || doc?.layout.template === 'imported-psd';
           if (isPsd) return false;
         }
 
+        // 8. Busca geral (texto livre)
         if (!query.trim()) return true;
-
-        const item = byPath.get(e.path);
         if (item) {
           return matchesCartazSearch(item, query);
         }
         return e.name.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR'));
       })
       .sort((a, b) => {
-        if (sort === 'date' || sort === 'date_desc') {
+        if (sort === 'date') {
           return (b.modifiedAt ?? 0) - (a.modifiedAt ?? 0);
         }
         if (sort === 'date_asc') {
@@ -120,7 +198,78 @@ export function Library({
         }
         return label(a).localeCompare(label(b), 'pt-BR');
       });
-  }, [data.entries, globalSearch, active, onlyWithoutF7, uncodedPaths, fileFormat, query, byPath, sort]);
+  }, [
+    data.entries,
+    globalSearch,
+    active,
+    onlyWithoutF7,
+    uncodedPaths,
+    f7Query,
+    descQuery,
+    paperFormat,
+    createdDateFilter,
+    printedDateFilter,
+    printDateMap,
+    fileFormat,
+    query,
+    byPath,
+    sort,
+  ]);
+
+  const handleClearFilters = () => {
+    setQuery('');
+    setF7Query('');
+    setDescQuery('');
+    setPaperFormat('all');
+    setCreatedDateFilter('all');
+    setPrintedDateFilter('all');
+    setOnlyWithoutF7(false);
+    setFileFormat('all');
+    setSort('date');
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedPaths.size === rows.length && rows.length > 0) {
+      setSelectedPaths(new Set());
+    } else {
+      setSelectedPaths(new Set(rows.map(r => r.path)));
+    }
+  };
+
+  const handleToggleSelectPath = (path: string) => {
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const handleBatchAddToConductor = () => {
+    if (!onAddToConductor || selectedPaths.size === 0) return;
+    let count = 0;
+    for (const p of selectedPaths) {
+      const item = byPath.get(p);
+      if (item?.document) {
+        onAddToConductor(item.document, p);
+        count++;
+      }
+    }
+    setSelectedPaths(new Set());
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedPaths.size === 0) return;
+    if (confirm(`Deseja realmente excluir os ${selectedPaths.size} cartazes selecionados?`)) {
+      for (const p of selectedPaths) {
+        if (await storage.remove(p)) {
+          removed(p);
+        }
+      }
+      setSelectedPaths(new Set());
+      await refresh();
+    }
+  };
 
   function label(e: Entry) {
     return byPath.get(e.path)?.document.product.name ?? e.name;
@@ -305,7 +454,7 @@ export function Library({
         <div className="sk-lib-main">
           {/* Barra de Filtros, Busca e Exibição */}
           <div className="library-toolbar sk-lib-toolbar">
-            {/* Campo de Busca por Nome, F7 e Arquivo */}
+            {/* Campo de Busca Geral */}
             <div className="sk-lib-search-box">
               <span className="sk-lib-search-icon">🔍</span>
               <input
@@ -326,29 +475,29 @@ export function Library({
               )}
             </div>
 
-            {/* Filtro por Formato */}
+            {/* Filtro por Formato de Arquivo */}
             <select
               aria-label="Filtrar por formato de arquivo"
               value={fileFormat}
               onChange={e => setFileFormat(e.target.value as 'all' | 'skcartaz' | 'psd')}
               className="sk-lib-select"
             >
-              <option value="all">Todos os formatos</option>
+              <option value="all">Tipo: Todos</option>
               <option value="skcartaz">Somente .skcartaz</option>
-              <option value="psd">Somente PSD (Photoshop)</option>
+              <option value="psd">Somente PSD</option>
             </select>
 
             {/* Ordenação */}
             <select
               aria-label="Ordenar"
               value={sort}
-              onChange={e => setSort(e.target.value)}
+              onChange={e => setSort(e.target.value as any)}
               className="sk-lib-select"
             >
               <option value="date">Mais recentes</option>
               <option value="date_asc">Mais antigos</option>
-              <option value="name">Nome do produto (A-Z)</option>
-              <option value="name_desc">Nome do produto (Z-A)</option>
+              <option value="name">Nome (A-Z)</option>
+              <option value="name_desc">Nome (Z-A)</option>
             </select>
 
             {/* Alternância Grade / Lista */}
@@ -381,21 +530,210 @@ export function Library({
             </button>
           </div>
 
+          {/* Barra de Filtros Específicos da Sprint v0.10.0 */}
+          <div
+            className="sk-lib-advanced-filters"
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              padding: '8px 12px',
+              background: '#f8fafc',
+              borderBottom: '1px solid #e2e8f0',
+              alignItems: 'center',
+              fontSize: 12,
+            }}
+          >
+            {/* Busca específica por F7 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontWeight: 600, color: '#475569' }}>F7:</span>
+              <input
+                type="text"
+                placeholder="Filtrar F7..."
+                value={f7Query}
+                onChange={e => setF7Query(e.target.value)}
+                style={{
+                  width: 90,
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              />
+            </div>
+
+            {/* Busca específica por Descrição */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontWeight: 600, color: '#475569' }}>Produto:</span>
+              <input
+                type="text"
+                placeholder="Descrição / Detalhe..."
+                value={descQuery}
+                onChange={e => setDescQuery(e.target.value)}
+                style={{
+                  width: 140,
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              />
+            </div>
+
+            {/* Filtro por Papel / Formato */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontWeight: 600, color: '#475569' }}>Papel:</span>
+              <select
+                value={paperFormat}
+                onChange={e => setPaperFormat(e.target.value as any)}
+                style={{
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              >
+                <option value="all">Todos papéis</option>
+                <option value="A6">A6 Vertical (105 × 148 mm)</option>
+                <option value="A5">A5 Vertical (148 × 210 mm)</option>
+                <option value="A4">A4 Vertical (210 × 297 mm)</option>
+                <option value="A3">A3 Vertical (297 × 420 mm)</option>
+                <option value="expositor-a3-2x2">Expositor A3 2×2 (594 × 840 mm)</option>
+                <option value="custom">Personalizado</option>
+              </select>
+            </div>
+
+            {/* Filtro por Data de Cadastro */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontWeight: 600, color: '#475569' }}>Cadastro:</span>
+              <select
+                value={createdDateFilter}
+                onChange={e => setCreatedDateFilter(e.target.value as any)}
+                style={{
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              >
+                <option value="all">Qualquer data</option>
+                <option value="today">Cadastrado hoje</option>
+                <option value="7days">Últimos 7 dias</option>
+                <option value="30days">Últimos 30 dias</option>
+              </select>
+            </div>
+
+            {/* Filtro por Data de Impressão */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ fontWeight: 600, color: '#475569' }}>Impressão:</span>
+              <select
+                value={printedDateFilter}
+                onChange={e => setPrintedDateFilter(e.target.value as any)}
+                style={{
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              >
+                <option value="all">Qualquer status</option>
+                <option value="never">Nunca impresso</option>
+                <option value="printed">Já impresso</option>
+                <option value="today">Impresso hoje</option>
+                <option value="7days">Impresso nos últimos 7 dias</option>
+              </select>
+            </div>
+
+            {/* Botão Limpar Filtros */}
+            {hasActiveLibraryFilters && (
+              <button
+                type="button"
+                className="editor-btn subtle"
+                onClick={handleClearFilters}
+                style={{ padding: '3px 8px', fontSize: 11.5, color: '#dc2626' }}
+                title="Limpar todos os filtros ativos"
+              >
+                ✕ Limpar Filtros
+              </button>
+            )}
+          </div>
+
+          {/* Barra de Ações em Massa (Seleção Múltipla) */}
+          {selectedPaths.size > 0 && (
+            <div
+              className="sk-lib-batch-bar"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 14px',
+                background: '#eff6ff',
+                borderBottom: '2px solid #3b82f6',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1e40af' }}>
+                <strong>✓ {selectedPaths.size} cartaz(es) selecionado(s)</strong>
+                <button
+                  type="button"
+                  className="editor-btn subtle"
+                  style={{ fontSize: 11, padding: '2px 6px' }}
+                  onClick={() => setSelectedPaths(new Set())}
+                >
+                  Desmarcar todos
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {onAddToConductor && (
+                  <button
+                    type="button"
+                    className="editor-btn primary"
+                    style={{ fontSize: 12, padding: '4px 10px' }}
+                    onClick={handleBatchAddToConductor}
+                  >
+                    + Adicionar ao Condutor ({selectedPaths.size})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="editor-btn subtle danger"
+                  style={{ fontSize: 12, padding: '4px 10px' }}
+                  onClick={handleBatchDelete}
+                >
+                  Excluir Selecionados
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Filtro Somente sem F7 e Status da Pasta */}
           <div className="sk-lib-meta-bar">
-            <label className="f7-filter sk-lib-checkbox-label">
-              <input
-                type="checkbox"
-                checked={onlyWithoutF7}
-                onChange={e => setOnlyWithoutF7(e.target.checked)}
-              />
-              <span>Somente cartazes sem F7 (todas as pastas)</span>
-            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <label className="f7-filter sk-lib-checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={onlyWithoutF7}
+                  onChange={e => setOnlyWithoutF7(e.target.checked)}
+                />
+                <span>Somente cartazes sem F7 (todas as pastas)</span>
+              </label>
+
+              {rows.length > 0 && (
+                <button
+                  type="button"
+                  className="editor-btn subtle"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={handleToggleSelectAll}
+                >
+                  {selectedPaths.size === rows.length ? 'Desmarcar todos' : `Selecionar todos (${rows.length})`}
+                </button>
+              )}
+            </div>
 
             <div className="sk-lib-status-info">
               <p className="library-path" style={{ margin: 0 }}>
                 {globalSearch ? (
-                  <span><strong>Pesquisa Global:</strong> {rows.length} cartaz(es) encontrados</span>
+                  <span><strong>Pesquisa Ativa:</strong> {rows.length} cartaz(es) encontrados</span>
                 ) : (
                   <span>Pasta: <strong>{activeFolderName}</strong> · {rows.length} cartaz(es)</span>
                 )}
@@ -443,9 +781,25 @@ export function Library({
                 const priceFormatted = d
                   ? (d.product.priceCents / 100).toFixed(2).replace('.', ',')
                   : null;
+                const isSelected = selectedPaths.has(e.path);
 
                 return (
-                  <article className="cartaz-card sk-lib-card" key={e.path}>
+                  <article
+                    className={`cartaz-card sk-lib-card ${isSelected ? 'selected' : ''}`}
+                    key={e.path}
+                    style={isSelected ? { outline: '2px solid #2563eb', background: '#f0f7ff' } : undefined}
+                  >
+                    {/* Checkbox de Seleção Múltipla */}
+                    <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 3 }}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Selecionar ${d?.product.name ?? e.name}`}
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectPath(e.path)}
+                        style={{ width: 16, height: 16, cursor: 'pointer' }}
+                      />
+                    </div>
+
                     {/* Miniatura A5 Proporcional */}
                     {d ? (
                       <button
@@ -577,6 +931,15 @@ export function Library({
               <table className="sk-lib-table" aria-label="Lista de cartazes">
                 <thead>
                   <tr>
+                    <th style={{ width: 36, textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        aria-label="Selecionar todos os cartazes exibidos"
+                        checked={rows.length > 0 && selectedPaths.size === rows.length}
+                        onChange={handleToggleSelectAll}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </th>
                     <th style={{ width: 68 }}>Prévia</th>
                     <th>Produto & Detalhe</th>
                     <th style={{ width: 110 }}>Código F7</th>
@@ -595,9 +958,25 @@ export function Library({
                     const priceFormatted = d
                       ? (d.product.priceCents / 100).toFixed(2).replace('.', ',')
                       : '-';
+                    const isSelected = selectedPaths.has(e.path);
 
                     return (
-                      <tr key={e.path} className="sk-lib-table-row">
+                      <tr
+                        key={e.path}
+                        className={`sk-lib-table-row ${isSelected ? 'selected' : ''}`}
+                        style={isSelected ? { background: '#f0f7ff' } : undefined}
+                      >
+                        {/* Checkbox de Linha */}
+                        <td style={{ textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Selecionar ${label(e)}`}
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectPath(e.path)}
+                            style={{ cursor: 'pointer' }}
+                          />
+                        </td>
+
                         {/* Miniatura A5 Proporcional */}
                         <td>
                           {d ? (

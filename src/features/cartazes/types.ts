@@ -22,8 +22,10 @@ export type ImportedArtwork = {
   templateParts?: ImportedPricePart[];
   isReferenceTemplate?: boolean;
 };
-export type ClassicLayout = { template: 'oferta-classica'; paper: 'A5'; orientation: 'portrait'; [key: string]: unknown };
-export type ImportedLayout = { template: 'imported-psd'; paper: 'A5'; orientation: 'portrait'; artwork: ImportedArtwork; [key: string]: unknown };
+export type PaperFormat = 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2' | 'custom';
+export type LayoutOrientation = 'portrait' | 'landscape';
+export type ClassicLayout = { template: 'oferta-classica'; paper: PaperFormat; orientation: LayoutOrientation; customWidthMm?: number; customHeightMm?: number; [key: string]: unknown };
+export type ImportedLayout = { template: 'imported-psd'; paper: PaperFormat; orientation: LayoutOrientation; customWidthMm?: number; customHeightMm?: number; artwork: ImportedArtwork; [key: string]: unknown };
 
 export type Cartaz = {
   schemaVersion: 1;

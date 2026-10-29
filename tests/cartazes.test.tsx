@@ -4,6 +4,9 @@ import './updates.test';
 import './offers.test';
 import './scantech.test';
 import './conductor.test';
+import './formatos.test';
+import './history.test';
+import './filtros.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
 import { priceToCents, fileName, MAX_DOCUMENT_CHARS } from '../src/features/cartazes/validation';
@@ -106,7 +109,7 @@ test('valores monetários em centavos sem arredondamento binário', () => {
 });
 test('rejeita JSON corrompido, versão futura, campos inválidos e documentos grandes', () => {
   for (const s of ['{','null','<script>','{}', 'x'.repeat(MAX_DOCUMENT_CHARS + 1)]) assert.throws(() => deserialize(s));
-  for (const mutate of [(d:any) => d.schemaVersion=2,(d:any) => d.product.priceCents=2.89,(d:any) => d.product.priceCents=-1,(d:any) => d.product.name='',(d:any) => d.product.unit=null,(d:any) => d.metadata.updatedAt='ontem',(d:any) => d.layout.paper='A4']) {
+  for (const mutate of [(d:any) => d.schemaVersion=2,(d:any) => d.product.priceCents=2.89,(d:any) => d.product.priceCents=-1,(d:any) => d.product.name='',(d:any) => d.product.unit=null,(d:any) => d.metadata.updatedAt='ontem',(d:any) => d.layout.paper='B5']) {
     const d = createDocument(); mutate(d); assert.throws(() => deserialize(JSON.stringify(d)));
   }
 });

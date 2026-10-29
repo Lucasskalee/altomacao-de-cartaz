@@ -144,8 +144,12 @@ export async function createOptimizedThumbnail(
       if (ctx) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'medium';
+        // Compõe explicitamente os pixels transparentes sobre branco puro (#FFFFFF)
+        // simulando a folha de papel antes da codificação, sem alterar a arte original
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const thumb = canvas.toDataURL('image/jpeg', 0.82);
+        const thumb = canvas.toDataURL('image/png');
         // Libera imediatamente o canvas
         canvas.width = 0;
         canvas.height = 0;

@@ -1,5 +1,6 @@
 import type { Poster } from '../../components/editor/PosterView';
 import type { Cartaz } from '../cartazes/types';
+import type { PaperSize, Orientation } from '../formatos/types';
 
 export type ConductorSourceType = 'library' | 'external_file' | 'external_folder' | 'editor';
 export type ConductorFileFormat = 'skcartaz' | 'psd';
@@ -24,6 +25,12 @@ export interface ConductorQueueItem {
   poster?: Poster;
   thumbnailUrl?: string;
   originalCartaz?: Cartaz;
+  paperFormat?: PaperSize;
+  orientation?: Orientation;
+  customWidthMm?: number;
+  customHeightMm?: number;
+  createdAt?: number;
+  lastPrintedAt?: number;
 }
 
 export interface ConductorScannedEntry {
