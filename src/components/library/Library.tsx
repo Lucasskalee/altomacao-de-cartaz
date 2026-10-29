@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState, useEffect } from 'react';
 import type { Cartaz, Entry, Library as LibraryData } from '../../features/cartazes/types';
 import { duplicate } from '../../features/cartazes/serialization';
 import * as storage from '../../features/cartazes/storage';
@@ -41,6 +41,20 @@ export function Library({
     }
     return data.root;
   });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('sidebar') === 'collapsed';
+    }
+    return false;
+  });
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search).get('filters') === '1';
+    }
+    return false;
+  });
+
   const [query, setQuery] = useState('');
   const [f7Query, setF7Query] = useState('');
   const [descQuery, setDescQuery] = useState('');
@@ -58,28 +72,48 @@ export function Library({
     }
     return 'grid';
   });
+
   const [newName, setNewName] = useState('');
   const [editing, setEditing] = useState<Entry | null>(null);
   const [renameName, setRenameName] = useState('');
   const [deleting, setDeleting] = useState<{ entry: Entry; isFolder: boolean } | null>(null);
   const [importingPsd, setImportingPsd] = useState(false);
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+
+  // Fechar dropdowns com tecla Escape ou clique externo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveDropdown(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const printDateMap = useMemo(() => getLatestPrintMap(), [data.entries]);
 
   const indexed = useMemo(() => indexCartazes(data.entries), [data.entries]);
   const byPath = useMemo(() => new Map(indexed.map(item => [item.path, item])), [indexed]);
   const uncodedPaths = useMemo(() => new Set(withoutF7(indexed).map(item => item.path)), [indexed]);
+
+  const activeFiltersCount = useMemo(() => {
+    let count = 0;
+    if (f7Query.trim()) count++;
+    if (descQuery.trim()) count++;
+    if (paperFormat !== 'all') count++;
+    if (createdDateFilter !== 'all') count++;
+    if (printedDateFilter !== 'all') count++;
+    if (onlyWithoutF7) count++;
+    if (fileFormat !== 'all') count++;
+    if (sort !== 'date') count++;
+    return count;
+  }, [f7Query, descQuery, paperFormat, createdDateFilter, printedDateFilter, onlyWithoutF7, fileFormat, sort]);
+
   const hasActiveLibraryFilters = Boolean(
-    query.trim() ||
-      f7Query.trim() ||
-      descQuery.trim() ||
-      paperFormat !== 'all' ||
-      createdDateFilter !== 'all' ||
-      printedDateFilter !== 'all' ||
-      onlyWithoutF7 ||
-      fileFormat !== 'all' ||
-      sort !== 'date'
+    query.trim() || activeFiltersCount > 0
   );
+
   const globalSearch = Boolean(
     query.trim() ||
       f7Query.trim() ||
@@ -123,6 +157,7 @@ export function Library({
 
     const f7Clean = f7Query.trim().toLowerCase();
     const descClean = descQuery.trim().toLowerCase();
+    const queryClean = query.trim().toLowerCase();
 
     return data.entries
       .filter(e => !e.folder && (globalSearch || storage.parent(e.path) === active))
@@ -179,12 +214,18 @@ export function Library({
           if (isPsd) return false;
         }
 
-        // 8. Busca geral (texto livre)
-        if (!query.trim()) return true;
-        if (item) {
-          return matchesCartazSearch(item, query);
+        // 8. Busca geral (texto livre, F7, código de barras, descrição, arquivo)
+        if (!queryClean) return true;
+        if (item && matchesCartazSearch(item, queryClean)) {
+          return true;
         }
-        return e.name.toLocaleLowerCase('pt-BR').includes(query.trim().toLocaleLowerCase('pt-BR'));
+        const fileNameMatch = e.name.toLowerCase().includes(queryClean);
+        const prodNameMatch = doc?.product.name ? doc.product.name.toLowerCase().includes(queryClean) : false;
+        const prodCompMatch = doc?.product.complement ? doc.product.complement.toLowerCase().includes(queryClean) : false;
+        const f7Match = doc?.product.productCode ? String(doc.product.productCode).toLowerCase().includes(queryClean) : false;
+        const barcodeMatch = (doc?.product as any)?.barcode ? String((doc?.product as any).barcode).toLowerCase().includes(queryClean) : false;
+
+        return fileNameMatch || prodNameMatch || prodCompMatch || f7Match || barcodeMatch;
       })
       .sort((a, b) => {
         if (sort === 'date') {
@@ -247,12 +288,10 @@ export function Library({
 
   const handleBatchAddToConductor = () => {
     if (!onAddToConductor || selectedPaths.size === 0) return;
-    let count = 0;
     for (const p of selectedPaths) {
       const item = byPath.get(p);
       if (item?.document) {
         onAddToConductor(item.document, p);
-        count++;
       }
     }
     setSelectedPaths(new Set());
@@ -314,18 +353,25 @@ export function Library({
   const activeFolderName = active === data.root ? 'Pasta Principal' : active.split(/[\\/]/).pop() || active;
 
   return (
-    <section className="library panel sk-library-container" aria-label="Biblioteca de Cartazes">
-      {/* 1. Header da Biblioteca */}
+    <section
+      className="library panel sk-library-container"
+      aria-label="Biblioteca de Cartazes"
+      style={selectedPaths.size > 0 ? { paddingBottom: 96 } : undefined}
+    >
+      {/* 1. Header Compacto e Moderno da Biblioteca */}
       <div className="library-heading sk-lib-header">
-        <div>
-          <h2>Meus Cartazes</h2>
-          <p>Biblioteca local no computador · Operação 100% offline</p>
+        <div className="sk-lib-header-info">
+          <div className="sk-lib-header-title-row">
+            <h2>Meus Cartazes</h2>
+            <span className="sk-lib-offline-badge" title="Operação 100% offline">Offline</span>
+          </div>
           <div className="sk-lib-root-pill" title={data.root}>
             <span className="sk-lib-root-icon">📁</span>
             <span className="sk-lib-root-text">{data.root}</span>
             <span className="sk-lib-root-badge">{totalCartazesCount} cartazes</span>
           </div>
         </div>
+
         <div className="toolbar sk-lib-top-actions">
           <button
             type="button"
@@ -333,7 +379,7 @@ export function Library({
             onClick={() => setImportingPsd(true)}
             title="Importar arquivo PSD do Photoshop"
           >
-            🎨 Importar Arte PSD
+            🎨 Importar PSD
           </button>
           <button
             type="button"
@@ -349,117 +395,170 @@ export function Library({
       <p className="library-path sr-only">{data.root}</p>
 
       {/* 2. Layout Principal: Lateral (Pastas) + Conteúdo (Cartazes) */}
-      <div className="library-layout sk-lib-layout">
-        {/* Painel Lateral: Pastas */}
-        <aside className="sk-lib-sidebar" aria-label="Pastas da biblioteca">
+      <div className={`library-layout sk-lib-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        {/* Painel Lateral: Pastas Recolhível */}
+        <aside
+          className={`sk-lib-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}
+          aria-label="Pastas da biblioteca"
+        >
           <div className="sk-lib-sidebar-title">
-            <span>Pastas da Biblioteca</span>
-            <span className="sk-lib-sidebar-count">{folders.length + 1}</span>
-          </div>
-
-          <div className="sk-lib-folders-list">
-            {/* Pasta Raiz / Principal */}
-            <button
-              type="button"
-              className={active === data.root ? 'folder selected sk-lib-folder-btn' : 'folder sk-lib-folder-btn'}
-              onClick={() => setFolder(data.root)}
-              title="Exibir todos os cartazes na pasta raiz"
-            >
-              <span className="sk-lib-folder-icon">▣</span>
-              <span className="sk-lib-folder-name">Todos na pasta principal</span>
-              <span className="sk-lib-folder-badge">{folderCounts.get(data.root) ?? 0}</span>
-            </button>
-
-            {/* Subpastas com hierarquia */}
-            {folders.map(e => {
-              const depth = Math.min(5, Math.max(0, e.path.slice(data.root.length).split(/[\\/]/).length - 2));
-              const count = folderCounts.get(e.path) ?? 0;
-              const isSelected = active === e.path;
-
-              return (
-                <div key={e.path} className="sk-lib-folder-item" style={{ paddingLeft: depth * 14 }}>
-                  <button
-                    type="button"
-                    className={isSelected ? 'folder selected sk-lib-folder-btn' : 'folder sk-lib-folder-btn'}
-                    onClick={() => setFolder(e.path)}
-                    title={e.path}
-                  >
-                    <span className="sk-lib-folder-icon">📁</span>
-                    <span className="sk-lib-folder-name">{e.name}</span>
-                    <span className="sk-lib-folder-badge">{count}</span>
-                  </button>
-
-                  {/* Ações da pasta ativa selecionada */}
-                  {isSelected && (
-                    <div className="folder-actions sk-lib-folder-actions">
-                      <button
-                        type="button"
-                        className="editor-btn subtle"
-                        style={{ fontSize: 11, padding: '4px 8px' }}
-                        onClick={() => {
-                          setEditing(e);
-                          setRenameName(e.name);
-                        }}
-                      >
-                        Renomear
-                      </button>
-                      <button
-                        type="button"
-                        className="editor-btn subtle danger"
-                        style={{ fontSize: 11, padding: '4px 8px' }}
-                        onClick={() => setDeleting({ entry: e, isFolder: true })}
-                      >
-                        Excluir pasta
-                      </button>
-                    </div>
-                  )}
+            {!sidebarCollapsed ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span>Pastas</span>
+                  <span className="sk-lib-sidebar-count">{folders.length + 1}</span>
                 </div>
-              );
-            })}
+                <button
+                  type="button"
+                  className="sk-lib-sidebar-toggle-btn"
+                  onClick={() => setSidebarCollapsed(true)}
+                  title="Recolher barra de pastas para ganhar espaço"
+                  aria-label="Recolher barra lateral"
+                >
+                  ◀
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="sk-lib-sidebar-toggle-btn-expanded"
+                onClick={() => setSidebarCollapsed(false)}
+                title={`Pastas (${folders.length + 1}) - Clique para expandir`}
+                aria-label="Expandir barra lateral de pastas"
+              >
+                <span>📁</span>
+                <span className="sk-lib-sidebar-expand-count">{folders.length + 1}</span>
+                <span>▶</span>
+              </button>
+            )}
           </div>
 
-          {/* Criação de Nova Pasta */}
-          <form
-            className="sk-lib-new-folder-form"
-            onSubmit={e => {
-              e.preventDefault();
-              if (!newName.trim()) return;
-              run(async () => {
-                await storage.createFolder(active, newName.trim());
-                setNewName('');
-                await refresh();
-              });
-            }}
-          >
-            <label className="sk-lib-new-folder-label">
-              <span>Nova subpasta em <strong>{activeFolderName}</strong>:</span>
-              <div className="sk-lib-new-folder-row">
-                <input
-                  aria-label="Nome da nova pasta"
-                  placeholder="Nome da pasta..."
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  required
-                  maxLength={100}
-                />
-                <button type="submit" className="editor-btn subtle">
-                  Criar
+          {!sidebarCollapsed ? (
+            <>
+              <div className="sk-lib-folders-list">
+                {/* Pasta Raiz / Principal */}
+                <button
+                  type="button"
+                  className={active === data.root ? 'folder selected sk-lib-folder-btn' : 'folder sk-lib-folder-btn'}
+                  onClick={() => setFolder(data.root)}
+                  title="Exibir todos os cartazes na pasta raiz"
+                >
+                  <span className="sk-lib-folder-icon">▣</span>
+                  <span className="sk-lib-folder-name">Principal</span>
+                  <span className="sk-lib-folder-badge">{folderCounts.get(data.root) ?? 0}</span>
                 </button>
+
+                {/* Subpastas com hierarquia */}
+                {folders.map(e => {
+                  const depth = Math.min(4, Math.max(0, e.path.slice(data.root.length).split(/[\\/]/).length - 2));
+                  const count = folderCounts.get(e.path) ?? 0;
+                  const isSelected = active === e.path;
+
+                  return (
+                    <div key={e.path} className="sk-lib-folder-item" style={{ paddingLeft: depth * 10 }}>
+                      <button
+                        type="button"
+                        className={isSelected ? 'folder selected sk-lib-folder-btn' : 'folder sk-lib-folder-btn'}
+                        onClick={() => setFolder(e.path)}
+                        title={e.path}
+                      >
+                        <span className="sk-lib-folder-icon">📁</span>
+                        <span className="sk-lib-folder-name">{e.name}</span>
+                        <span className="sk-lib-folder-badge">{count}</span>
+                      </button>
+
+                      {/* Ações da pasta ativa selecionada */}
+                      {isSelected && (
+                        <div className="folder-actions sk-lib-folder-actions">
+                          <button
+                            type="button"
+                            className="editor-btn subtle"
+                            style={{ fontSize: 11, padding: '3px 6px' }}
+                            onClick={() => {
+                              setEditing(e);
+                              setRenameName(e.name);
+                            }}
+                          >
+                            Renomear
+                          </button>
+                          <button
+                            type="button"
+                            className="editor-btn subtle danger"
+                            style={{ fontSize: 11, padding: '3px 6px' }}
+                            onClick={() => setDeleting({ entry: e, isFolder: true })}
+                          >
+                            Excluir
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            </label>
-          </form>
+
+              {/* Criação de Nova Pasta */}
+              <form
+                className="sk-lib-new-folder-form"
+                onSubmit={e => {
+                  e.preventDefault();
+                  if (!newName.trim()) return;
+                  run(async () => {
+                    await storage.createFolder(active, newName.trim());
+                    setNewName('');
+                    await refresh();
+                  });
+                }}
+              >
+                <div className="sk-lib-new-folder-row">
+                  <input
+                    aria-label="Nome da nova pasta"
+                    placeholder={`+ Nova pasta em ${activeFolderName}...`}
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    required
+                    maxLength={100}
+                  />
+                  <button type="submit" className="editor-btn subtle" title="Criar subpasta">
+                    +
+                  </button>
+                </div>
+              </form>
+            </>
+          ) : (
+            <div className="sk-lib-sidebar-compact-icons">
+              <button
+                type="button"
+                className={`sk-lib-folder-icon-compact ${active === data.root ? 'active' : ''}`}
+                onClick={() => setFolder(data.root)}
+                title={`Principal (${folderCounts.get(data.root) ?? 0})`}
+              >
+                ▣
+              </button>
+              {folders.map(e => (
+                <button
+                  key={e.path}
+                  type="button"
+                  className={`sk-lib-folder-icon-compact ${active === e.path ? 'active' : ''}`}
+                  onClick={() => setFolder(e.path)}
+                  title={`${e.name} (${folderCounts.get(e.path) ?? 0})`}
+                >
+                  📁
+                </button>
+              ))}
+            </div>
+          )}
         </aside>
 
         {/* Conteúdo Principal da Biblioteca */}
         <div className="sk-lib-main">
-          {/* Barra de Filtros, Busca e Exibição */}
+          {/* Barra de Filtros Unificada e Inteligente */}
           <div className="library-toolbar sk-lib-toolbar">
-            {/* Campo de Busca Geral */}
+            {/* Campo de Busca Global */}
             <div className="sk-lib-search-box">
-              <span className="sk-lib-search-icon">🔍</span>
+              <span className="sk-lib-search-icon" aria-hidden="true">🔍</span>
               <input
                 aria-label="Pesquisar por nome ou F7 em todas as pastas"
-                placeholder="Pesquisar por nome ou F7 em todas as pastas…"
+                placeholder="Pesquisar por nome ou F7, produto ou descrição…"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
               />
@@ -469,27 +568,32 @@ export function Library({
                   className="sk-lib-search-clear"
                   onClick={() => setQuery('')}
                   title="Limpar pesquisa"
+                  aria-label="Limpar campo de pesquisa"
                 >
                   ✕
                 </button>
               )}
             </div>
 
-            {/* Filtro por Formato de Arquivo */}
-            <select
-              aria-label="Filtrar por formato de arquivo"
-              value={fileFormat}
-              onChange={e => setFileFormat(e.target.value as 'all' | 'skcartaz' | 'psd')}
-              className="sk-lib-select"
+            {/* Botão de Toggle do Painel de Filtros Avançados */}
+            <button
+              type="button"
+              className={`sk-lib-filter-pill-btn ${showAdvancedFilters || activeFiltersCount > 0 ? 'active' : ''}`}
+              onClick={() => setShowAdvancedFilters(prev => !prev)}
+              aria-expanded={showAdvancedFilters}
+              aria-controls="sk-lib-filters-panel"
             >
-              <option value="all">Tipo: Todos</option>
-              <option value="skcartaz">Somente .skcartaz</option>
-              <option value="psd">Somente PSD</option>
-            </select>
+              <span style={{ fontSize: 13 }}>⚙</span>
+              <span>Filtros</span>
+              {activeFiltersCount > 0 && (
+                <span className="sk-lib-active-filter-badge">{activeFiltersCount}</span>
+              )}
+              <span style={{ fontSize: 9 }}>{showAdvancedFilters ? '▲' : '▼'}</span>
+            </button>
 
-            {/* Ordenação */}
+            {/* Ordenação Rápida */}
             <select
-              aria-label="Ordenar"
+              aria-label="Ordenar resultados"
               value={sort}
               onChange={e => setSort(e.target.value as any)}
               className="sk-lib-select"
@@ -501,12 +605,13 @@ export function Library({
             </select>
 
             {/* Alternância Grade / Lista */}
-            <div className="sk-view-mode-toggle" role="group" aria-label="Visualização">
+            <div className="sk-view-mode-toggle" role="group" aria-label="Modo de visualização">
               <button
                 type="button"
                 className={`sk-view-toggle-btn ${view === 'grid' ? 'active' : ''}`}
                 onClick={() => setView('grid')}
                 title="Visualização em Grade de Cartazes"
+                aria-pressed={view === 'grid'}
               >
                 ☷ Grade
               </button>
@@ -515,6 +620,7 @@ export function Library({
                 className={`sk-view-toggle-btn ${view === 'list' ? 'active' : ''}`}
                 onClick={() => setView('list')}
                 title="Visualização em Lista Detalhada"
+                aria-pressed={view === 'list'}
               >
                 ☰ Lista
               </button>
@@ -522,191 +628,228 @@ export function Library({
 
             <button
               type="button"
-              className="editor-btn subtle"
+              className="editor-btn subtle sk-lib-refresh-btn"
               onClick={() => run(refresh)}
-              title="Recarregar biblioteca de arquivos"
+              title="Recarregar biblioteca do disco"
+              aria-label="Recarregar biblioteca"
             >
-              ↻ Atualizar
+              ↻
             </button>
           </div>
 
-          {/* Barra de Filtros Específicos da Sprint v0.10.0 */}
-          <div
-            className="sk-lib-advanced-filters"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: 8,
-              padding: '8px 12px',
-              background: '#f8fafc',
-              borderBottom: '1px solid #e2e8f0',
-              alignItems: 'center',
-              fontSize: 12,
-            }}
-          >
-            {/* Busca específica por F7 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>F7:</span>
-              <input
-                type="text"
-                placeholder="Filtrar F7..."
-                value={f7Query}
-                onChange={e => setF7Query(e.target.value)}
-                style={{
-                  width: 90,
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  border: '1px solid #cbd5e1',
-                  fontSize: 12,
-                }}
-              />
-            </div>
-
-            {/* Busca específica por Descrição */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>Produto:</span>
-              <input
-                type="text"
-                placeholder="Descrição / Detalhe..."
-                value={descQuery}
-                onChange={e => setDescQuery(e.target.value)}
-                style={{
-                  width: 140,
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  border: '1px solid #cbd5e1',
-                  fontSize: 12,
-                }}
-              />
-            </div>
-
-            {/* Filtro por Papel / Formato */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>Papel:</span>
-              <select
-                value={paperFormat}
-                onChange={e => setPaperFormat(e.target.value as any)}
-                style={{
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  border: '1px solid #cbd5e1',
-                  fontSize: 12,
-                }}
-              >
-                <option value="all">Todos papéis</option>
-                <option value="A6">A6 Vertical (105 × 148 mm)</option>
-                <option value="A5">A5 Vertical (148 × 210 mm)</option>
-                <option value="A4">A4 Vertical (210 × 297 mm)</option>
-                <option value="A3">A3 Vertical (297 × 420 mm)</option>
-                <option value="expositor-a3-2x2">Expositor A3 2×2 (594 × 840 mm)</option>
-                <option value="custom">Personalizado</option>
-              </select>
-            </div>
-
-            {/* Filtro por Data de Cadastro */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>Cadastro:</span>
-              <select
-                value={createdDateFilter}
-                onChange={e => setCreatedDateFilter(e.target.value as any)}
-                style={{
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  border: '1px solid #cbd5e1',
-                  fontSize: 12,
-                }}
-              >
-                <option value="all">Qualquer data</option>
-                <option value="today">Cadastrado hoje</option>
-                <option value="7days">Últimos 7 dias</option>
-                <option value="30days">Últimos 30 dias</option>
-              </select>
-            </div>
-
-            {/* Filtro por Data de Impressão */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontWeight: 600, color: '#475569' }}>Impressão:</span>
-              <select
-                value={printedDateFilter}
-                onChange={e => setPrintedDateFilter(e.target.value as any)}
-                style={{
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  border: '1px solid #cbd5e1',
-                  fontSize: 12,
-                }}
-              >
-                <option value="all">Qualquer status</option>
-                <option value="never">Nunca impresso</option>
-                <option value="printed">Já impresso</option>
-                <option value="today">Impresso hoje</option>
-                <option value="7days">Impresso nos últimos 7 dias</option>
-              </select>
-            </div>
-
-            {/* Botão Limpar Filtros */}
-            {hasActiveLibraryFilters && (
-              <button
-                type="button"
-                className="editor-btn subtle"
-                onClick={handleClearFilters}
-                style={{ padding: '3px 8px', fontSize: 11.5, color: '#dc2626' }}
-                title="Limpar todos os filtros ativos"
-              >
-                ✕ Limpar Filtros
-              </button>
-            )}
-          </div>
-
-          {/* Barra de Ações em Massa (Seleção Múltipla) */}
-          {selectedPaths.size > 0 && (
-            <div
-              className="sk-lib-batch-bar"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '8px 14px',
-                background: '#eff6ff',
-                borderBottom: '2px solid #3b82f6',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1e40af' }}>
-                <strong>✓ {selectedPaths.size} cartaz(es) selecionado(s)</strong>
-                <button
-                  type="button"
-                  className="editor-btn subtle"
-                  style={{ fontSize: 11, padding: '2px 6px' }}
-                  onClick={() => setSelectedPaths(new Set())}
-                >
-                  Desmarcar todos
-                </button>
+          {/* Painel de Filtros Avançados Expansível */}
+          {showAdvancedFilters && (
+            <div id="sk-lib-filters-panel" className="sk-lib-advanced-filters-panel">
+              {/* Filtro F7 */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-f7-input">Código F7:</label>
+                <input
+                  id="filter-f7-input"
+                  type="text"
+                  placeholder="Ex: 25037"
+                  value={f7Query}
+                  onChange={e => setF7Query(e.target.value)}
+                  className="sk-lib-filter-input"
+                  style={{ width: 100 }}
+                />
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {onAddToConductor && (
-                  <button
-                    type="button"
-                    className="editor-btn primary"
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                    onClick={handleBatchAddToConductor}
-                  >
-                    + Adicionar ao Condutor ({selectedPaths.size})
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="editor-btn subtle danger"
-                  style={{ fontSize: 12, padding: '4px 10px' }}
-                  onClick={handleBatchDelete}
+              {/* Filtro Descrição */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-desc-input">Produto/Detalhe:</label>
+                <input
+                  id="filter-desc-input"
+                  type="text"
+                  placeholder="Ex: Arroz ou 5kg"
+                  value={descQuery}
+                  onChange={e => setDescQuery(e.target.value)}
+                  className="sk-lib-filter-input"
+                  style={{ width: 140 }}
+                />
+              </div>
+
+              {/* Filtro Formato de Papel */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-paper-select">Papel:</label>
+                <select
+                  id="filter-paper-select"
+                  value={paperFormat}
+                  onChange={e => setPaperFormat(e.target.value as any)}
+                  className="sk-lib-filter-select"
                 >
-                  Excluir Selecionados
-                </button>
+                  <option value="all">Todos os papéis</option>
+                  <option value="A6">A6 (105 × 148 mm)</option>
+                  <option value="A5">A5 (148 × 210 mm)</option>
+                  <option value="A4">A4 (210 × 297 mm)</option>
+                  <option value="A3">A3 (297 × 420 mm)</option>
+                  <option value="expositor-a3-2x2">Expositor A3 2×2</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </div>
+
+              {/* Filtro Tipo de Arquivo */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-type-select">Tipo:</label>
+                <select
+                  id="filter-type-select"
+                  value={fileFormat}
+                  onChange={e => setFileFormat(e.target.value as any)}
+                  className="sk-lib-filter-select"
+                >
+                  <option value="all">Todos os tipos</option>
+                  <option value="skcartaz">Somente .skcartaz</option>
+                  <option value="psd">Somente PSD</option>
+                </select>
+              </div>
+
+              {/* Filtro Cadastro */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-created-select">Cadastro:</label>
+                <select
+                  id="filter-created-select"
+                  value={createdDateFilter}
+                  onChange={e => setCreatedDateFilter(e.target.value as any)}
+                  className="sk-lib-filter-select"
+                >
+                  <option value="all">Qualquer data</option>
+                  <option value="today">Cadastrado hoje</option>
+                  <option value="7days">Últimos 7 dias</option>
+                  <option value="30days">Últimos 30 dias</option>
+                </select>
+              </div>
+
+              {/* Filtro Impressão */}
+              <div className="sk-lib-filter-group">
+                <label htmlFor="filter-printed-select">Impressão:</label>
+                <select
+                  id="filter-printed-select"
+                  value={printedDateFilter}
+                  onChange={e => setPrintedDateFilter(e.target.value as any)}
+                  className="sk-lib-filter-select"
+                >
+                  <option value="all">Todos status</option>
+                  <option value="never">Nunca impresso</option>
+                  <option value="printed">Já impresso</option>
+                  <option value="today">Impresso hoje</option>
+                  <option value="7days">Últimos 7 dias</option>
+                </select>
               </div>
             </div>
           )}
 
-          {/* Filtro Somente sem F7 e Status da Pasta */}
+          {/* Chips Removíveis para Filtros Ativos */}
+          {hasActiveLibraryFilters && (
+            <div className="sk-lib-active-chips-bar" aria-label="Filtros ativos">
+              <span className="sk-lib-chips-title">Filtros ativos:</span>
+
+              {query.trim() && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setQuery('')}
+                  title="Remover busca"
+                >
+                  <span>Busca: "{query.trim()}"</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {f7Query.trim() && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setF7Query('')}
+                  title="Remover filtro F7"
+                >
+                  <span>F7: "{f7Query.trim()}"</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {descQuery.trim() && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setDescQuery('')}
+                  title="Remover filtro de produto"
+                >
+                  <span>Produto: "{descQuery.trim()}"</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {paperFormat !== 'all' && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setPaperFormat('all')}
+                  title="Remover filtro de papel"
+                >
+                  <span>Papel: {paperFormat}</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {fileFormat !== 'all' && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setFileFormat('all')}
+                  title="Remover filtro de tipo"
+                >
+                  <span>Tipo: {fileFormat === 'psd' ? 'Somente PSD' : 'Somente .skcartaz'}</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {createdDateFilter !== 'all' && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setCreatedDateFilter('all')}
+                  title="Remover filtro de cadastro"
+                >
+                  <span>Cadastro: {createdDateFilter === 'today' ? 'Hoje' : createdDateFilter}</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {printedDateFilter !== 'all' && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setPrintedDateFilter('all')}
+                  title="Remover filtro de impressão"
+                >
+                  <span>Impressão: {printedDateFilter}</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              {onlyWithoutF7 && (
+                <button
+                  type="button"
+                  className="sk-lib-chip"
+                  onClick={() => setOnlyWithoutF7(false)}
+                  title="Remover filtro sem F7"
+                >
+                  <span>Somente sem F7</span>
+                  <span className="sk-lib-chip-x">✕</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="sk-lib-chip-clear-all"
+                onClick={handleClearFilters}
+                title="Limpar todos os filtros ativos"
+              >
+                Limpar todos
+              </button>
+            </div>
+          )}
+
+          {/* Barra de Status e Seleção Rápida */}
           <div className="sk-lib-meta-bar">
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <label className="f7-filter sk-lib-checkbox-label">
@@ -722,7 +865,7 @@ export function Library({
                 <button
                   type="button"
                   className="editor-btn subtle"
-                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  style={{ fontSize: 11.5, padding: '2px 8px' }}
                   onClick={handleToggleSelectAll}
                 >
                   {selectedPaths.size === rows.length ? 'Desmarcar todos' : `Selecionar todos (${rows.length})`}
@@ -733,9 +876,9 @@ export function Library({
             <div className="sk-lib-status-info">
               <p className="library-path" style={{ margin: 0 }}>
                 {globalSearch ? (
-                  <span><strong>Pesquisa Ativa:</strong> {rows.length} cartaz(es) encontrados</span>
+                  <span><strong>Pesquisa:</strong> {rows.length} encontrado(s)</span>
                 ) : (
-                  <span>Pasta: <strong>{activeFolderName}</strong> · {rows.length} cartaz(es)</span>
+                  <span><strong>{activeFolderName}</strong> · {rows.length} cartaz(es)</span>
                 )}
               </p>
             </div>
@@ -757,7 +900,7 @@ export function Library({
                   className="editor-btn primary"
                   onClick={() => run(newDocument)}
                 >
-                  Criar Novo Cartaz no Editor
+                  + Criar Novo Cartaz
                 </button>
                 <button
                   type="button"
@@ -766,11 +909,20 @@ export function Library({
                 >
                   Importar Arte PSD
                 </button>
+                {hasActiveLibraryFilters && (
+                  <button
+                    type="button"
+                    className="editor-btn subtle"
+                    onClick={handleClearFilters}
+                  >
+                    Limpar Filtros
+                  </button>
+                )}
               </div>
             </div>
           )}
 
-          {/* Modo Grade de Cartazes */}
+          {/* Modo Grade de Cartazes com Seleção Isolada */}
           {rows.length > 0 && view === 'grid' && (
             <div className="cards grid sk-lib-grid-cards">
               {rows.map(e => {
@@ -778,36 +930,56 @@ export function Library({
                 const error = e.error || (!d ? 'Documento inválido ou incompatível.' : undefined);
                 const f7 = getF7(d?.product.productCode);
                 const isPsd = d?.layout.template === 'imported-psd' || e.name.toLowerCase().endsWith('.psd');
+                const paper = d?.layout.paper || 'A5';
                 const priceFormatted = d
                   ? (d.product.priceCents / 100).toFixed(2).replace('.', ',')
                   : null;
                 const isSelected = selectedPaths.has(e.path);
+                const isMenuOpen = activeDropdown === e.path;
 
                 return (
                   <article
                     className={`cartaz-card sk-lib-card ${isSelected ? 'selected' : ''}`}
                     key={e.path}
-                    style={isSelected ? { outline: '2px solid #2563eb', background: '#f0f7ff' } : undefined}
                   >
-                    {/* Checkbox de Seleção Múltipla */}
-                    <div style={{ position: 'absolute', top: 10, left: 10, zIndex: 3 }}>
-                      <input
-                        type="checkbox"
-                        aria-label={`Selecionar ${d?.product.name ?? e.name}`}
-                        checked={isSelected}
-                        onChange={() => handleToggleSelectPath(e.path)}
-                        style={{ width: 16, height: 16, cursor: 'pointer' }}
-                      />
+                    {/* Topbar Dedicada do Card: Checkbox isolado e Badges */}
+                    <div className="sk-lib-card-topbar">
+                      <label
+                        className="sk-lib-card-checkbox-label"
+                        title={`Selecionar ${d?.product.name ?? e.name}`}
+                        onClick={ev => ev.stopPropagation()}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={`Selecionar ${d?.product.name ?? e.name}`}
+                          checked={isSelected}
+                          onChange={() => handleToggleSelectPath(e.path)}
+                        />
+                      </label>
+
+                      <div className="sk-lib-card-top-badges">
+                        <span className={`sk-lib-type-pill ${isPsd ? 'psd' : 'skcartaz'}`}>
+                          {isPsd ? 'PSD' : 'SK'}
+                        </span>
+                        <span className="sk-lib-paper-pill" title={`Formato de impressão ${paper}`}>
+                          {paper}
+                        </span>
+                        {d && (
+                          <span className={f7 ? 'sk-lib-f7-pill active' : 'sk-lib-f7-pill missing'}>
+                            {f7 ? `F7: ${f7}` : 'Sem F7'}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Miniatura A5 Proporcional */}
+                    {/* Miniatura A5 Proporcional — Clique exclusivo para abrir */}
                     {d ? (
                       <button
                         type="button"
                         className="thumbnail sk-lib-card-thumb"
                         aria-label={'Abrir ' + d.product.name}
                         onClick={() => run(() => open(e.path))}
-                        title="Clique para abrir no editor"
+                        title="Clique para abrir no editor de cartaz"
                       >
                         <PosterView poster={posterFromDocument(d)} />
                       </button>
@@ -819,18 +991,6 @@ export function Library({
 
                     {/* Detalhes do Cartaz */}
                     <div className="card-info sk-lib-card-body">
-                      {/* Badges superiores: Tipo e F7 */}
-                      <div className="sk-lib-card-badges">
-                        <span className={`sk-lib-type-pill ${isPsd ? 'psd' : 'skcartaz'}`}>
-                          {isPsd ? 'PSD' : 'SKCARTAZ'}
-                        </span>
-                        {d && (
-                          <span className={f7 ? 'f7-code sk-lib-f7-pill active' : 'f7-missing sk-lib-f7-pill missing'}>
-                            {f7 ? `F7: ${f7}` : 'Sem F7'}
-                          </span>
-                        )}
-                      </div>
-
                       {/* Título e Complemento */}
                       <strong className="sk-lib-card-title" title={d?.product.name ?? e.name}>
                         {d?.product.name ?? e.name}
@@ -839,7 +999,7 @@ export function Library({
                         {d?.product.complement || '\u00a0'}
                       </div>
 
-                      {/* Preço em destaque */}
+                      {/* Preço em Destaque com Formatação Tabular */}
                       {d && (
                         <div className="sk-lib-card-price-row">
                           <span className="sk-lib-card-price-symbol">R$</span>
@@ -848,7 +1008,7 @@ export function Library({
                         </div>
                       )}
 
-                      {/* Metadados: Data e Arquivo */}
+                      {/* Metadados: Data e Nome do Arquivo */}
                       <div className="sk-lib-card-meta">
                         <small>{e.modifiedAt ? new Date(e.modifiedAt).toLocaleDateString('pt-BR') : ''}</small>
                         <small title={e.path} className="sk-lib-filename">{e.name}</small>
@@ -867,6 +1027,7 @@ export function Library({
                         >
                           Abrir
                         </button>
+
                         {d && onAddToConductor && (
                           <button
                             type="button"
@@ -877,46 +1038,76 @@ export function Library({
                             + Condutor
                           </button>
                         )}
-                        <details className="sk-lib-dropdown-actions">
-                          <summary className="editor-btn subtle" title="Mais opções">
+
+                        {/* Menu de Ações Acessível por Teclado */}
+                        <div className="sk-lib-dropdown-actions">
+                          <button
+                            type="button"
+                            className="editor-btn subtle sk-lib-dropdown-trigger"
+                            aria-haspopup="true"
+                            aria-expanded={isMenuOpen}
+                            aria-label={`Mais opções para ${d?.product.name ?? e.name}`}
+                            onClick={() => setActiveDropdown(isMenuOpen ? null : e.path)}
+                          >
                             •••
-                          </summary>
-                          <div className="file-actions sk-lib-dropdown-menu">
-                            <button
-                              type="button"
-                              className="editor-btn subtle"
-                              onClick={() => {
-                                setEditing(e);
-                                setRenameName(e.name);
-                              }}
+                          </button>
+
+                          {isMenuOpen && (
+                            <div
+                              className="file-actions sk-lib-dropdown-menu"
+                              role="menu"
+                              aria-label="Opções do cartaz"
                             >
-                              Renomear
-                            </button>
-                            <button
-                              type="button"
-                              className="editor-btn subtle"
-                              onClick={() => run(() => handleMove(e))}
-                            >
-                              Mover para…
-                            </button>
-                            {d && (
                               <button
                                 type="button"
                                 className="editor-btn subtle"
-                                onClick={() => run(() => handleDuplicate(e))}
+                                role="menuitem"
+                                onClick={() => {
+                                  setActiveDropdown(null);
+                                  setEditing(e);
+                                  setRenameName(e.name);
+                                }}
                               >
-                                Duplicar…
+                                Renomear
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              className="editor-btn subtle danger"
-                              onClick={() => setDeleting({ entry: e, isFolder: false })}
-                            >
-                              Excluir
-                            </button>
-                          </div>
-                        </details>
+                              <button
+                                type="button"
+                                className="editor-btn subtle"
+                                role="menuitem"
+                                onClick={() => {
+                                  setActiveDropdown(null);
+                                  run(() => handleMove(e));
+                                }}
+                              >
+                                Mover para…
+                              </button>
+                              {d && (
+                                <button
+                                  type="button"
+                                  className="editor-btn subtle"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setActiveDropdown(null);
+                                    run(() => handleDuplicate(e));
+                                  }}
+                                >
+                                  Duplicar…
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="editor-btn subtle danger"
+                                role="menuitem"
+                                onClick={() => {
+                                  setActiveDropdown(null);
+                                  setDeleting({ entry: e, isFolder: false });
+                                }}
+                              >
+                                Excluir
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </article>
@@ -955,16 +1146,17 @@ export function Library({
                     const error = e.error || (!d ? 'Documento inválido ou incompatível.' : undefined);
                     const f7 = getF7(d?.product.productCode);
                     const isPsd = d?.layout.template === 'imported-psd' || e.name.toLowerCase().endsWith('.psd');
+                    const paper = d?.layout.paper || 'A5';
                     const priceFormatted = d
                       ? (d.product.priceCents / 100).toFixed(2).replace('.', ',')
                       : '-';
                     const isSelected = selectedPaths.has(e.path);
+                    const isMenuOpen = activeDropdown === e.path;
 
                     return (
                       <tr
                         key={e.path}
                         className={`sk-lib-table-row ${isSelected ? 'selected' : ''}`}
-                        style={isSelected ? { background: '#f0f7ff' } : undefined}
                       >
                         {/* Checkbox de Linha */}
                         <td style={{ textAlign: 'center' }}>
@@ -977,7 +1169,7 @@ export function Library({
                           />
                         </td>
 
-                        {/* Miniatura A5 Proporcional */}
+                        {/* Miniatura Proporcional */}
                         <td>
                           {d ? (
                             <button
@@ -1031,11 +1223,16 @@ export function Library({
                           )}
                         </td>
 
-                        {/* Tipo de Formato */}
+                        {/* Tipo e Formato */}
                         <td>
-                          <span className={`sk-lib-type-pill ${isPsd ? 'psd' : 'skcartaz'}`}>
-                            {isPsd ? 'PSD' : 'SKCARTAZ'}
-                          </span>
+                          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                            <span className={`sk-lib-type-pill ${isPsd ? 'psd' : 'skcartaz'}`}>
+                              {isPsd ? 'PSD' : 'SK'}
+                            </span>
+                            <span className="sk-lib-paper-pill">
+                              {paper}
+                            </span>
+                          </div>
                         </td>
 
                         {/* Data de Modificação */}
@@ -1066,46 +1263,76 @@ export function Library({
                                 + Condutor
                               </button>
                             )}
-                            <details className="sk-lib-dropdown-actions">
-                              <summary className="editor-btn subtle" style={{ padding: '6px 8px', fontSize: 11.5 }}>
+
+                            <div className="sk-lib-dropdown-actions">
+                              <button
+                                type="button"
+                                className="editor-btn subtle sk-lib-dropdown-trigger"
+                                style={{ padding: '6px 8px', fontSize: 11.5 }}
+                                aria-haspopup="true"
+                                aria-expanded={isMenuOpen}
+                                aria-label={`Mais opções para ${d?.product.name ?? e.name}`}
+                                onClick={() => setActiveDropdown(isMenuOpen ? null : e.path)}
+                              >
                                 •••
-                              </summary>
-                              <div className="file-actions sk-lib-dropdown-menu">
-                                <button
-                                  type="button"
-                                  className="editor-btn subtle"
-                                  onClick={() => {
-                                    setEditing(e);
-                                    setRenameName(e.name);
-                                  }}
+                              </button>
+
+                              {isMenuOpen && (
+                                <div
+                                  className="file-actions sk-lib-dropdown-menu"
+                                  role="menu"
+                                  aria-label="Opções do cartaz"
                                 >
-                                  Renomear
-                                </button>
-                                <button
-                                  type="button"
-                                  className="editor-btn subtle"
-                                  onClick={() => run(() => handleMove(e))}
-                                >
-                                  Mover para…
-                                </button>
-                                {d && (
                                   <button
                                     type="button"
                                     className="editor-btn subtle"
-                                    onClick={() => run(() => handleDuplicate(e))}
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setActiveDropdown(null);
+                                      setEditing(e);
+                                      setRenameName(e.name);
+                                    }}
                                   >
-                                    Duplicar…
+                                    Renomear
                                   </button>
-                                )}
-                                <button
-                                  type="button"
-                                  className="editor-btn subtle danger"
-                                  onClick={() => setDeleting({ entry: e, isFolder: false })}
-                                >
-                                  Excluir
-                                </button>
-                              </div>
-                            </details>
+                                  <button
+                                    type="button"
+                                    className="editor-btn subtle"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setActiveDropdown(null);
+                                      run(() => handleMove(e));
+                                    }}
+                                  >
+                                    Mover para…
+                                  </button>
+                                  {d && (
+                                    <button
+                                      type="button"
+                                      className="editor-btn subtle"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        setActiveDropdown(null);
+                                        run(() => handleDuplicate(e));
+                                      }}
+                                    >
+                                      Duplicar…
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="editor-btn subtle danger"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setActiveDropdown(null);
+                                      setDeleting({ entry: e, isFolder: false });
+                                    }}
+                                  >
+                                    Excluir
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -1117,6 +1344,47 @@ export function Library({
           )}
         </div>
       </div>
+
+      {/* 3. Dock Inferior Flutuante de Ações em Lote */}
+      {selectedPaths.size > 0 && (
+        <aside
+          className="sk-lib-batch-dock"
+          role="region"
+          aria-label="Ações para cartazes selecionados"
+        >
+          <div className="sk-lib-batch-dock-info">
+            <span className="sk-lib-batch-dock-badge">✓</span>
+            <strong>{selectedPaths.size} cartaz(es) selecionado(s)</strong>
+            <button
+              type="button"
+              className="sk-lib-dock-btn-subtle"
+              onClick={() => setSelectedPaths(new Set())}
+              aria-label="Desmarcar todos os cartazes selecionados"
+            >
+              Desmarcar todos
+            </button>
+          </div>
+
+          <div className="sk-lib-batch-dock-actions">
+            {onAddToConductor && (
+              <button
+                type="button"
+                className="editor-btn primary sk-lib-dock-btn-primary"
+                onClick={handleBatchAddToConductor}
+              >
+                + Adicionar ao Condutor ({selectedPaths.size})
+              </button>
+            )}
+            <button
+              type="button"
+              className="editor-btn subtle danger sk-lib-dock-btn-danger"
+              onClick={handleBatchDelete}
+            >
+              Excluir Selecionados
+            </button>
+          </div>
+        </aside>
+      )}
 
       {/* Modal de Renomear */}
       {editing && (
