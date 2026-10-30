@@ -455,7 +455,36 @@ export async function exportDerivedPsdDirect(
   if (payload.title && payload.roles.titleLayerId) {
     const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
     if (titleLayer && titleLayer.text) {
-      titleLayer.text.text = payload.title.trim();
+      const trimmedTitle = payload.title.trim();
+      titleLayer.text.text = trimmedTitle;
+
+      // Se o título for extenso (ex.: mais de 20 caracteres ou com quebra de linha),
+      // reduz proporcionalmente o tamanho da fonte no PSD derivado para evitar que o
+      // Photoshop CS6 quebre linhas sobre elementos decorativos subjacentes.
+      const currentFontSize =
+        titleLayer.text.style?.fontSize ??
+        titleLayer.text.styleRuns?.[0]?.style?.fontSize;
+
+      if (currentFontSize && (trimmedTitle.length > 20 || trimmedTitle.includes('\n'))) {
+        const charCount = trimmedTitle.length;
+        let scaleFactor = 1.0;
+        if (charCount > 35) {
+          scaleFactor = 0.65;
+        } else if (charCount > 26) {
+          scaleFactor = 0.75;
+        } else if (charCount > 20) {
+          scaleFactor = 0.85;
+        }
+        const newFontSize = Math.round(currentFontSize * scaleFactor);
+        if (titleLayer.text.style) {
+          titleLayer.text.style.fontSize = newFontSize;
+        }
+        if (titleLayer.text.styleRuns) {
+          for (const run of titleLayer.text.styleRuns) {
+            if (run.style) run.style.fontSize = newFontSize;
+          }
+        }
+      }
     }
   }
 

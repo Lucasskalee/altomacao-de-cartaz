@@ -1,4 +1,5 @@
 import type { ImportedArtwork, ImportedPricePart } from '../../features/cartazes/types';
+import { computeTextLayoutAdjustment, type TextLayoutAdjustment } from '../../features/psd/textAdjustment';
 
 export const MIN_SAFE_HORIZONTAL_SCALE = 0.48;
 
@@ -287,11 +288,11 @@ export async function drawImported(
   context.translate(offsetX, offsetY);
   context.scale(scale, scale);
   for (const part of parts) {
-    drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts);
+    drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
   }
   if (artwork.templateParts) {
     for (const part of artwork.templateParts) {
-      drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts);
+      drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
     }
   }
   context.restore();
@@ -304,7 +305,8 @@ function drawPart(
   fraction: string,
   wholeAdjustment: WholePriceAdjustment,
   validityText?: string,
-  dynamicTexts?: DynamicPosterTexts
+  dynamicTexts?: DynamicPosterTexts,
+  artwork?: ImportedArtwork
 ) {
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
@@ -320,28 +322,28 @@ function drawPart(
   if (part.role === 'category') {
     const text = (dynamicTexts?.category ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true);
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true, artwork);
     context.restore();
     return;
   }
   if (part.role === 'title') {
     const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false);
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false, artwork);
     context.restore();
     return;
   }
   if (part.role === 'complement') {
     const text = (dynamicTexts?.complement ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true);
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true, artwork);
     context.restore();
     return;
   }
   if (part.role === 'packaging') {
     const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false);
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false, artwork);
     context.restore();
     return;
   }
@@ -458,43 +460,82 @@ function drawTextLayer(
   part: ImportedPricePart,
   text: string,
   fallbackFont: string,
-  strokeOutline: boolean
+  strokeOutline: boolean,
+  artwork?: ImportedArtwork
 ) {
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
   const fontName = part.fontFamily ? `${quoteFont(part.fontFamily)}, ${fallbackFont}` : fallbackFont;
 
+  // Medidor de largura contextualizado
+  const measureTextWidth = (txt: string, fontPx: number): number => {
+    context.save();
+    context.font = `400 ${fontPx}px ${fontName}`;
+    const m = context.measureText(txt);
+    context.restore();
+    return Math.max(1, m.width);
+  };
+
+  const adj = computeTextLayoutAdjustment(part, text, measureTextWidth, artwork);
+  const lines = adj.lines;
+  const finalFontSize = adj.fontSize;
+  const hScale = adj.horizontalScale;
+  const lineHeight = adj.lineHeight;
+
   if (part.transform && part.fontSize) {
     const [a, bm, c, d, e, f] = part.transform;
+    context.save();
     context.transform(a, bm, c, d, e, f);
-    context.font = `400 ${part.fontSize}px ${fontName}`;
+    context.scale(hScale, 1);
+    context.font = `400 ${finalFontSize}px ${fontName}`;
     context.textAlign = 'center';
     context.textBaseline = 'alphabetic';
-    if (strokeOutline) {
-      context.save();
-      context.lineWidth = (part.stroke?.size ?? 4) * 2;
-      context.strokeStyle = part.stroke?.color ?? '#000000';
-      context.strokeText(text, 0, 0);
-      context.restore();
-    }
-    context.fillText(text, 0, 0);
+
+    const numLines = lines.length;
+    // Quando multilinha, centraliza o bloco verticalmente em torno da baseline original
+    const startY = numLines > 1 ? -((numLines - 1) * lineHeight) / 2 : 0;
+
+    lines.forEach((lineText, idx) => {
+      const lineY = startY + idx * lineHeight;
+      if (strokeOutline) {
+        context.save();
+        context.lineWidth = (part.stroke?.size ?? 4) * 2;
+        context.strokeStyle = part.stroke?.color ?? '#000000';
+        context.strokeText(lineText, 0, lineY);
+        context.restore();
+      }
+      context.fillText(lineText, 0, lineY);
+    });
+
+    context.restore();
     return;
   }
 
-  const fontSize = height * 0.85;
-  context.font = `bold ${fontSize}px ${fontName}`;
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
   const cx = (b.left + b.right) / 2;
   const cy = (b.top + b.bottom) / 2;
-  if (strokeOutline) {
-    context.save();
-    context.lineWidth = 4;
-    context.strokeStyle = '#000000';
-    context.strokeText(text, cx, cy);
-    context.restore();
-  }
-  context.fillText(text, cx, cy);
+  const numLines = lines.length;
+  const startY = cy - ((numLines - 1) * lineHeight) / 2;
+
+  context.save();
+  context.translate(cx, startY);
+  context.scale(hScale, 1);
+  context.font = `bold ${finalFontSize}px ${fontName}`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+
+  lines.forEach((lineText, idx) => {
+    const lineY = idx * lineHeight;
+    if (strokeOutline) {
+      context.save();
+      context.lineWidth = 4;
+      context.strokeStyle = '#000000';
+      context.strokeText(lineText, 0, lineY);
+      context.restore();
+    }
+    context.fillText(lineText, 0, lineY);
+  });
+
+  context.restore();
 }
 
 function quoteFont(value: string) {
