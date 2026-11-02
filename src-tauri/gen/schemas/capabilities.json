@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissões básicas e fechamento seguro da janela principal","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-destroy"]}}
