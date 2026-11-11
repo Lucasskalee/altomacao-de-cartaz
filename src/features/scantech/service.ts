@@ -572,6 +572,48 @@ export function buildOutputPsdPath(exportFolder: string, item: ScantechItem): st
   return `${cleanFolder}\\${fileName}`;
 }
 
+export function buildOutputSkcartazPath(exportFolder: string, item: ScantechItem): string {
+  const cleanFolder = exportFolder
+    .replace(/^\\\\\?\\UNC\\/i, '\\\\')
+    .replace(/^\\\\\?\\/i, '')
+    .replace(/[\\/]+$/, '');
+  const baseSlug = (item.sourcePsdName ? item.sourcePsdName.replace(/\.psd$/i, '') : item.description)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60);
+  const fileName = `${item.f7 || 'cartaz'}-${baseSlug || 'oferta'}-oferta.skcartaz`;
+  return `${cleanFolder}\\${fileName}`;
+}
+
+export function buildCartazFromScantechView(view: ScantechItemView): Cartaz {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    id: crypto.randomUUID(),
+    product: {
+      name: (view.item.description || 'PRODUTO').toUpperCase(),
+      complement: '',
+      unit: 'UN',
+      priceCents: view.item.priceCents || 100,
+      productCode: view.item.f7 || null,
+      validityText: view.resolvedValidityText || '',
+    },
+    layout: {
+      template: 'imported-psd',
+      paper: 'A5',
+      orientation: 'portrait',
+      artwork: view.artwork!,
+    },
+    metadata: {
+      createdAt: now,
+      updatedAt: now,
+    },
+  };
+}
+
 function readLocalScantechCampaigns(): ScantechCampaign[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);

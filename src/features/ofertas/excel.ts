@@ -69,12 +69,12 @@ function decodeXmlEntities(value: string): string {
 
 function unzipEntries(buffer: ArrayBuffer): Map<string, Uint8Array> {
   if (buffer.byteLength < 22 || buffer.byteLength > MAX_EXCEL_BYTES) {
-    throw new Error('O arquivo Excel (.xlsx) deve ter entre 22 bytes e 25 MB.');
+    throw new Error('O arquivo de planilha (.xlsx ou .xls) deve ter entre 22 bytes e 25 MB.');
   }
   const bytes = new Uint8Array(buffer);
   const view = new DataView(buffer);
   if (view.getUint32(0, true) !== 0x04034b50) {
-    throw new Error('Arquivo inválido: selecione uma planilha Excel .xlsx válida.');
+    throw new Error('Arquivo inválido: selecione uma planilha Excel válida (.xlsx ou .xls).');
   }
   let eocdOffset = -1;
   const minEocd = Math.max(0, bytes.length - 65557);
@@ -84,11 +84,11 @@ function unzipEntries(buffer: ArrayBuffer): Map<string, Uint8Array> {
       break;
     }
   }
-  if (eocdOffset < 0) throw new Error('Estrutura ZIP da planilha .xlsx não encontrada ou corrompida.');
+  if (eocdOffset < 0) throw new Error('Estrutura ZIP da planilha não encontrada ou corrompida.');
   const totalEntries = view.getUint16(eocdOffset + 10, true);
   const cdOffset = view.getUint32(eocdOffset + 16, true);
   if (totalEntries > 2000 || cdOffset >= bytes.length) {
-    throw new Error('Estrutura interna do arquivo .xlsx inválida ou excede o limite de entradas.');
+    throw new Error('Estrutura interna da planilha inválida ou excede o limite de entradas.');
   }
   const entries = new Map<string, Uint8Array>();
   let offset = cdOffset;
@@ -96,7 +96,7 @@ function unzipEntries(buffer: ArrayBuffer): Map<string, Uint8Array> {
   const decoder = new TextDecoder('utf-8');
   for (let i = 0; i < totalEntries; i++) {
     if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
-      throw new Error('Cabeçalho de diretório central do .xlsx corrompido.');
+      throw new Error('Cabeçalho de diretório central da planilha corrompido.');
     }
     const method = view.getUint16(offset + 10, true);
     const compressedSize = view.getUint32(offset + 20, true);
@@ -110,16 +110,16 @@ function unzipEntries(buffer: ArrayBuffer): Map<string, Uint8Array> {
     if (name.endsWith('/')) continue;
     totalUncompressed += uncompressedSize;
     if (totalUncompressed > 64 * 1024 * 1024) {
-      throw new Error('Planilha .xlsx descompactada excede o limite de memória permitido (64 MB).');
+      throw new Error('Planilha descompactada excede o limite de memória permitido (64 MB).');
     }
     if (localHeaderOffset + 30 > bytes.length || view.getUint32(localHeaderOffset, true) !== 0x04034b50) {
-      throw new Error('Cabeçalho local do .xlsx inválido.');
+      throw new Error('Cabeçalho local da planilha inválido.');
     }
     const localNameLen = view.getUint16(localHeaderOffset + 26, true);
     const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
     const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
     const dataEnd = dataStart + compressedSize;
-    if (dataEnd > bytes.length) throw new Error('Dados compactados do .xlsx truncados.');
+    if (dataEnd > bytes.length) throw new Error('Dados compactados da planilha truncados.');
     const slice = bytes.subarray(dataStart, dataEnd);
     if (method === 0) {
       entries.set(name, slice);
@@ -221,7 +221,7 @@ function parseWorksheet(xml: string, sharedStrings: string[]): string[][] {
   });
 }
 
-export function parseXlsx(buffer: ArrayBuffer, fileName = 'planilha.xlsx'): ExcelWorkbook {
+function parseOpenXmlWorkbook(buffer: ArrayBuffer, fileName: string): ExcelWorkbook {
   const entries = unzipEntries(buffer);
   const decoder = new TextDecoder('utf-8');
   const readText = (path: string) => {
@@ -229,7 +229,7 @@ export function parseXlsx(buffer: ArrayBuffer, fileName = 'planilha.xlsx'): Exce
     return bytes ? decoder.decode(bytes) : null;
   };
   const workbookXml = readText('xl/workbook.xml');
-  if (!workbookXml) throw new Error('Arquivo .xlsx inválido: xl/workbook.xml não encontrado.');
+  if (!workbookXml) throw new Error('Arquivo de planilha inválido: xl/workbook.xml não encontrado.');
   const relsXml = readText('xl/_rels/workbook.xml.rels') ?? '';
   const relMap = new Map<string, string>();
   const relRegex = /<(?:\w+:)?Relationship\b([^>]*?)\/?>/g;
@@ -261,9 +261,187 @@ export function parseXlsx(buffer: ArrayBuffer, fileName = 'planilha.xlsx'): Exce
     }
     sheetIndex++;
   }
-  if (sheets.length === 0) throw new Error('Nenhuma aba de planilha encontrada no arquivo .xlsx.');
+  if (sheets.length === 0) throw new Error('Nenhuma aba de planilha encontrada no arquivo.');
   return { fileName, sheets };
 }
+
+function parseCsvOrTextSpreadsheet(text: string): string[][] {
+  const lines = text.split(/\r?\n/).slice(0, 30).filter(l => l.trim().length > 0);
+  let commaCount = 0;
+  let semiCount = 0;
+  let tabCount = 0;
+  for (const line of lines) {
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') inQuotes = !inQuotes;
+      else if (!inQuotes) {
+        if (c === ';') semiCount++;
+        else if (c === ',') commaCount++;
+        else if (c === '\t') tabCount++;
+      }
+    }
+  }
+  let delimiter = ';';
+  if (tabCount > semiCount && tabCount > commaCount) delimiter = '\t';
+  else if (commaCount > semiCount && commaCount > tabCount) delimiter = ',';
+
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (!inQuotes && c === delimiter) {
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+    } else if (!inQuotes && (c === '\n' || c === '\r')) {
+      if (c === '\r' && text[i + 1] === '\n') {
+        i++;
+      }
+      currentRow.push(currentCell.trim());
+      currentCell = '';
+      if (currentRow.some(cell => cell.length > 0)) {
+        if (rows.length >= MAX_EXCEL_ROWS) {
+          throw new Error(`A planilha excede o limite de ${MAX_EXCEL_ROWS.toLocaleString('pt-BR')} linhas.`);
+        }
+        rows.push(currentRow.slice(0, MAX_EXCEL_COLS));
+      }
+      currentRow = [];
+    } else {
+      currentCell += c;
+    }
+  }
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some(cell => cell.length > 0)) {
+      if (rows.length < MAX_EXCEL_ROWS) {
+        rows.push(currentRow.slice(0, MAX_EXCEL_COLS));
+      }
+    }
+  }
+
+  const maxCols = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  return rows.map(r => {
+    const normalized = [...r];
+    while (normalized.length < maxCols) normalized.push('');
+    return normalized;
+  });
+}
+
+function parseHtmlOrXmlSpreadsheet(text: string): string[][] {
+  const rows: string[][] = [];
+  const trRegex = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+  let trMatch: RegExpExecArray | null;
+  while ((trMatch = trRegex.exec(text)) !== null) {
+    const rowContent = trMatch[1];
+    const cellRegex = /<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+    const cells: string[] = [];
+    let cellMatch: RegExpExecArray | null;
+    while ((cellMatch = cellRegex.exec(rowContent)) !== null) {
+      const cellText = decodeXmlEntities(cellMatch[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim());
+      cells.push(cellText);
+    }
+    if (cells.some(c => c.length > 0)) {
+      if (rows.length >= MAX_EXCEL_ROWS) break;
+      rows.push(cells.slice(0, MAX_EXCEL_COLS));
+    }
+  }
+
+  if (rows.length === 0) {
+    const xmlRowRegex = /<(?:\w+:)?Row\b[^>]*>([\s\S]*?)<\/(?:\w+:)?Row>/gi;
+    let xmlRowMatch: RegExpExecArray | null;
+    while ((xmlRowMatch = xmlRowRegex.exec(text)) !== null) {
+      const rowContent = xmlRowMatch[1];
+      const cellRegex = /<(?:\w+:)?Data\b[^>]*>([\s\S]*?)<\/(?:\w+:)?Data>/gi;
+      const cells: string[] = [];
+      let cellMatch: RegExpExecArray | null;
+      while ((cellMatch = cellRegex.exec(rowContent)) !== null) {
+        cells.push(decodeXmlEntities(cellMatch[1].trim()));
+      }
+      if (cells.some(c => c.length > 0)) {
+        if (rows.length >= MAX_EXCEL_ROWS) break;
+        rows.push(cells.slice(0, MAX_EXCEL_COLS));
+      }
+    }
+  }
+
+  const maxCols = rows.reduce((max, r) => Math.max(max, r.length), 0);
+  return rows.map(r => {
+    const normalized = [...r];
+    while (normalized.length < maxCols) normalized.push('');
+    return normalized;
+  });
+}
+
+export function parseSpreadsheet(buffer: ArrayBuffer, fileName = 'planilha.xlsx'): ExcelWorkbook {
+  if (buffer.byteLength < 4 || buffer.byteLength > MAX_EXCEL_BYTES) {
+    throw new Error('O arquivo de planilha deve ter entre 4 bytes e 25 MB.');
+  }
+
+  const view = new DataView(buffer);
+  const magic = view.getUint32(0, true);
+
+  // 1. Arquivo ZIP / OpenXML (.xlsx ou .xls gravado com formato OpenXML)
+  if (magic === 0x04034b50) {
+    return parseOpenXmlWorkbook(buffer, fileName);
+  }
+
+  // 2. Arquivo binário OLE2 / BIFF8 legado (Excel 97-2003 puro: \xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1)
+  const bytes = new Uint8Array(buffer);
+  if (
+    bytes[0] === 0xd0 &&
+    bytes[1] === 0xcf &&
+    bytes[2] === 0x11 &&
+    bytes[3] === 0xe0 &&
+    bytes[4] === 0xa1 &&
+    bytes[5] === 0xb1 &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0xe1
+  ) {
+    throw new Error(
+      'Arquivo .xls em formato binário legado (Excel 97-2003). Abra o arquivo no Excel e salve-o como .xlsx ou .csv para importá-lo.'
+    );
+  }
+
+  // 3. Arquivo em formato texto, CSV, TSV, XML ou HTML exportado como .xls
+  let text = '';
+  try {
+    const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+    text = utf8Decoder.decode(bytes);
+  } catch {
+    const winDecoder = new TextDecoder('windows-1252');
+    text = winDecoder.decode(bytes);
+  }
+
+  const trimmedText = text.trim();
+  let rows: string[][] = [];
+
+  if (/<(?:table|html|Workbook)\b/i.test(trimmedText)) {
+    rows = parseHtmlOrXmlSpreadsheet(trimmedText);
+  } else {
+    rows = parseCsvOrTextSpreadsheet(trimmedText);
+  }
+
+  if (rows.length === 0) {
+    throw new Error('Nenhum dado ou linha de tabela encontrada na planilha.');
+  }
+
+  return {
+    fileName,
+    sheets: [{ name: 'Planilha 1', rows }],
+  };
+}
+
+export const parseXlsx = parseSpreadsheet;
 
 export function columnLetter(index: number): string {
   let n = index + 1;

@@ -21,7 +21,9 @@ import {
 import { computeWholePriceAdjustment } from '../src/components/editor/importedRenderer';
 import {
   applyExcelToScantechCampaign,
+  buildCartazFromScantechView,
   buildOutputPsdPath,
+  buildOutputSkcartazPath,
   buildPrintableScantechPosters,
   buildScantechItemViews,
   createScantechCampaign,
@@ -1318,6 +1320,71 @@ test('Editor: Criação de novo cartaz derivado de PSD de referência preserva o
     rmSync(workDir, { recursive: true, force: true });
   }
 });
+
+test('Exportação Scantech: geração de caminho .skcartaz e criação de documento Cartaz nativo com PSD embutido', () => {
+  const item: any = {
+    id: 'item-100',
+    rowNumber: 2,
+    f7: '30001',
+    description: 'ACUCAR CRISTAL BARRALCOOL 2KG',
+    priceCents: 639,
+    sourcePsdName: 'acucar cristal 2kg.psd',
+    sourcePsdPath: 'C:\\Modelos\\acucar cristal 2kg.psd',
+    wholeLayerId: '1',
+    fractionLayerId: '2',
+  };
+
+  const psdPath = buildOutputPsdPath('C:\\Exportados', item);
+  assert.equal(psdPath, 'C:\\Exportados\\30001-acucar-cristal-2kg-oferta.psd');
+
+  const skPath = buildOutputSkcartazPath('C:\\Exportados', item);
+  assert.equal(skPath, 'C:\\Exportados\\30001-acucar-cristal-2kg-oferta.skcartaz');
+
+  const mockView: any = {
+    item,
+    effectiveEndDate: '2026-11-12',
+    effectiveStartDate: null,
+    resolvedValidityText: 'OFERTA VÁLIDA ATÉ 12/11',
+    wholeValue: '6',
+    fractionValue: '39',
+    artwork: {
+      kind: 'imported-psd',
+      compatibility: 'ready',
+      source: {
+        fileName: 'acucar.psd',
+        sourcePath: 'C:\\acucar.psd',
+        sha256: 'a'.repeat(64),
+      },
+      canvas: { width: 1179, height: 1770, resolutionPpi: 150, fit: 'contain' },
+      staticBackground: pixel,
+      originalPreview: pixel,
+      priceParts: [
+        { role: 'whole', layerId: '1', bounds: { left: 100, top: 800, right: 500, bottom: 1500 }, color: '#c74624', originalText: '6' },
+        { role: 'fraction', layerId: '2', bounds: { left: 550, top: 800, right: 900, bottom: 1300 }, color: '#c74624', originalText: '39' },
+      ],
+      layers: [
+        { id: '1', name: '6', type: 'text', visible: true, depth: 0, text: '6', bounds: { left: 100, top: 800, right: 500, bottom: 1500 } },
+        { id: '2', name: '39', type: 'text', visible: true, depth: 0, text: '39', bounds: { left: 550, top: 800, right: 900, bottom: 1300 } },
+      ],
+      warnings: [],
+    },
+  };
+
+  const doc = buildCartazFromScantechView(mockView);
+  assert.equal(doc.product.productCode, '30001');
+  assert.equal(doc.product.name, 'ACUCAR CRISTAL BARRALCOOL 2KG');
+  assert.equal(doc.product.priceCents, 639);
+  assert.equal(doc.product.validityText, 'OFERTA VÁLIDA ATÉ 12/11');
+  assert.equal(doc.layout.template, 'imported-psd');
+  assert.equal(doc.layout.paper, 'A5');
+
+  // Garante que o documento serializa perfeitamente no formato .skcartaz
+  const serialized = serialize(doc);
+  const reloaded = deserialize(serialized);
+  assert.equal(reloaded.product.productCode, '30001');
+  assert.equal(reloaded.product.priceCents, 639);
+});
+
 
 
 

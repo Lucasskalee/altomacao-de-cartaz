@@ -315,3 +315,4 @@ test('10. Integridade estrita de dados: preços, centavos e códigos F7 nunca s�
   assert.equal(fractionPart.originalText, '59');
   assert.equal(artwork.compatibility, 'ready');
 });
+

@@ -31,11 +31,15 @@ fn err(e: impl std::fmt::Display) -> String {
 
 fn canonical_excel(path: &Path) -> Result<PathBuf, String> {
     let p = path.canonicalize().map_err(|e| format!("Não foi possível abrir o Excel: {e}"))?;
-    if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("xlsx")) != Some(true) {
-        return Err("Selecione um arquivo Excel .xlsx.".into());
+    let is_excel = p.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("xlsx") || s.eq_ignore_ascii_case("xls"))
+        == Some(true);
+    if !is_excel {
+        return Err("Selecione um arquivo Excel (.xlsx ou .xls).".into());
     }
     if !p.is_file() {
-        return Err("O caminho selecionado não é um arquivo .xlsx.".into());
+        return Err("O caminho selecionado não é um arquivo de planilha (.xlsx ou .xls).".into());
     }
     Ok(p)
 }
@@ -54,8 +58,20 @@ pub(crate) fn read_selected_excel(path: &Path, allowed: &HashSet<PathBuf>) -> Re
     if bytes.len() as u64 > MAX_EXCEL_BYTES {
         return Err("A planilha Excel excede o limite de 25 MB.".into());
     }
-    if bytes.get(0..4) != Some(&[0x50, 0x4b, 0x03, 0x04]) {
-        return Err("Arquivo inválido: assinatura .xlsx (ZIP) não encontrada.".into());
+    if bytes.is_empty() {
+        return Err("A planilha Excel selecionada está vazia.".into());
+    }
+
+    // Assinaturas ou formatos suportados:
+    // 1. XLSX (ZIP): PK\x03\x04
+    // 2. XLS legado (OLE2/BIFF8): \xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1
+    // 3. XLS exportado como texto/CSV/TSV/HTML/XML
+    let is_zip = bytes.get(0..4) == Some(&[0x50, 0x4b, 0x03, 0x04]);
+    let is_ole2 = bytes.get(0..8) == Some(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    let is_text = bytes.iter().take(512).all(|&b| b == b'\r' || b == b'\n' || b == b'\t' || (0x20..=0x7e).contains(&b) || b >= 0x80);
+
+    if !is_zip && !is_ole2 && !is_text {
+        return Err("Arquivo inválido: formato de planilha Excel (.xlsx ou .xls) não reconhecido.".into());
     }
     Ok(bytes)
 }
@@ -63,7 +79,7 @@ pub(crate) fn read_selected_excel(path: &Path, allowed: &HashSet<PathBuf>) -> Re
 #[tauri::command]
 pub async fn choose_excel(access: tauri::State<'_, ExcelAccess>) -> Result<Option<SelectedExcel>, String> {
     let selected = rfd::AsyncFileDialog::new()
-        .add_filter("Planilha Excel (.xlsx)", &["xlsx"])
+        .add_filter("Planilhas Excel (*.xlsx, *.xls)", &["xlsx", "xls"])
         .pick_file()
         .await;
     match selected {
@@ -274,12 +290,33 @@ mod tests {
     #[test]
     fn excel_read_only_and_signature_validation() {
         let dir = tempfile::tempdir().unwrap();
+
+        // 1. Arquivo .xlsx com assinatura ZIP
         let xlsx = dir.path().join("ofertas.xlsx");
-        let payload = vec![0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0];
-        fs::write(&xlsx, &payload).unwrap();
+        let payload_zip = vec![0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0];
+        fs::write(&xlsx, &payload_zip).unwrap();
         assert!(read_selected_excel(&xlsx, &HashSet::new()).is_err());
         let allowed = HashSet::from([xlsx.canonicalize().unwrap()]);
-        assert_eq!(read_selected_excel(&xlsx, &allowed).unwrap(), payload);
-        assert_eq!(fs::read(&xlsx).unwrap(), payload);
+        assert_eq!(read_selected_excel(&xlsx, &allowed).unwrap(), payload_zip);
+        assert_eq!(fs::read(&xlsx).unwrap(), payload_zip);
+
+        // 2. Arquivo .xls com assinatura ZIP (exemplo real de ERP que salva XLSX como .xls)
+        let xls = dir.path().join("ofertas.xls");
+        fs::write(&xls, &payload_zip).unwrap();
+        let allowed_xls = HashSet::from([xls.canonicalize().unwrap()]);
+        assert_eq!(read_selected_excel(&xls, &allowed_xls).unwrap(), payload_zip);
+
+        // 3. Arquivo .xls com texto formatado (CSV / delimitado)
+        let xls_txt = dir.path().join("ofertas_texto.xls");
+        let payload_txt = b"COD.;DESCRICAO;PROMOCAO\n30001;PRODUTO;5.99\n";
+        fs::write(&xls_txt, payload_txt).unwrap();
+        let allowed_txt = HashSet::from([xls_txt.canonicalize().unwrap()]);
+        assert_eq!(read_selected_excel(&xls_txt, &allowed_txt).unwrap(), payload_txt.to_vec());
+
+        // 4. Arquivo com extensão não permitida (.txt) é rejeitado
+        let txt = dir.path().join("ofertas.txt");
+        fs::write(&txt, payload_txt).unwrap();
+        let allowed_invalid = HashSet::from([txt.canonicalize().unwrap()]);
+        assert!(read_selected_excel(&txt, &allowed_invalid).is_err());
     }
 }

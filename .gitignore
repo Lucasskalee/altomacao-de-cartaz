@@ -8,3 +8,5 @@ artifacts/
 *.dbf
 *.psd
 *.xlsx
+*.xls
+.agents/

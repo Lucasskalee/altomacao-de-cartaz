@@ -8,8 +8,10 @@ import { indexCartazes } from '../src/features/cartazes/f7';
 import type { Entry } from '../src/features/cartazes/types';
 import {
   columnLetter,
+  detectHeaderRowIndex,
   extractCampaignItemsFromSheet,
   parseExcelPriceToCents,
+  parseSpreadsheet,
   parseXlsx,
   suggestColumnMapping,
 } from '../src/features/ofertas/excel';
@@ -246,6 +248,78 @@ test('Excel (.xlsx): leitura de múltiplas abas, linha de cabeçalho, sugestão 
   assert.equal(parseExcelPriceToCents('12.90'), 1290);
   assert.throws(() => parseExcelPriceToCents(''), /vazio/);
   assert.throws(() => parseExcelPriceToCents('-2,99'), /negativo/);
+});
+
+test('Planilhas .xls e relatórios de ofertas: suporte a OpenXML .xls, texto CSV (.xls), HTML table (.xls) e detecção de cabeçalho do supermercado', () => {
+  // 1. Arquivo .xls baseado em OpenXML/ZIP (exatamente o formato real emitido pelo ERP do supermercado)
+  const zipBuffer = buildSampleXlsx();
+  const wbXls = parseSpreadsheet(zipBuffer, 'quarta.quinta.verde.xls');
+  assert.equal(wbXls.fileName, 'quarta.quinta.verde.xls');
+  assert.equal(wbXls.sheets.length, 2);
+
+  // 2. Arquivo .xls baseado em texto CSV delimitado por ponto-e-vírgula com cabeçalho de supermercado
+  const csvText = [
+    'SUPERMERCADO SOL EMITIDO EM: 10/11/2026',
+    'RELACAO DE PRODUTOS DA PROMOCAO 1349',
+    'FILIAIS: 01 02 03',
+    'DIVULGACAO: 4',
+    'COD.;DESCRICAO DO PRODUTO;PROMOCAO',
+    '30001;ACUCAR CRISTAL BARRALCOOL 2KG;6,39',
+    '7829;AMAC.ALPES 1,8L AZ INTENSO;7.59',
+    '11403;AMAC.SOFT PLUS CONC.500ML ELEG;8.390000000000001',
+    '005676;AMAC.VIDA 5L TRADICIONAL;12.99',
+  ].join('\r\n');
+  const encoder = new TextEncoder();
+  const csvBuffer = encoder.encode(csvText).buffer;
+
+  const wbCsv = parseXlsx(csvBuffer, 'relatorio_supermercado.xls');
+  assert.equal(wbCsv.fileName, 'relatorio_supermercado.xls');
+  assert.equal(wbCsv.sheets.length, 1);
+  const rows = wbCsv.sheets[0].rows;
+  assert.equal(rows.length, 9);
+
+  // Detecção inteligente de cabeçalho varre até a linha 5 (índice 4)
+  const headerIdx = detectHeaderRowIndex(rows);
+  assert.equal(headerIdx, 4);
+  assert.deepEqual(rows[headerIdx], ['COD.', 'DESCRICAO DO PRODUTO', 'PROMOCAO']);
+
+  const mapping = suggestColumnMapping(rows[headerIdx]);
+  assert.deepEqual(mapping, { f7Col: 0, descriptionCol: 1, priceCol: 2 });
+
+  const extraction = extractCampaignItemsFromSheet(wbCsv.sheets[0], headerIdx, mapping);
+  assert.equal(extraction.validCount, 4);
+  assert.equal(extraction.invalidCount, 0);
+
+  // Verificação de conversão e ponto flutuante IEEE-754 (8.390000000000001 -> 839 centavos = R$ 8,39)
+  const itemFloat = extraction.items.find(i => i.f7 === '11403');
+  assert.ok(itemFloat);
+  assert.equal(itemFloat.priceCents, 839);
+  assert.equal(itemFloat.description, 'AMAC.SOFT PLUS CONC.500ML ELEG');
+
+  // Preservação de zeros à esquerda em códigos de produto F7
+  const itemZero = extraction.items.find(i => i.f7 === '005676');
+  assert.ok(itemZero);
+  assert.equal(itemZero.f7, '005676');
+  assert.equal(itemZero.priceCents, 1299);
+
+  // 3. Arquivo .xls baseado em tabela HTML (<tr> e <td>)
+  const htmlText = `<html><body><table>
+    <tr><th>COD.</th><th>PRODUTO</th><th>PRECO</th></tr>
+    <tr><td>1234</td><td>CAFE TORRADO 500G</td><td>14,90</td></tr>
+  </table></body></html>`;
+  const htmlBuffer = encoder.encode(htmlText).buffer;
+  const wbHtml = parseXlsx(htmlBuffer, 'export_web.xls');
+  assert.equal(wbHtml.sheets.length, 1);
+  assert.equal(wbHtml.sheets[0].rows.length, 2);
+  assert.deepEqual(wbHtml.sheets[0].rows[0], ['COD.', 'PRODUTO', 'PRECO']);
+  assert.deepEqual(wbHtml.sheets[0].rows[1], ['1234', 'CAFE TORRADO 500G', '14,90']);
+
+  // 4. Arquivo binário OLE2 legado (Excel 97-2003 puro) gera erro claro e explicativo
+  const ole2Buffer = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0]).buffer;
+  assert.throws(
+    () => parseXlsx(ole2Buffer, 'legado.xls'),
+    /formato binário legado \(Excel 97-2003\)/
+  );
 });
 
 test('Pastas de Ofertas: criação, associação por F7 (múltiplos cartazes e sem cartaz), preço futuro isolado e impressão parcial', () => {

@@ -24,7 +24,9 @@ import { analyzePsd, buildArtwork, type PsdRoleMap } from '../../features/psd/im
 import { readPsdByPath, selectPsd } from '../../features/psd/service';
 import {
   applyExcelToScantechCampaign,
+  buildCartazFromScantechView,
   buildOutputPsdPath,
+  buildOutputSkcartazPath,
   buildPrintableScantechPosters,
   buildScantechItemViews,
   chooseScantechExportFolder,
@@ -115,8 +117,9 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
   const [editEndDateInput, setEditEndDateInput] = useState('');
   const [editCustomValidity, setEditCustomValidity] = useState('');
 
-  // Relatório de exportação
+  // Relatório e formato de exportação
   const [exportReport, setExportReport] = useState<ScantechExportBatchResult | null>(null);
+  const [exportFormat, setExportFormat] = useState<'both' | 'psd' | 'skcartaz'>('both');
 
   const libraryIndex = useMemo(() => indexCartazes(libraryData?.entries ?? []), [libraryData]);
 
@@ -456,6 +459,40 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     setPreviewItemId(view.item.id);
   };
 
+  const handleAssignScannedPsd = async (view: ScantechItemView, psdPath: string) => {
+    if (!activeCampaign) return;
+    const psdData = await readPsdByPath(psdPath);
+    const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
+    const roles = analysis.suggested;
+    let builtArtwork: ImportedArtwork | null = null;
+    if (roles.whole && roles.fraction) {
+      try {
+        builtArtwork = buildArtwork(analysis, roles);
+      } catch {
+        builtArtwork = null;
+      }
+    }
+    if (builtArtwork) {
+      setExtraArtworks(prev => {
+        const next = new Map(prev);
+        next.set(view.item.id, builtArtwork!);
+        return next;
+      });
+    }
+    const updated = updateScantechItemFields(activeCampaign, view.item.id, {
+      sourcePsdPath: psdData.path,
+      sourcePsdName: psdData.name,
+      wholeLayerId: roles.whole ?? null,
+      fractionLayerId: roles.fraction ?? null,
+      decimalLayerId: roles.decimal ?? null,
+      fractionRuleLayerId: roles.fractionRule ?? null,
+      validityLayerId: roles.validity ?? null,
+      originalValidityText: analysis.metadata.validityText || null,
+    });
+    await persistUpdate(updated);
+    setPreviewItemId(view.item.id);
+  };
+
   const handleOpenManualMapping = async (view: ScantechItemView) => {
     let layers = view.artwork?.layers ?? [];
     if (layers.length === 0 && view.item.sourcePsdPath) {
@@ -580,32 +617,78 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     }
 
     const readyViews = targetViews.filter(v => v.canExport);
-    const jobs: ScantechExportJob[] = readyViews.map(v => {
-      const adjustment = v.artwork ? computeWholePriceAdjustment(v.artwork, v.wholeValue) : null;
-      return {
-        itemId: v.item.id,
-        f7: v.item.f7,
-        description: v.item.description,
-        sourcePsdPath: v.item.sourcePsdPath!,
-        outputPsdPath: buildOutputPsdPath(exportFolder!, v.item),
-        wholeLayerId: v.item.wholeLayerId!,
-        fractionLayerId: v.item.fractionLayerId!,
-        decimalLayerId: v.item.decimalLayerId,
-        fractionRuleLayerId: v.item.fractionRuleLayerId,
-        validityLayerId: v.item.validityLayerId,
-        wholeValue: v.wholeValue,
-        fractionValue: v.fractionValue,
-        validityText: v.resolvedValidityText,
-        rotateDeltaDeg: adjustment?.rotateDeltaDeg ?? 0,
-        skewDeltaDeg: adjustment?.skewDeltaDeg ?? 0,
-        safeLeftLimit: adjustment?.safeLeftLimit ?? 42,
-        safeRightLimit: adjustment?.safeRightLimit ?? 0,
-        horizontalScale: adjustment?.horizontalScale ?? 1,
-        normalizedTransform: adjustment?.normalized ? adjustment.normalizedTransform : null,
-      };
-    });
+    const shouldExportPsd = exportFormat === 'both' || exportFormat === 'psd';
+    const shouldExportSkcartaz = exportFormat === 'both' || exportFormat === 'skcartaz';
 
-    const batchResult = await exportScantechPsds(jobs);
+    const jobs: ScantechExportJob[] = shouldExportPsd
+      ? readyViews.map(v => {
+          const adjustment = v.artwork ? computeWholePriceAdjustment(v.artwork, v.wholeValue) : null;
+          return {
+            itemId: v.item.id,
+            f7: v.item.f7,
+            description: v.item.description,
+            sourcePsdPath: v.item.sourcePsdPath!,
+            outputPsdPath: buildOutputPsdPath(exportFolder!, v.item),
+            wholeLayerId: v.item.wholeLayerId!,
+            fractionLayerId: v.item.fractionLayerId!,
+            decimalLayerId: v.item.decimalLayerId,
+            fractionRuleLayerId: v.item.fractionRuleLayerId,
+            validityLayerId: v.item.validityLayerId,
+            wholeValue: v.wholeValue,
+            fractionValue: v.fractionValue,
+            validityText: v.resolvedValidityText,
+            rotateDeltaDeg: adjustment?.rotateDeltaDeg ?? 0,
+            skewDeltaDeg: adjustment?.skewDeltaDeg ?? 0,
+            safeLeftLimit: adjustment?.safeLeftLimit ?? 42,
+            safeRightLimit: adjustment?.safeRightLimit ?? 0,
+            horizontalScale: adjustment?.horizontalScale ?? 1,
+            normalizedTransform: adjustment?.normalized ? adjustment.normalizedTransform : null,
+          };
+        })
+      : [];
+
+    let batchResult: ScantechExportBatchResult;
+    if (shouldExportPsd && jobs.length > 0) {
+      batchResult = await exportScantechPsds(jobs);
+    } else {
+      batchResult = {
+        photoshopVersion: null,
+        results: readyViews.map(v => ({
+          itemId: v.item.id,
+          f7: v.item.f7,
+          ok: true,
+          outputPsdPath: buildOutputPsdPath(exportFolder!, v.item),
+          error: null,
+          warnings: [],
+          wholeApplied: v.wholeValue,
+          fractionApplied: v.fractionValue,
+          validityApplied: v.resolvedValidityText,
+          horizontalScaleApplied: 1,
+          normalizedTransform: false,
+          fileSize: null,
+        })),
+      };
+    }
+
+    // Exportação em formato nativo .skcartaz
+    const skcartazErrors = new Map<string, string>();
+    const skcartazPaths = new Map<string, string>();
+    if (shouldExportSkcartaz) {
+      for (const view of readyViews) {
+        try {
+          const cartazDoc = buildCartazFromScantechView(view);
+          const outSkPath = buildOutputSkcartazPath(exportFolder!, view.item);
+          await saveDocument(outSkPath, cartazDoc, true);
+          skcartazPaths.set(view.item.id, outSkPath);
+        } catch (err) {
+          skcartazErrors.set(view.item.id, String(err));
+        }
+      }
+      if (onRefreshLibrary) {
+        await onRefreshLibrary();
+      }
+    }
+
     setExportReport(batchResult);
 
     const resultById = new Map(batchResult.results.map(r => [r.itemId, r]));
@@ -616,12 +699,17 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
       updatedAt: now,
       items: activeCampaign.items.map(item => {
         const res = resultById.get(item.id);
-        if (!res) return item;
-        if (res.ok) {
+        const skPath = skcartazPaths.get(item.id);
+        const skErr = skcartazErrors.get(item.id);
+        const psdOk = !shouldExportPsd || (res && res.ok);
+        const skOk = !shouldExportSkcartaz || !skErr;
+
+        if (psdOk && skOk) {
           return {
             ...item,
             status: 'exportado' as ScantechItemStatus,
-            exportedPsdPath: res.outputPsdPath,
+            exportedPsdPath: shouldExportPsd && res?.outputPsdPath ? res.outputPsdPath : item.exportedPsdPath,
+            cartazPath: skPath || item.cartazPath,
             exportedAt: now,
             exportError: null,
           };
@@ -629,7 +717,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
         return {
           ...item,
           status: 'erro-exportacao' as ScantechItemStatus,
-          exportError: res.error ?? 'Erro ao exportar PSD direto.',
+          exportError: (shouldExportPsd && res && !res.ok ? res.error : null) || skErr || 'Erro ao exportar.',
         };
       }),
     };
@@ -773,7 +861,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                   </p>
                 </div>
                 <div className="toolbar">
-                  <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx)</button>
+                  <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx, .xls)</button>
                   <button className="subtle" onClick={() => run(handleChoosePsdSourceFolder)}>
                     Pasta PSDs ({scannedPsds.length})
                   </button>
@@ -930,6 +1018,18 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 >
                   Imprimir selecionados ({itemViews.filter(view => view.item.selected).length})
                 </button>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, margin: '0 4px' }}>
+                  <span>Formato:</span>
+                  <select
+                    value={exportFormat}
+                    onChange={e => setExportFormat(e.target.value as 'both' | 'psd' | 'skcartaz')}
+                    style={{ padding: '6px 10px', fontSize: 12, borderRadius: 4 }}
+                  >
+                    <option value="both">Ambos (.psd + .skcartaz)</option>
+                    <option value="psd">Somente PSD (.psd)</option>
+                    <option value="skcartaz">Somente Cartaz (.skcartaz)</option>
+                  </select>
+                </label>
                 <button
                   disabled={counts.ready === 0}
                   onClick={() =>
@@ -940,16 +1040,20 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                     })
                   }
                 >
-                  Exportar PSDs em Lote ({itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})
+                  {exportFormat === 'both'
+                    ? `Exportar PSDs e Cartazes em Lote (${itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})`
+                    : exportFormat === 'skcartaz'
+                    ? `Exportar .skcartaz em Lote (${itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})`
+                    : `Exportar PSDs em Lote (${itemViews.filter(v => v.item.selected && v.canExport).length || counts.ready})`}
                 </button>
               </div>
 
               {/* Relatório de Exportação em Lote */}
               {exportReport && (
-                <div className="import-warning" role="region" aria-label="Relatório de exportação PSD">
+                <div className="import-warning" role="region" aria-label="Relatório de exportação">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <strong>
-                      Relatório de Exportação PSD Direta:{' '}
+                      Relatório de Exportação ({exportFormat === 'both' ? 'PSD + .skcartaz' : exportFormat === 'skcartaz' ? '.skcartaz' : 'PSD'}):{' '}
                       {exportReport.results.filter(r => r.ok).length} concluído(s),{' '}
                       {exportReport.results.filter(r => !r.ok).length} falha(s)
                     </strong>
@@ -981,7 +1085,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                 <div className="offers-table-wrap">
                   {filteredViews.length === 0 ? (
                     <p className="empty">
-                      Nenhum produto listado neste filtro. Importe uma planilha Excel (.xlsx) para começar.
+                      Nenhum produto listado neste filtro. Importe uma planilha Excel (.xlsx, .xls) para começar.
                     </p>
                   ) : (
                     <table className="offers-table">
@@ -1184,6 +1288,26 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                                       >
                                         Vincular .PSD
                                       </button>
+                                      {scannedPsds.length > 0 && (
+                                        <select
+                                          className="subtle"
+                                          style={{ maxWidth: 190, fontSize: 11, padding: '3px 6px', background: '#f8fafc', borderColor: '#cbd5e1' }}
+                                          value=""
+                                          aria-label={`Ligar PSD da pasta para ${v.item.description}`}
+                                          onChange={e => {
+                                            if (e.target.value) {
+                                              run(() => handleAssignScannedPsd(v, e.target.value));
+                                            }
+                                          }}
+                                        >
+                                          <option value="">⚡ Ligar PSD da pasta...</option>
+                                          {scannedPsds.map(p => (
+                                            <option key={p.path} value={p.path}>
+                                              {p.name}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      )}
                                       {v.item.f7 && (
                                         <button
                                           type="button"
@@ -1272,7 +1396,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                                         disabled={!v.canExport}
                                         onClick={() => run(() => runDirectExport([v]))}
                                       >
-                                        Exportar PSD
+                                        {exportFormat === 'both' ? 'Exportar PSD + .skcartaz' : exportFormat === 'skcartaz' ? 'Exportar .skcartaz' : 'Exportar PSD'}
                                       </button>
                                     </>
                                   )}
@@ -1382,7 +1506,10 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
                   onChange={e => {
                     const idx = Number(e.target.value);
                     setSheetIdx(idx);
-                    const headers = workbook.sheets[idx]?.rows[headerRow] ?? [];
+                    const targetSheet = workbook.sheets[idx];
+                    const autoHeader = targetSheet ? detectHeaderRowIndex(targetSheet.rows) : 0;
+                    setHeaderRow(autoHeader);
+                    const headers = targetSheet?.rows[autoHeader] ?? [];
                     setMapping(suggestColumnMapping(headers));
                   }}
                 >

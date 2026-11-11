@@ -1,12 +1,13 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
-import { repairInvertedPsdArtwork } from '../editor/importedRenderer';
+import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { indexCartazes } from '../../features/cartazes/f7';
 import { saveDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
+  detectHeaderRowIndex,
   extractCampaignItemsFromSheet,
   parseExcelPriceToCents,
   parseXlsx,
@@ -31,6 +32,10 @@ import {
   updateScheduledPrice,
 } from '../../features/ofertas/service';
 import type { OfferCampaign, PrintStatus, PsdImportOfferContext } from '../../features/ofertas/types';
+import { chooseScantechPsdFolder, scanScantechPsdFolder } from '../../features/scantech/service';
+import type { ScannedPsdEntry } from '../../features/scantech/types';
+import { readPsdByPath } from '../../features/psd/service';
+import { analyzePsd, buildArtwork } from '../../features/psd/importer';
 
 const PsdImport = lazy(() =>
   import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
@@ -84,6 +89,10 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
   // Batch print tracking
   const [batchSize, setBatchSize] = useState(10);
   const [awaitingPrintConfirm, setAwaitingPrintConfirm] = useState<{ keys: Set<string>; count: number } | null>(null);
+
+  // Pasta de PSDs para pareamento em lote
+  const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>([]);
+  const [psdFolder, setPsdFolder] = useState<string | null>(null);
 
   const libraryIndex = useMemo(() => indexCartazes(libraryData?.entries ?? []), [libraryData]);
 
@@ -168,8 +177,9 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     setWorkbook(wb);
     setSheetIdx(0);
     const firstSheet = wb.sheets[0];
-    setHeaderRow(0);
-    const headers = firstSheet?.rows[0] ?? [];
+    const autoHeader = firstSheet ? detectHeaderRowIndex(firstSheet.rows) : 0;
+    setHeaderRow(autoHeader);
+    const headers = firstSheet?.rows[autoHeader] ?? [];
     setMapping(suggestColumnMapping(headers));
   };
 
@@ -178,7 +188,9 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
   const handleSheetChange = (idx: number) => {
     setSheetIdx(idx);
     const sheet = workbook?.sheets[idx];
-    const row = sheet?.rows[headerRow] ?? sheet?.rows[0] ?? [];
+    const autoHeader = sheet ? detectHeaderRowIndex(sheet.rows) : 0;
+    setHeaderRow(autoHeader);
+    const row = sheet?.rows[autoHeader] ?? [];
     setMapping(suggestColumnMapping(row));
   };
 
@@ -210,6 +222,173 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     if (onRefreshLibrary) await onRefreshLibrary();
     const synced = syncCampaignWithLibrary(activeCampaign, libraryIndex);
     await persistUpdate(synced);
+  };
+
+  const handleChoosePsdFolder = async () => {
+    const folder = await chooseScantechPsdFolder();
+    if (!folder) return;
+    setPsdFolder(folder);
+    const entries = await scanScantechPsdFolder(folder);
+    setScannedPsds(entries);
+
+    // Tenta pareamento automático por similaridade para itens que estão sem cartaz
+    if (activeCampaign && entries.length > 0) {
+      const matchViews = buildCampaignMatchViews(activeCampaign, libraryIndex);
+      const missing = matchViews.filter(v => v.missingPoster);
+      let updatedCampaign = activeCampaign;
+      let matchedCount = 0;
+
+      for (const view of missing) {
+        const f7 = view.item.f7;
+        const descTokens = view.item.description
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim()
+          .split(' ')
+          .filter(t => t.length >= 2 && !['de', 'da', 'do', 'com', 'para', 'em', 'un', 'kg', 'lt'].includes(t));
+
+        const matchedEntry = entries.find(e => {
+          const normPsd = e.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+          if (f7 && new RegExp(`(?:^|\\D)0*${f7.replace(/^0+/, '') || '0'}(?:\\D|$)`).test(normPsd)) {
+            return true;
+          }
+          const matchedWords = descTokens.filter(t => normPsd.includes(t)).length;
+          return matchedWords >= 2 && matchedWords / Math.max(1, descTokens.length) >= 0.5;
+        });
+
+        if (matchedEntry) {
+          try {
+            const psdData = await readPsdByPath(matchedEntry.path);
+            const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
+            const roles = analysis.suggested;
+            if (roles.whole && roles.fraction) {
+              let artwork = buildArtwork(analysis, roles);
+              if (hasInvertedPsdPriceParts(artwork)) {
+                artwork = repairInvertedPsdArtwork(artwork).artwork;
+              }
+              const now = new Date().toISOString();
+              const cartazDoc: Cartaz = {
+                schemaVersion: 1,
+                id: crypto.randomUUID(),
+                product: {
+                  name: (view.item.description || 'PRODUTO').trim().toUpperCase(),
+                  complement: '',
+                  unit: 'UN',
+                  priceCents: view.item.scheduledPriceCents || 100,
+                  productCode: f7 || null,
+                  validityText: analysis.metadata.validityText || '',
+                },
+                layout: {
+                  template: 'imported-psd',
+                  paper: 'A5',
+                  orientation: 'portrait',
+                  artwork,
+                },
+                metadata: {
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              };
+
+              const rootDir = libraryData?.root || '';
+              const baseSlug = (view.item.description || 'cartaz')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-|-$/g, '')
+                .slice(0, 50);
+              const cleanF7 = f7 ? `${f7} - ` : '';
+              const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}.skcartaz`;
+
+              await saveDocument(targetPath, cartazDoc, true);
+              updatedCampaign = linkSavedPosterToCampaignItem(
+                updatedCampaign,
+                view.item.id,
+                targetPath,
+                cartazDoc
+              );
+              matchedCount++;
+            }
+          } catch {
+            // Ignora se o arquivo não tiver camadas válidas
+          }
+        }
+      }
+
+      if (matchedCount > 0) {
+        await persistUpdate(updatedCampaign);
+        if (onRefreshLibrary) await onRefreshLibrary();
+      }
+    }
+  };
+
+  const handleAssignPsdToOfferItem = async (
+    itemId: string,
+    f7: string,
+    description: string,
+    priceCents: number,
+    psdPath: string
+  ) => {
+    if (!activeCampaign) return;
+    const psdData = await readPsdByPath(psdPath);
+    const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
+    const roles = analysis.suggested;
+    if (!roles.whole || !roles.fraction) {
+      throw new Error(`Não foi possível detectar as camadas de preço no PSD "${psdData.name}".`);
+    }
+    let artwork = buildArtwork(analysis, roles);
+    if (hasInvertedPsdPriceParts(artwork)) {
+      artwork = repairInvertedPsdArtwork(artwork).artwork;
+    }
+
+    const now = new Date().toISOString();
+    const cartazDoc: Cartaz = {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      product: {
+        name: (description || 'PRODUTO').trim().toUpperCase(),
+        complement: '',
+        unit: 'UN',
+        priceCents: priceCents || 100,
+        productCode: f7 || null,
+        validityText: analysis.metadata.validityText || '',
+      },
+      layout: {
+        template: 'imported-psd',
+        paper: 'A5',
+        orientation: 'portrait',
+        artwork,
+      },
+      metadata: {
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+
+    const rootDir = libraryData?.root || '';
+    const baseSlug = (description || 'cartaz')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 50);
+    const cleanF7 = f7 ? `${f7} - ` : '';
+    const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}.skcartaz`;
+
+    await saveDocument(targetPath, cartazDoc, true);
+    const updated = linkSavedPosterToCampaignItem(
+      activeCampaign,
+      itemId,
+      targetPath,
+      cartazDoc
+    );
+    await persistUpdate(updated);
+    if (onRefreshLibrary) await onRefreshLibrary();
+    setPreviewKey(`${itemId}::${targetPath}`);
   };
 
   const handlePsdSavedForOffer = async (path: string, savedDocument: Cartaz) => {
@@ -375,7 +554,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
       <div className="library-heading">
         <div>
           <h2>Pastas de Ofertas</h2>
-          <p>Programe ofertas futuras via Excel (.xlsx) e imprima cartazes sem alterar os preços vigentes da biblioteca.</p>
+          <p>Programe ofertas futuras via Excel (.xlsx, .xls) e imprima cartazes sem alterar os preços vigentes da biblioteca.</p>
         </div>
         <div className="toolbar">
           <label className="f7-filter" style={{ marginTop: 0 }}>
@@ -480,7 +659,10 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                   </small>
                 </div>
                 <div className="toolbar">
-                  <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx)</button>
+                  <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx, .xls)</button>
+                  <button className="subtle" onClick={() => run(handleChoosePsdFolder)}>
+                    Pasta PSDs {scannedPsds.length > 0 ? `(${scannedPsds.length})` : ''}
+                  </button>
                   <button className="subtle" onClick={() => run(handleSyncLibrary)}>
                     Localizar cartazes na biblioteca
                   </button>
@@ -696,10 +878,38 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                               </td>
                               <td>
                                 {v.missingPoster ? (
-                                  <div className="toolbar" style={{ alignItems: 'center' }}>
+                                  <div className="toolbar" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                                     <span className="comparison-status conflict">
                                       Sem cartaz (F7 {v.item.f7})
                                     </span>
+                                    {scannedPsds.length > 0 && (
+                                      <select
+                                        className="subtle"
+                                        style={{ maxWidth: 200, fontSize: 11, padding: '4px 6px', background: '#f8fafc', borderColor: '#cbd5e1' }}
+                                        value=""
+                                        aria-label={`Ligar PSD da pasta para ${v.item.description}`}
+                                        onChange={e => {
+                                          if (e.target.value) {
+                                            run(() =>
+                                              handleAssignPsdToOfferItem(
+                                                v.item.id,
+                                                v.item.f7,
+                                                v.item.description,
+                                                v.item.scheduledPriceCents,
+                                                e.target.value
+                                              )
+                                            );
+                                          }
+                                        }}
+                                      >
+                                        <option value="">⚡ Ligar PSD da pasta...</option>
+                                        {scannedPsds.map(p => (
+                                          <option key={p.path} value={p.path}>
+                                            {p.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )}
                                     <button
                                       className="subtle"
                                       style={{ padding: '6px 10px', fontSize: 12 }}
@@ -877,7 +1087,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
           <section className="panel psd-import" role="dialog" aria-modal="true" aria-label="Importar planilha Excel">
             <div className="psd-title">
               <div>
-                <h2>Importar Planilha de Ofertas (.xlsx)</h2>
+                <h2>Importar Planilha de Ofertas (.xlsx, .xls)</h2>
                 <p>
                   Arquivo: <strong>{workbook.fileName}</strong> · O arquivo Excel original é apenas lido e nunca modificado.
                 </p>
