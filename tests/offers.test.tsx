@@ -17,7 +17,6 @@ import {
 } from '../src/features/ofertas/excel';
 import {
   applyExcelToCampaign,
-  addCampaignPosterVariant,
   archiveCampaign,
   buildCampaignMatchViews,
   buildCampaignPsdSuggestions,
@@ -330,60 +329,7 @@ test('Planilhas .xls e relatórios de ofertas: suporte a OpenXML .xls, texto CSV
   );
 });
 
-test('Pastas de Ofertas: criar variação reutiliza cartaz em novo F7 sem alterar produto de origem', () => {
-  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
-  campaign.items.push({
-    id: 'item-origem',
-    rowNumber: 1,
-    f7: '00123',
-    description: 'MARCA ORIGINAL 1KG',
-    scheduledPriceCents: 899,
-    conflicting: false,
-    issues: [],
-    posters: [],
-  });
-
-  const variantDocument = createDocument();
-  variantDocument.product.name = 'MARCA NOVA';
-  variantDocument.product.complement = '1KG';
-  variantDocument.product.productCode = '00045';
-  const updated = addCampaignPosterVariant(
-    campaign,
-    'item-origem',
-    'C:\\Cartazes\\00045-marca-nova.skcartaz',
-    variantDocument,
-    'MARCA NOVA 1KG PCT',
-    799
-  );
-
-  assert.equal(campaign.items.length, 1);
-  assert.equal(updated.items.length, 2);
-  assert.equal(updated.items[1].f7, '00045');
-  assert.equal(updated.items[1].description, 'MARCA NOVA 1KG PCT');
-  assert.equal(updated.items[1].scheduledPriceCents, 799);
-  assert.deepEqual(updated.items[1].posters[0], {
-    cartazId: variantDocument.id,
-    cartazPath: 'C:\\Cartazes\\00045-marca-nova.skcartaz',
-    selected: true,
-    copies: 1,
-    status: 'preparado',
-    printedAt: null,
-  });
-  assert.throws(
-    () =>
-      addCampaignPosterVariant(
-        updated,
-        'item-origem',
-        'C:\\Cartazes\\duplicado.skcartaz',
-        variantDocument,
-        'MARCA REPETIDA',
-        799
-      ),
-    /já existe nesta pasta/
-  );
-});
-
-test('Pastas de Ofertas: mostra ação de criar variação para cartaz clássico vinculado', () => {
+test('Pastas de Ofertas: exibe edição no editor normal sem ação de variação', () => {
   const campaign = createCampaign('Ofertas da semana', '2026-11-17');
   const document = createDocument();
   document.product.productCode = '00123';
@@ -413,11 +359,44 @@ test('Pastas de Ofertas: mostra ação de criar variação para cartaz clássico
       }}
       run={() => {}}
       onPrintBatch={() => {}}
+      onEditPoster={async () => {}}
       initialCampaigns={[campaign]}
       initialActiveId={campaign.id}
     />
   );
-  assert.ok(html.includes('Criar variação'));
+  assert.ok(html.includes('Editar cartaz'));
+  assert.ok(!html.includes('Usar arte em outro produto'));
+});
+
+test('Pastas de Ofertas: oculta cópias idênticas de um cartaz em caminhos diferentes', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  const original = createDocument();
+  original.product.productCode = '30001';
+  const copy = structuredClone(original);
+  copy.id = crypto.randomUUID();
+  copy.metadata.createdAt = '2026-11-01T00:00:00.000Z';
+  copy.metadata.updatedAt = '2026-11-02T00:00:00.000Z';
+  campaign.items.push({
+    id: 'item-acucar',
+    rowNumber: 1,
+    f7: '30001',
+    description: 'ACUCAR CRISTAL',
+    scheduledPriceCents: 629,
+    conflicting: false,
+    issues: [],
+    posters: [
+      { cartazId: original.id, cartazPath: 'C:\\Cartazes\\original.skcartaz', selected: true, copies: 1, status: 'preparado' },
+      { cartazId: copy.id, cartazPath: 'C:\\Cartazes\\copia.skcartaz', selected: true, copies: 1, status: 'preparado' },
+    ],
+  });
+  const library = indexCartazes([
+    { name: 'original.skcartaz', path: 'C:\\Cartazes\\original.skcartaz', folder: false, content: serialize(original) },
+    { name: 'copia.skcartaz', path: 'C:\\Cartazes\\copia.skcartaz', folder: false, content: serialize(copy) },
+  ]);
+
+  const [view] = buildCampaignMatchViews(campaign, library);
+  assert.equal(view.matchedPosters.length, 1);
+  assert.equal(view.unlinkedLibraryPosters.length, 0);
 });
 
 test('Pastas de Ofertas: mostra cartaz exato da biblioteca ainda não vinculado à oferta', () => {

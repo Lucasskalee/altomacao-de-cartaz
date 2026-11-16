@@ -6,9 +6,11 @@ A aba **Pastas de Ofertas** permite criar campanhas de ofertas futuras por data 
 
 Quando um cartaz com o F7 exato de uma oferta está na biblioteca, mas ainda não foi associado à campanha, ele é exibido na linha do produto com a ação **Vincular cartaz**. Isso permite conferir o arquivo encontrado e abrir sua prévia sem depender da sincronização geral.
 
-A exportação em lote salva os projetos `.skcartaz` na pasta escolhida, incluindo a subpasta da campanha, para reabertura posterior. Caminhos repetidos da mesma arte são exportados uma única vez; arquivos diferentes com o mesmo F7 continuam separados. O resumo distingue exportação completa de parcial e informa a contagem por formato.
+A exportação em lote salva os projetos `.skcartaz` na pasta escolhida, incluindo a subpasta da campanha, para reabertura posterior. Nas ofertas, cópias idênticas do mesmo cartaz são mostradas uma única vez, mesmo quando têm caminhos diferentes; os arquivos da biblioteca não são excluídos, e artes diferentes com o mesmo F7 continuam separadas.
 
-Para corrigir textos de um cartaz PSD vinculado a uma oferta, use **Editar cartaz**. O PSD vinculado é aberto automaticamente; revise as camadas e a prévia e continue no editor. Use **Salvar Como** para criar uma cópia independente e preservar o cartaz original. O F7 e o preço base são mantidos. Se o caminho do PSD original não estiver disponível, será possível selecioná-lo manualmente. Camadas achatadas não podem ser convertidas em texto.
+Em **Pastas de Ofertas**, **Editar cartaz** abre o próprio arquivo selecionado diretamente no editor principal, inclusive cartazes importados de PSD; não é necessário reler o PSD original. Use **Salvar Como** para criar uma cópia e preservar o arquivo aberto.
+
+Para reaproveitar uma arte em outro produto, use **Editar cartaz**, altere os dados do produto e seu F7 no editor principal e escolha **Salvar Como**. Isso cria outro arquivo sem alterar o original; depois, associe o novo cartaz à pasta de ofertas.
 
 Também é possível importar artes `.psd` do Photoshop em **Meus Cartazes → Importar Arte · PSD**, preservar a composição visual estática, mapear as camadas de preço (reais, centavos, vírgula e linha), vincular o código **F7** e salvar o cartaz como documento `.skcartaz` autocontido (independente do arquivo PSD original). O preço pode ser atualizado manualmente no editor ou em lote via DBF, mantendo exportação PNG 300 DPI e impressão A5. [Fluxo, compatibilidade, validação do piloto e limitações do Sprint 05.0](docs/SPRINT-05-0.md).
 

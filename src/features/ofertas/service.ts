@@ -24,6 +24,21 @@ import type {
 
 const normalizedPath = (path: string) => path.replace(/\//g, '\\').toLocaleLowerCase('en-US');
 
+function cartazContentKey(document: Cartaz): string {
+  const content = structuredClone(document);
+  content.id = '';
+  content.metadata.createdAt = '';
+  content.metadata.updatedAt = '';
+  if (content.layout.template === 'imported-psd') {
+    content.layout.artwork.source = {
+      ...content.layout.artwork.source,
+      fileName: '',
+      sourcePath: null,
+    };
+  }
+  return JSON.stringify(content);
+}
+
 function uniquePosterStates(posters: CampaignPosterState[]): CampaignPosterState[] {
   const seen = new Set<string>();
   return posters.filter(poster => {
@@ -248,56 +263,6 @@ export function linkSavedPosterToCampaignItem(
   };
 }
 
-export function addCampaignPosterVariant(
-  campaign: OfferCampaign,
-  sourceItemId: string,
-  cartazPath: string,
-  cartazDocument: Cartaz,
-  description: string,
-  scheduledPriceCents: number
-): OfferCampaign {
-  if (!campaign.items.some(item => item.id === sourceItemId)) {
-    throw new Error('Item de origem não encontrado nesta pasta de ofertas.');
-  }
-  if (!cartazPath.trim()) throw new Error('Caminho do novo cartaz inválido.');
-  const f7 = getF7(cartazDocument.product.productCode);
-  if (!f7) throw new Error('Informe um F7 numérico para o novo produto.');
-  if (campaign.items.some(item => item.f7 === f7)) {
-    throw new Error(`O F7 ${f7} já existe nesta pasta de ofertas.`);
-  }
-  const cleanDescription = description.trim();
-  if (!cleanDescription || cleanDescription.length > 120) {
-    throw new Error('Informe uma descrição com até 120 caracteres.');
-  }
-  if (!Number.isSafeInteger(scheduledPriceCents) || scheduledPriceCents <= 0 || scheduledPriceCents > 99_999_999) {
-    throw new Error('Preço programado inválido.');
-  }
-
-  const now = new Date().toISOString();
-  const variant: CampaignItem = {
-    id: crypto.randomUUID(),
-    rowNumber: Math.max(0, ...campaign.items.map(item => item.rowNumber)) + 1,
-    f7,
-    description: cleanDescription,
-    scheduledPriceCents,
-    conflicting: false,
-    issues: [],
-    posters: [{
-      cartazId: cartazDocument.id,
-      cartazPath,
-      selected: true,
-      copies: 1,
-      status: 'preparado',
-      printedAt: null,
-    }],
-  };
-  return {
-    ...campaign,
-    items: [...campaign.items, variant],
-    updatedAt: now,
-  };
-}
-
 export function updateScheduledPrice(campaign: OfferCampaign, itemId: string, newPriceCents: number): OfferCampaign {
   if (!Number.isSafeInteger(newPriceCents) || newPriceCents <= 0 || newPriceCents > 99_999_999) {
     throw new Error('Preço programado inválido.');
@@ -468,13 +433,26 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
     byPath.set(normalizedPath(item.path), item);
   }
   return campaign.items.map(item => {
-    const allF7Matches = findCartazesByF7(item.f7, library);
+    const matchingCartazes = findCartazesByF7(item.f7, library);
+    const seenLibraryContent = new Set<string>();
+    const allF7Matches = matchingCartazes.filter(match => {
+      const key = cartazContentKey(match.document);
+      if (seenLibraryContent.has(key)) return false;
+      seenLibraryContent.add(key);
+      return true;
+    });
     const posters = uniquePosterStates(item.posters);
     const linkedPaths = new Set(posters.map(p => normalizedPath(p.cartazPath)));
-    const matchedPosters = posters.map(state => {
-      const lib = byPath.get(normalizedPath(state.cartazPath)) ?? allF7Matches.find(m => m.document.id === state.cartazId) ?? null;
+    const linkedContent = new Set<string>();
+    const matchedPosters = posters.flatMap(state => {
+      const lib = byPath.get(normalizedPath(state.cartazPath)) ?? matchingCartazes.find(m => m.document.id === state.cartazId) ?? null;
+      if (lib) {
+        const key = cartazContentKey(lib.document);
+        if (linkedContent.has(key)) return [];
+        linkedContent.add(key);
+      }
       const inspection = lib ? inspectScheduledPriceApplication(lib.document, item.scheduledPriceCents) : null;
-      return {
+      return [{
         state,
         libraryCartaz: lib,
         currentPriceCents: lib ? lib.document.product.priceCents : null,
@@ -482,9 +460,11 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
         appliedPriceCents: inspection ? inspection.appliedPriceCents : null,
         hasInvertedLayers: inspection ? inspection.hasInvertedLayers : false,
         priceMismatchReason: inspection ? inspection.priceMismatchReason : null,
-      };
+      }];
     });
-    const unlinkedLibraryPosters = allF7Matches.filter(m => !linkedPaths.has(normalizedPath(m.path)));
+    const unlinkedLibraryPosters = allF7Matches.filter(
+      m => !linkedPaths.has(normalizedPath(m.path)) && !linkedContent.has(cartazContentKey(m.document))
+    );
     return {
       item,
       matchedPosters,

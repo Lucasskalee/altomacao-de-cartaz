@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { PosterView, type Poster } from './components/editor/PosterView';
 import { exportPng } from './components/editor/exportPng';
 import { Library } from './components/library/Library';
@@ -27,10 +27,6 @@ import {
 import { addPrintHistoryEntries, updatePrintHistoryStatus } from './features/history/service';
 import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
-
-const EditLinkedPsd = lazy(() =>
-  import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
-);
 
 function getDemoLibrary(): LibraryData {
   const root = 'C:\\Skalee\\Cartazes';
@@ -91,11 +87,6 @@ export default function App() {
   const formatMenuRef = useRef<HTMLDivElement>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showCustomModal, setShowCustomModal] = useState(false);
-  const [linkedArtworkEdit, setLinkedArtworkEdit] = useState<{
-    path: string;
-    document: Cartaz;
-    scheduledPriceCents: number;
-  } | null>(null);
   const [confirmationModal, setConfirmationModal] = useState<{
     entryIds: string[];
     productName: string;
@@ -271,18 +262,6 @@ export default function App() {
   };
   const newDocument = async () => { if (await editor.newDocument()) setSection('editor'); };
   const open = async (path?: string) => { if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); } };
-  const openLinkedArtwork = async (path: string, document: Cartaz, scheduledPriceCents: number) => {
-    if (await editor.open(path)) {
-      setLinkedArtworkEdit({ path, document, scheduledPriceCents });
-      setSection('editor');
-    }
-  };
-  const continueLinkedArtworkEdit = async (document: Cartaz) => {
-    if (!linkedArtworkEdit) throw new Error('O cartaz não está mais aberto para edição.');
-    editor.stageDocument(document, linkedArtworkEdit.path);
-    setLinkedArtworkEdit(null);
-    setMessage('Alterações preparadas no editor. Use Salvar Como para criar uma cópia e preservar o original.');
-  };
   const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
   const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
   return <div className="app">
@@ -978,21 +957,10 @@ export default function App() {
       </div>
     ) : null}
     <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
-    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={open} onEditLinkedArtwork={openLinkedArtwork} onRefreshLibrary={refresh}/></div>
+    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={open} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
-
-    {linkedArtworkEdit && (
-      <Suspense fallback={<div className="modal-backdrop" role="status">Carregando ferramentas para editar o PSD…</div>}>
-        <EditLinkedPsd
-          document={linkedArtworkEdit.document}
-          scheduledPriceCents={linkedArtworkEdit.scheduledPriceCents}
-          close={() => setLinkedArtworkEdit(null)}
-          save={continueLinkedArtworkEdit}
-        />
-      </Suspense>
-    )}
 
     {/* Modal de Formato Personalizado */}
     {showCustomModal && (
