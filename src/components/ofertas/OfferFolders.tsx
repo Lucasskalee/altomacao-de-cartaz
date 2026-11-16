@@ -32,10 +32,18 @@ import {
   updateScheduledPrice,
 } from '../../features/ofertas/service';
 import type { OfferCampaign, PrintStatus, PsdImportOfferContext } from '../../features/ofertas/types';
-import { chooseScantechPsdFolder, scanScantechPsdFolder } from '../../features/scantech/service';
-import type { ScannedPsdEntry } from '../../features/scantech/types';
+import {
+  chooseScantechExportFolder,
+  chooseScantechPsdFolder,
+  executeScantechDirectExportJob,
+  scanScantechPsdFolder,
+} from '../../features/scantech/service';
+import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech/types';
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
+import { splitCentsToParts } from '../../features/cartazes/presentation';
+import type { PaperFormat } from '../../features/cartazes/types';
+import type { CampaignItem } from '../../features/ofertas/types';
 
 const PsdImport = lazy(() =>
   import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
@@ -90,9 +98,25 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
   const [batchSize, setBatchSize] = useState(10);
   const [awaitingPrintConfirm, setAwaitingPrintConfirm] = useState<{ keys: Set<string>; count: number } | null>(null);
 
-  // Pasta de PSDs para pareamento em lote
+  // Pasta de PSDs para pareamento em lote e formato de papel (A6 por padrão)
   const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>([]);
   const [psdFolder, setPsdFolder] = useState<string | null>(null);
+  const [psdPaperSize, setPsdPaperSize] = useState<PaperFormat>('A6');
+  const [showPsdManagerModal, setShowPsdManagerModal] = useState(false);
+  const [psdFilterText, setPsdFilterText] = useState('');
+  const [psdSelectedTargets, setPsdSelectedTargets] = useState<Record<string, string>>({});
+  const [batchLinking, setBatchLinking] = useState(false);
+  const [batchLinkFeedback, setBatchLinkFeedback] = useState<string | null>(null);
+
+  // Exportação em lote da pasta de ofertas
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormatPsd, setExportFormatPsd] = useState(true);
+  const [exportFormatSk, setExportFormatSk] = useState(true);
+  const [exportOnlySelected, setExportOnlySelected] = useState(false);
+  const [exportFolder, setExportFolder] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ current: number; total: number; message: string } | null>(null);
+  const [exportResult, setExportResult] = useState<{ psdCount: number; skCount: number; errors: string[] } | null>(null);
 
   const libraryIndex = useMemo(() => indexCartazes(libraryData?.entries ?? []), [libraryData]);
 
@@ -282,7 +306,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                 },
                 layout: {
                   template: 'imported-psd',
-                  paper: 'A5',
+                  paper: psdPaperSize,
                   orientation: 'portrait',
                   artwork,
                 },
@@ -301,7 +325,8 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                 .replace(/^-|-$/g, '')
                 .slice(0, 50);
               const cleanF7 = f7 ? `${f7} - ` : '';
-              const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}.skcartaz`;
+              const sizeTag = ` [${psdPaperSize}]`;
+              const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}${sizeTag}.skcartaz`;
 
               await saveDocument(targetPath, cartazDoc, true);
               updatedCampaign = linkSavedPosterToCampaignItem(
@@ -330,7 +355,8 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     f7: string,
     description: string,
     priceCents: number,
-    psdPath: string
+    psdPath: string,
+    paperSize: PaperFormat = psdPaperSize
   ) => {
     if (!activeCampaign) return;
     const psdData = await readPsdByPath(psdPath);
@@ -358,7 +384,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
       },
       layout: {
         template: 'imported-psd',
-        paper: 'A5',
+        paper: paperSize,
         orientation: 'portrait',
         artwork,
       },
@@ -377,7 +403,8 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
       .replace(/^-|-$/g, '')
       .slice(0, 50);
     const cleanF7 = f7 ? `${f7} - ` : '';
-    const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}.skcartaz`;
+    const sizeTag = ` [${paperSize}]`;
+    const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}${sizeTag}.skcartaz`;
 
     await saveDocument(targetPath, cartazDoc, true);
     const updated = linkSavedPosterToCampaignItem(
@@ -389,6 +416,229 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     await persistUpdate(updated);
     if (onRefreshLibrary) await onRefreshLibrary();
     setPreviewKey(`${itemId}::${targetPath}`);
+  };
+
+  const findBestItemForPsd = (psdName: string): { item: CampaignItem; score: number } | null => {
+    if (!activeCampaign) return null;
+    const normPsd = psdName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\.psd$/i, '');
+
+    // 1. Tenta correspondência direta de F7
+    for (const it of activeCampaign.items) {
+      if (it.f7 && new RegExp(`(?:^|\\D)0*${it.f7.replace(/^0+/, '') || '0'}(?:\\D|$)`).test(normPsd)) {
+        return { item: it, score: 1.0 };
+      }
+    }
+
+    // 2. Tenta correspondência por palavras da descrição
+    let best: { item: CampaignItem; score: number } | null = null;
+    let maxScore = 0;
+    for (const it of activeCampaign.items) {
+      const tokens = it.description
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()
+        .split(' ')
+        .filter(t => t.length >= 2 && !['de', 'da', 'do', 'com', 'para', 'em', 'un', 'kg', 'lt', 'cx', 'sc'].includes(t));
+      if (tokens.length === 0) continue;
+      const matches = tokens.filter(t => normPsd.includes(t)).length;
+      const score = matches / tokens.length;
+      if (matches >= 2 && score > maxScore) {
+        maxScore = score;
+        best = { item: it, score };
+      } else if (matches === 1 && tokens.length === 1 && score > maxScore) {
+        maxScore = score;
+        best = { item: it, score };
+      }
+    }
+    return best;
+  };
+
+  const handleBatchLinkSuggested = async () => {
+    if (!activeCampaign || scannedPsds.length === 0) return;
+    setBatchLinking(true);
+    setBatchLinkFeedback(null);
+    let linkedCount = 0;
+    let errorsCount = 0;
+
+    try {
+      for (const entry of scannedPsds) {
+        const targetItemId = psdSelectedTargets[entry.path];
+        let targetItem: CampaignItem | null = null;
+        if (targetItemId) {
+          targetItem = activeCampaign.items.find(i => i.id === targetItemId) ?? null;
+        } else {
+          const match = findBestItemForPsd(entry.name);
+          if (match && match.score >= 0.5) {
+            targetItem = match.item;
+          }
+        }
+
+        if (!targetItem) continue;
+
+        // Se já tiver cartaz vinculado com este psd, pula
+        const normEntryName = entry.name.toLowerCase();
+        const alreadyLinked = targetItem.posters.some(p => p.cartazPath.toLowerCase().includes(normEntryName));
+        if (alreadyLinked) continue;
+
+        try {
+          await handleAssignPsdToOfferItem(
+            targetItem.id,
+            targetItem.f7,
+            targetItem.description,
+            targetItem.scheduledPriceCents,
+            entry.path,
+            psdPaperSize
+          );
+          linkedCount++;
+        } catch {
+          errorsCount++;
+        }
+      }
+      setBatchLinkFeedback(
+        `Vinculação concluída: ${linkedCount} cartaz(es) ${psdPaperSize} criados e vinculados à campanha.${errorsCount > 0 ? ` (${errorsCount} falhas)` : ''}`
+      );
+    } finally {
+      setBatchLinking(false);
+    }
+  };
+
+  const handleChooseExportFolder = async () => {
+    const chosen = await chooseScantechExportFolder();
+    if (chosen) setExportFolder(chosen);
+  };
+
+  const handleRunBatchExport = async () => {
+    if (!activeCampaign || !exportFolder) return;
+    if (!exportFormatPsd && !exportFormatSk) {
+      throw new Error('Selecione pelo menos um formato de exportação (.PSD ou .skcartaz).');
+    }
+
+    setExporting(true);
+    setExportProgress({ current: 0, total: 0, message: 'Preparando cartazes...' });
+    setExportResult(null);
+
+    try {
+      const cleanCampName = activeCampaign.name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const subFolderName = `${cleanCampName}_${activeCampaign.campaignDate}`;
+      const targetFolder = `${exportFolder.replace(/[\\/]+$/, '')}\\${subFolderName}`;
+
+      const candidates: {
+        item: CampaignItem;
+        cartazPath: string;
+        doc: Cartaz;
+      }[] = [];
+
+      for (const v of matchViews) {
+        for (const m of v.matchedPosters) {
+          if (!m.scheduledDocument) continue;
+          if (exportOnlySelected && !m.state.selected) continue;
+          candidates.push({
+            item: v.item,
+            cartazPath: m.state.cartazPath,
+            doc: m.scheduledDocument,
+          });
+        }
+      }
+
+      if (candidates.length === 0) {
+        throw new Error('Nenhum cartaz com arte vinculada disponível para exportar.');
+      }
+
+      setExportProgress({ current: 0, total: candidates.length, message: 'Iniciando exportação...' });
+
+      let psdCount = 0;
+      let skCount = 0;
+      const errors: string[] = [];
+
+      for (let i = 0; i < candidates.length; i++) {
+        const { item, doc } = candidates[i];
+        setExportProgress({
+          current: i + 1,
+          total: candidates.length,
+          message: `Exportando ${i + 1} de ${candidates.length}: F7 ${item.f7} - ${item.description}...`,
+        });
+
+        const baseSlug = (item.description || 'cartaz')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 50);
+        const f7Tag = item.f7 ? `${item.f7}-` : '';
+        const paperTag = doc.layout.paper ? `-[${doc.layout.paper}]` : '';
+
+        // 1. Exporta .skcartaz
+        if (exportFormatSk) {
+          try {
+            const skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
+            const skPath = `${targetFolder}\\${skFileName}`;
+            await saveDocument(skPath, doc, true);
+            skCount++;
+          } catch (e) {
+            errors.push(`SK ${item.f7}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+
+        // 2. Exporta .psd
+        if (exportFormatPsd) {
+          if (doc.layout.template === 'imported-psd') {
+            const artwork = doc.layout.artwork;
+            const wholePart = artwork.priceParts.find(p => p.role === 'whole');
+            const fractionPart = artwork.priceParts.find(p => p.role === 'fraction');
+            const validityPart = artwork.priceParts.find(p => p.role === 'validity');
+
+            if (wholePart && fractionPart && artwork.source.sourcePath) {
+              const parts = splitCentsToParts(item.scheduledPriceCents);
+              const psdFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
+              const outputPsdPath = `${targetFolder}\\${psdFileName}`;
+
+              const job: ScantechExportJob = {
+                itemId: item.id,
+                f7: item.f7,
+                description: item.description,
+                sourcePsdPath: artwork.source.sourcePath,
+                outputPsdPath,
+                wholeLayerId: wholePart.layerId,
+                fractionLayerId: fractionPart.layerId,
+                validityLayerId: validityPart?.layerId,
+                wholeValue: parts.whole,
+                fractionValue: parts.fraction,
+                validityText: typeof doc.product.validityText === 'string' ? doc.product.validityText : undefined,
+              };
+
+              try {
+                const res = await executeScantechDirectExportJob(job);
+                if (res.ok) {
+                  psdCount++;
+                } else {
+                  errors.push(`PSD ${item.f7}: ${res.error}`);
+                }
+              } catch (e) {
+                errors.push(`PSD ${item.f7}: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            } else {
+              errors.push(`PSD ${item.f7}: PSD original não localizado ou camadas não mapeadas.`);
+            }
+          }
+        }
+      }
+
+      setExportResult({ psdCount, skCount, errors });
+    } finally {
+      setExporting(false);
+      setExportProgress(null);
+    }
   };
 
   const handlePsdSavedForOffer = async (path: string, savedDocument: Cartaz) => {
@@ -497,6 +747,12 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     }
     return { totalItems, missing, pending, prepared, printed, divergent };
   }, [matchViews]);
+
+  const filteredScannedPsds = useMemo(() => {
+    const q = psdFilterText.trim().toLowerCase();
+    if (!q) return scannedPsds;
+    return scannedPsds.filter(p => p.name.toLowerCase().includes(q));
+  }, [scannedPsds, psdFilterText]);
 
   const handleTriggerPartialPrint = (reprintPrinted = false) => {
     if (!activeCampaign) return;
@@ -660,9 +916,23 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                 </div>
                 <div className="toolbar">
                   <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx, .xls)</button>
-                  <button className="subtle" onClick={() => run(handleChoosePsdFolder)}>
-                    Pasta PSDs {scannedPsds.length > 0 ? `(${scannedPsds.length})` : ''}
+                  <button
+                    className={scannedPsds.length > 0 ? '' : 'subtle'}
+                    onClick={() => {
+                      if (scannedPsds.length > 0) {
+                        setShowPsdManagerModal(true);
+                      } else {
+                        run(handleChoosePsdFolder);
+                      }
+                    }}
+                  >
+                    📁 Pasta PSDs {scannedPsds.length > 0 ? `(${scannedPsds.length} ${psdPaperSize})` : ''}
                   </button>
+                  {scannedPsds.length > 0 && (
+                    <button className="subtle" onClick={() => setShowPsdManagerModal(true)}>
+                      ⚡ Pareamento ({psdPaperSize})
+                    </button>
+                  )}
                   <button className="subtle" onClick={() => run(handleSyncLibrary)}>
                     Localizar cartazes na biblioteca
                   </button>
@@ -806,6 +1076,12 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                       }
                     >
                       Reimprimir selecionados
+                    </button>
+                    <button
+                      style={{ background: '#0284c7', color: '#fff', marginLeft: 'auto' }}
+                      onClick={() => setShowExportModal(true)}
+                    >
+                      📦 Exportar Cartazes (PSD / SK)
                     </button>
                   </div>
 
@@ -1246,6 +1522,324 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
             saved={handlePsdSavedForOffer}
           />
         </Suspense>
+      )}
+
+      {showPsdManagerModal && (
+        <div className="modal-backdrop" onClick={() => setShowPsdManagerModal(false)}>
+          <section
+            className="panel modal"
+            style={{ maxWidth: 960, width: '92vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="library-heading" style={{ marginBottom: 10 }}>
+              <div>
+                <h3>⚡ Vincular Pasta de PSDs à Campanha</h3>
+                <p style={{ margin: 0, fontSize: 13, color: '#475569' }}>
+                  {psdFolder ? `Pasta: ${psdFolder}` : 'Nenhuma pasta selecionada'}
+                </p>
+              </div>
+              <div className="toolbar" style={{ marginTop: 0 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 'bold' }}>
+                  Formato do Cartaz:
+                  <select
+                    value={psdPaperSize}
+                    onChange={e => setPsdPaperSize(e.target.value as PaperFormat)}
+                    style={{ padding: '4px 8px', fontWeight: 'bold', color: '#0f172a' }}
+                  >
+                    <option value="A6">A6 — Pequeno (105 × 148 mm)</option>
+                    <option value="A5">A5 — Médio (148 × 210 mm)</option>
+                    <option value="A4">A4 — Grande (210 × 297 mm)</option>
+                    <option value="A3">A3 — Extra Grande (297 × 420 mm)</option>
+                  </select>
+                </label>
+                <button className="subtle" onClick={() => run(handleChoosePsdFolder)}>
+                  📁 {psdFolder ? 'Trocar Pasta' : 'Selecionar Pasta'}
+                </button>
+              </div>
+            </div>
+
+            {batchLinkFeedback && (
+              <div className="import-warning" style={{ margin: '6px 0 10px', padding: 10 }}>
+                <strong>{batchLinkFeedback}</strong>
+              </div>
+            )}
+
+            <div className="import-stats" style={{ margin: '4px 0 12px' }}>
+              <span><strong>{scannedPsds.length}</strong> PSDs na pasta</span>
+              <span><strong>{psdPaperSize}</strong> formato selecionado</span>
+              <span><strong>{activeCampaign?.items.length ?? 0}</strong> produtos na campanha</span>
+            </div>
+
+            <div className="toolbar" style={{ marginBottom: 12, justifyContent: 'space-between' }}>
+              <input
+                placeholder="Filtrar arquivos PSD por nome…"
+                value={psdFilterText}
+                onChange={e => setPsdFilterText(e.target.value)}
+                style={{ maxWidth: 350 }}
+              />
+              <button
+                disabled={batchLinking || scannedPsds.length === 0}
+                onClick={() => run(handleBatchLinkSuggested)}
+                style={{ background: '#0284c7', color: '#fff' }}
+              >
+                {batchLinking ? 'Vinculando…' : `⚡ Vincular Todos Sugeridos (${psdPaperSize})`}
+              </button>
+            </div>
+
+            <div className="import-table-wrap" style={{ flex: 1, overflowY: 'auto', maxHeight: '48vh' }}>
+              <table className="import-table">
+                <thead>
+                  <tr>
+                    <th>Arquivo PSD</th>
+                    <th>Tamanho</th>
+                    <th>Produto Sugerido / Selecionado</th>
+                    <th>Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredScannedPsds.map(entry => {
+                    const normEntryName = entry.name.toLowerCase();
+                    const linkedItem = activeCampaign?.items.find(i =>
+                      i.posters.some(p => p.cartazPath.toLowerCase().includes(normEntryName))
+                    );
+                    const suggested = !linkedItem ? findBestItemForPsd(entry.name) : null;
+                    const selectedItemId = psdSelectedTargets[entry.path] ?? (suggested?.item.id || '');
+                    const currentTargetItem = activeCampaign?.items.find(i => i.id === selectedItemId);
+
+                    return (
+                      <tr key={entry.path}>
+                        <td>
+                          <strong>{entry.name}</strong>
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: '#64748b' }}>
+                          {(entry.size / (1024 * 1024)).toFixed(1)} MB
+                        </td>
+                        <td>
+                          {linkedItem ? (
+                            <span className="comparison-status">
+                              F7 {linkedItem.f7} — {linkedItem.description} ({money(linkedItem.scheduledPriceCents)})
+                            </span>
+                          ) : (
+                            <select
+                              style={{ width: '100%', maxWidth: 440, fontSize: 12, padding: '4px 6px' }}
+                              value={selectedItemId}
+                              onChange={e =>
+                                setPsdSelectedTargets(prev => ({
+                                  ...prev,
+                                  [entry.path]: e.target.value,
+                                }))
+                              }
+                            >
+                              <option value="">(Selecione um produto da campanha)</option>
+                              {activeCampaign?.items.map(it => (
+                                <option key={it.id} value={it.id}>
+                                  {suggested?.item.id === it.id ? '⭐ [Sugerido] ' : ''}
+                                  F7 {it.f7} — {it.description} ({money(it.scheduledPriceCents)})
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {linkedItem ? (
+                            <span className="comparison-status" style={{ background: '#dcfce7', color: '#15803d' }}>
+                              ✓ Vinculado
+                            </span>
+                          ) : (
+                            <button
+                              disabled={!currentTargetItem}
+                              className="subtle"
+                              style={{ fontSize: 11, padding: '4px 8px' }}
+                              onClick={() => {
+                                if (currentTargetItem) {
+                                  run(() =>
+                                    handleAssignPsdToOfferItem(
+                                      currentTargetItem.id,
+                                      currentTargetItem.f7,
+                                      currentTargetItem.description,
+                                      currentTargetItem.scheduledPriceCents,
+                                      entry.path,
+                                      psdPaperSize
+                                    )
+                                  );
+                                }
+                              }}
+                            >
+                              ⚡ Vincular ({psdPaperSize})
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredScannedPsds.length === 0 && (
+                    <tr>
+                      <td colSpan={4} style={{ textAlign: 'center', padding: 24, color: '#64748b' }}>
+                        Nenhum arquivo PSD encontrado{psdFilterText ? ' com este filtro' : ''}.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="toolbar" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+              <button className="subtle" onClick={() => setShowPsdManagerModal(false)}>
+                Fechar
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showExportModal && (
+        <div className="modal-backdrop" onClick={() => !exporting && setShowExportModal(false)}>
+          <section
+            className="panel modal"
+            style={{ maxWidth: 660, width: '92vw' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="library-heading" style={{ marginBottom: 12 }}>
+              <div>
+                <h3>📦 Exportar Cartazes da Pasta de Ofertas</h3>
+                <p style={{ margin: 0, fontSize: 13, color: '#475569' }}>
+                  Campanha: {activeCampaign?.name} ({activeCampaign?.campaignDate})
+                </p>
+              </div>
+            </div>
+
+            <fieldset style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '12px 16px', margin: '12px 0' }}>
+              <legend style={{ fontWeight: 'bold', fontSize: 13, padding: '0 6px' }}>Formatos Desejados</legend>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={exportFormatPsd}
+                    onChange={e => setExportFormatPsd(e.target.checked)}
+                  />
+                  <div>
+                    <strong>Arquivos Photoshop (.PSD)</strong>
+                    <div style={{ fontSize: 12, color: '#64748b' }}>
+                      Artes editáveis preservando camadas, com preço e validade da oferta atualizados.
+                    </div>
+                  </div>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={exportFormatSk}
+                    onChange={e => setExportFormatSk(e.target.checked)}
+                  />
+                  <div>
+                    <strong>Projeto Skalee (.skcartaz)</strong>
+                    <div style={{ fontSize: 12, color: '#64748b' }}>
+                      Arquivo pronto para abrir, editar e imprimir diretamente no Skalee Cartaz.
+                    </div>
+                  </div>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset style={{ border: '1px solid #cbd5e1', borderRadius: 6, padding: '12px 16px', margin: '12px 0' }}>
+              <legend style={{ fontWeight: 'bold', fontSize: 13, padding: '0 6px' }}>Escopo da Exportação</legend>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    checked={!exportOnlySelected}
+                    onChange={() => setExportOnlySelected(false)}
+                  />
+                  <span>Todos os cartazes com arte vinculada da campanha</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    checked={exportOnlySelected}
+                    onChange={() => setExportOnlySelected(true)}
+                  />
+                  <span>Apenas os cartazes marcados na tabela (checkbox)</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <div style={{ margin: '12px 0' }}>
+              <label style={{ fontWeight: 'bold', fontSize: 13, display: 'block', marginBottom: 6 }}>
+                Pasta de Destino:
+              </label>
+              <div className="toolbar" style={{ marginTop: 0 }}>
+                <input
+                  readOnly
+                  placeholder="Selecione a pasta no computador..."
+                  value={exportFolder || ''}
+                  style={{ flex: 1, background: '#f8fafc' }}
+                />
+                <button onClick={() => run(handleChooseExportFolder)}>
+                  📁 Escolher Pasta
+                </button>
+              </div>
+              {exportFolder && activeCampaign && (
+                <small style={{ color: '#475569', display: 'block', marginTop: 4 }}>
+                  Será organizada na subpasta: <code>{activeCampaign.name}_{activeCampaign.campaignDate}</code>
+                </small>
+              )}
+            </div>
+
+            {exportProgress && (
+              <div style={{ margin: '14px 0', padding: 12, background: '#f1f5f9', borderRadius: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+                  <span>{exportProgress.message}</span>
+                  <span><strong>{exportProgress.current} / {exportProgress.total}</strong></span>
+                </div>
+                <div style={{ height: 8, background: '#cbd5e1', borderRadius: 4, overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      height: '100%',
+                      background: '#0284c7',
+                      width: `${exportProgress.total > 0 ? (exportProgress.current / exportProgress.total) * 100 : 0}%`,
+                      transition: 'width 0.2s',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {exportResult && (
+              <div className="import-warning" style={{ margin: '14px 0', padding: 12 }}>
+                <strong>Exportação Concluída!</strong>
+                <ul style={{ margin: '6px 0 0 16px', padding: 0, fontSize: 13 }}>
+                  {exportResult.psdCount > 0 && <li><strong>{exportResult.psdCount}</strong> arquivos .PSD gerados.</li>}
+                  {exportResult.skCount > 0 && <li><strong>{exportResult.skCount}</strong> arquivos .skcartaz gerados.</li>}
+                </ul>
+                {exportResult.errors.length > 0 && (
+                  <div style={{ marginTop: 8, color: '#b91c1c' }}>
+                    <small>Avisos / Detalhes:</small>
+                    <ul style={{ margin: '4px 0 0 16px', fontSize: 11 }}>
+                      {exportResult.errors.map(err => <li key={err}>{err}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="toolbar" style={{ marginTop: 18, justifyContent: 'flex-end' }}>
+              <button
+                disabled={exporting || !exportFolder || (!exportFormatPsd && !exportFormatSk)}
+                onClick={() => run(handleRunBatchExport)}
+              >
+                {exporting ? 'Exportando…' : 'Iniciar Exportação em Lote'}
+              </button>
+              <button
+                className="subtle"
+                disabled={exporting}
+                onClick={() => setShowExportModal(false)}
+              >
+                Fechar
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </section>
   );

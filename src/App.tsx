@@ -96,12 +96,20 @@ export default function App() {
   const [customWInput, setCustomWInput] = useState('148');
   const [customHInput, setCustomHInput] = useState('210');
   const [customOrientInput, setCustomOrientInput] = useState<Orientation>('portrait');
+  const [printerSheetA4, setPrinterSheetA4] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('skalee_printer_sheet_a4');
+      if (saved !== null) return saved === 'true';
+    }
+    return true; // Padrão: folha física A4 com arte centralizada no topo
+  });
 
   const activeFormat: PosterFormatConfig = {
     paper: editor.document.layout.paper || 'A5',
     orientation: editor.document.layout.orientation || 'portrait',
     customWidthMm: editor.document.layout.customWidthMm,
     customHeightMm: editor.document.layout.customHeightMm,
+    printerSheetA4,
   };
 
   const handleSelectFormat = (paper: PaperSize, orientation: Orientation = 'portrait', customW?: number, customH?: number) => {
@@ -277,6 +285,22 @@ export default function App() {
           >
             <span className="sk-status-dot" style={{ background: '#2563eb' }} />
             <span>Formato: <strong>{getFormatLabel(activeFormat)}</strong></span>
+            {printerSheetA4 && (activeFormat.paper === 'A5' || activeFormat.paper === 'A6') && (
+              <span
+                style={{
+                  fontSize: 10,
+                  background: '#dbeafe',
+                  color: '#1e40af',
+                  padding: '1px 6px',
+                  borderRadius: 4,
+                  fontWeight: 700,
+                  marginLeft: 4,
+                }}
+                title="Folha física da impressora travada em A4 com arte centralizada no topo"
+              >
+                Folha A4 Topo
+              </span>
+            )}
             <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>▼</span>
           </button>
 
@@ -357,6 +381,43 @@ export default function App() {
                   <span className="sk-format-badge active">Ativo</span>
                 )}
               </button>
+
+              <div className="sk-format-dropdown-heading" style={{ marginTop: 8 }}>Segurança da Impressora</div>
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  padding: '8px 10px',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  background: printerSheetA4 ? '#eff6ff' : '#f8fafc',
+                  borderRadius: 8,
+                  border: printerSheetA4 ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
+                  margin: '4px 6px',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={printerSheetA4}
+                  onChange={e => {
+                    const val = e.target.checked;
+                    setPrinterSheetA4(val);
+                    if (typeof window !== 'undefined') {
+                      localStorage.setItem('skalee_printer_sheet_a4', String(val));
+                    }
+                  }}
+                  style={{ accentColor: '#2563eb', width: 16, height: 16, marginTop: 2 }}
+                />
+                <div style={{ flex: 1 }}>
+                  <strong style={{ display: 'block', color: '#1e293b', fontSize: 12 }}>
+                    Folha física sempre A4 (Topo Central)
+                  </strong>
+                  <span style={{ fontSize: 10.5, color: '#64748b', lineHeight: 1.3, display: 'block' }}>
+                    Trava a saída física em A4. Cartazes A5 e A6 saem no topo central sem desconfigurar a impressora.
+                  </span>
+                </div>
+              </label>
 
               <div className="sk-format-dropdown-heading" style={{ marginTop: 6 }}>Opção Adicional</div>
 
@@ -1036,6 +1097,18 @@ export default function App() {
     {/* Modal de Histórico de Impressão */}
     <PrintHistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} />
 
-    <div className="print-only">{batchPrintPosters && batchPrintPosters.length > 0 ? batchPrintPosters.map((p, i) => <div className="print-page" key={i}><PosterView poster={p} isPrint={true} onRendered={handlePosterRendered}/></div>) : <PosterView poster={poster} isPrint={true}/>}</div>
+    <div className="print-only">
+      {batchPrintPosters && batchPrintPosters.length > 0 ? (
+        batchPrintPosters.map((p, i) => (
+          <div className="print-page" key={i}>
+            <PosterView poster={p} isPrint={true} onRendered={handlePosterRendered} />
+          </div>
+        ))
+      ) : (
+        <div className="print-page">
+          <PosterView poster={poster} isPrint={true} />
+        </div>
+      )}
+    </div>
   </div>;
 }

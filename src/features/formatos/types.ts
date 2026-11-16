@@ -6,11 +6,13 @@ export interface PosterFormatConfig {
   orientation: Orientation;
   customWidthMm?: number;
   customHeightMm?: number;
+  printerSheetA4?: boolean;
 }
 
 export const DEFAULT_FORMAT_CONFIG: PosterFormatConfig = {
   paper: 'A5',
   orientation: 'portrait',
+  printerSheetA4: true,
 };
 
 export const STANDARD_PAPER_DIMENSIONS_MM: Record<'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2', { width: number; height: number }> = {

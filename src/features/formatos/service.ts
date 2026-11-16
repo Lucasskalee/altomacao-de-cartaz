@@ -101,21 +101,40 @@ export function checkPosterResolution(
 /**
  * Injeta ou atualiza a tag de estilo de impressão dinâmica no documento
  * para garantir que o driver de impressão use o tamanho exato da página em mm.
+ *
+ * Quando printerSheetA4 estiver ativo (padrão de proteção da impressora):
+ * Para formatos que cabem em A4 (A5, A6, A4), a página física enviada ao driver
+ * é sempre A4 (210 × 297 mm), com a arte centralizada horizontalmente no topo (0 mm).
  */
 export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FORMAT_CONFIG): void {
   if (typeof document === 'undefined') return;
 
-  // Para o Expositor A3 2x2, cada folha impressa física é A3 Vertical (297 × 420 mm)
-  let printWidth: number;
-  let printHeight: number;
+  const dims = getFormatDimensionsMm(config);
+  const artWidth = dims.width;
+  const artHeight = dims.height;
+
+  const useSheetA4 =
+    config.printerSheetA4 !== false &&
+    config.paper !== 'expositor-a3-2x2' &&
+    config.paper !== 'A3' &&
+    artWidth <= 210 &&
+    artHeight <= 297;
+
+  let sheetWidth: number;
+  let sheetHeight: number;
+
   if (config.paper === 'expositor-a3-2x2') {
-    printWidth = 297;
-    printHeight = 420;
+    sheetWidth = 297;
+    sheetHeight = 420;
+  } else if (useSheetA4) {
+    sheetWidth = 210;
+    sheetHeight = 297;
   } else {
-    const dims = getFormatDimensionsMm(config);
-    printWidth = dims.width;
-    printHeight = dims.height;
+    sheetWidth = artWidth;
+    sheetHeight = artHeight;
   }
+
+  const scale = artWidth / 148;
 
   const styleId = 'sk-dynamic-print-page-style';
 
@@ -128,20 +147,78 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
 
   styleEl.textContent = `
     @page {
-      size: ${printWidth}mm ${printHeight}mm;
+      size: ${sheetWidth}mm ${sheetHeight}mm;
       margin: 0;
     }
     @media print {
       html, body, #root, .app {
-        width: ${printWidth}mm !important;
-        height: ${printHeight}mm !important;
+        width: ${sheetWidth}mm !important;
+        height: ${sheetHeight}mm !important;
         margin: 0 !important;
         padding: 0 !important;
+        background: #fff !important;
       }
-      .print-only .poster,
+      header, main, .sk-header, .sk-navigation, .notifications, .workspace, .modal-backdrop {
+        display: none !important;
+      }
+      .print-only {
+        display: block !important;
+        position: absolute !important;
+        inset: 0 !important;
+        width: ${sheetWidth}mm !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: #fff !important;
+      }
       .print-page {
-        width: ${printWidth}mm !important;
-        height: ${printHeight}mm !important;
+        width: ${sheetWidth}mm !important;
+        height: ${sheetHeight}mm !important;
+        page-break-after: always !important;
+        break-after: page !important;
+        position: relative !important;
+        overflow: hidden !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        box-sizing: border-box !important;
+      }
+      .print-page:last-child {
+        page-break-after: auto !important;
+        break-after: auto !important;
+      }
+      .print-only .poster {
+        width: ${artWidth}mm !important;
+        height: ${artHeight}mm !important;
+        margin: 0 auto !important;
+        box-shadow: none !important;
+        print-color-adjust: exact !important;
+        -webkit-print-color-adjust: exact !important;
+        flex-shrink: 0 !important;
+      }
+      .print-only .poster-name {
+        font-size: ${(18 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .poster-rule {
+        height: ${(1.3 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .poster-detail {
+        font-size: ${(12.7 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .price-whole {
+        font-size: ${(76.7 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .price-fraction {
+        font-size: ${(38 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .price-unit {
+        font-size: ${(11.7 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .fraction-rule {
+        height: ${(1.7 * scale).toFixed(2)}mm !important;
       }
     }
   `;

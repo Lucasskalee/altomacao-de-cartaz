@@ -127,6 +127,34 @@ test('Formatos: injeção de estilo de impressão do Expositor A3 2×2 usa taman
   }
 });
 
+test('Formatos: modo printerSheetA4 envia folha física A4 (210×297mm) com cartaz A5 e A6 centralizado no topo', () => {
+  if (typeof document !== 'undefined' && typeof document.getElementById === 'function') {
+    // 1. A5 com printerSheetA4: página física é 210mm 297mm (A4) e cartaz é 148mm 210mm centralizado
+    applyDynamicPrintStyles({ paper: 'A5', orientation: 'portrait', printerSheetA4: true });
+    let tag = document.getElementById('sk-dynamic-print-page-style');
+    assert.ok(tag);
+    assert.ok(tag.textContent?.includes('size: 210mm 297mm;'), 'Página física do driver deve ser A4 (210x297mm)');
+    assert.ok(tag.textContent?.includes('width: 148mm !important;'), 'Dimensão do cartaz A5 preservada na arte');
+    assert.ok(tag.textContent?.includes('align-items: center !important;'), 'Arte centralizada horizontalmente');
+    assert.ok(tag.textContent?.includes('justify-content: flex-start !important;'), 'Arte posicionada no topo');
+
+    // 2. A6 com printerSheetA4: página física é 210mm 297mm (A4) e cartaz é 105mm 148mm
+    applyDynamicPrintStyles({ paper: 'A6', orientation: 'portrait', printerSheetA4: true });
+    tag = document.getElementById('sk-dynamic-print-page-style');
+    assert.ok(tag);
+    assert.ok(tag.textContent?.includes('size: 210mm 297mm;'));
+    assert.ok(tag.textContent?.includes('width: 105mm !important;'));
+
+    // 3. Sem printerSheetA4 (falso): envia tamanho nativo A5 (148x210mm)
+    applyDynamicPrintStyles({ paper: 'A5', orientation: 'portrait', printerSheetA4: false });
+    tag = document.getElementById('sk-dynamic-print-page-style');
+    assert.ok(tag);
+    assert.ok(tag.textContent?.includes('size: 148mm 210mm;'));
+
+    removeDynamicPrintStyles();
+  }
+});
+
 test('Transparência PSD: prévia e miniaturas compõem sobre branco (#FFFFFF) sem alterar arquivo original', async () => {
   const { createOptimizedThumbnail } = require('../src/features/condutor/cache');
 
