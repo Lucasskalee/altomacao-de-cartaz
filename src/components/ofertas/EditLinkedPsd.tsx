@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Cartaz, ImportedTextRole } from '../../features/cartazes/types';
 import { posterFromDocument } from '../../features/cartazes/presentation';
-import { prepareLinkedArtwork, type EditablePsdTexts } from '../../features/psd/editLinkedArtwork';
+import { prepareLinkedArtwork, suggestLinkedArtworkMapping, type EditablePsdTexts } from '../../features/psd/editLinkedArtwork';
 import { analyzePsd, type PsdAnalysis, type PsdTemplateRoleMap } from '../../features/psd/importer';
 import { readPsdByPath, selectPsd } from '../../features/psd/service';
 import { PosterView } from '../editor/PosterView';
@@ -15,30 +15,11 @@ const textRoles: { role: ImportedTextRole; label: string; maxLength: number }[] 
 
 type Props = {
   document: Cartaz;
-  scheduledPriceCents: number;
   close: () => void;
   save: (document: Cartaz) => Promise<void>;
 };
 
-function defaultMapping(document: Cartaz, result: PsdAnalysis) {
-  if (document.layout.template !== 'imported-psd' || result.hash !== document.layout.artwork.source.sha256) {
-    throw new Error('O PSD vinculado a este cartaz foi alterado ou não corresponde ao documento.');
-  }
-  const roles: PsdTemplateRoleMap = {};
-  const texts: EditablePsdTexts = { category: '', title: '', complement: '', packaging: '' };
-  for (const part of document.layout.artwork.templateParts ?? []) {
-    if (part.role === 'category' || part.role === 'title' || part.role === 'complement' || part.role === 'packaging') {
-      roles[part.role] = part.layerId;
-      if (part.role === 'category') texts.category = typeof document.product.category === 'string' ? document.product.category : part.originalText ?? '';
-      if (part.role === 'title') texts.title = document.product.name;
-      if (part.role === 'complement') texts.complement = document.product.complement;
-      if (part.role === 'packaging') texts.packaging = document.product.unit;
-    }
-  }
-  return { roles, texts };
-}
-
-export function EditLinkedPsd({ document, scheduledPriceCents, close, save }: Props) {
+export function EditLinkedPsd({ document, close, save }: Props) {
   const [analysis, setAnalysis] = useState<PsdAnalysis | null>(null);
   const [roles, setRoles] = useState<PsdTemplateRoleMap>({});
   const [texts, setTexts] = useState<EditablePsdTexts>({ category: '', title: '', complement: '', packaging: '' });
@@ -47,7 +28,7 @@ export function EditLinkedPsd({ document, scheduledPriceCents, close, save }: Pr
   const [error, setError] = useState('');
 
   const loadPsd = (result: PsdAnalysis) => {
-    const mapping = defaultMapping(document, result);
+    const mapping = suggestLinkedArtworkMapping(document, result);
     setAnalysis(result);
     setRoles(mapping.roles);
     setTexts(mapping.texts);
@@ -133,9 +114,10 @@ export function EditLinkedPsd({ document, scheduledPriceCents, close, save }: Pr
       <section className="panel psd-import" role="dialog" aria-modal="true" aria-label="Revisar camadas do cartaz">
         <div className="psd-title">
           <div>
-            <h2>Revisar camadas do cartaz</h2>
+            <h2>Preparar textos do cartaz</h2>
             <p>
-              Revise as camadas e a prévia. Ao continuar, você voltará ao editor para ajustar o cartaz.
+              Confira as camadas sugeridas e a prévia; só textos em camadas editáveis podem ser preparados.
+              Ao continuar, você voltará ao editor para ajustar o cartaz.
               Use <strong>Salvar Como</strong> para criar uma cópia; o cartaz original não será alterado.
             </p>
           </div>
@@ -143,10 +125,15 @@ export function EditLinkedPsd({ document, scheduledPriceCents, close, save }: Pr
         </div>
         <p>PSD esperado: <strong>{originalArtwork?.source.fileName}</strong></p>
         <button type="button" disabled={busy} onClick={() => void select()}>
-          {busy ? 'Abrindo PSD vinculado…' : analysis ? 'Selecionar PSD manualmente' : 'Selecionar PSD manualmente'}
+          {busy ? 'Abrindo PSD vinculado…' : 'Selecionar PSD manualmente'}
         </button>
         {analysis && (
           <>
+            {!analysis.layers.some(layer => layer.visible && layer.type === 'text' && layer.text) && (
+              <p className="import-warning" role="alert">
+                Não foram encontradas camadas de texto visíveis neste PSD. Textos achatados em imagens não podem ser preparados para edição.
+              </p>
+            )}
             <div className="psd-fields">
               {textRoles.map(({ role, label, maxLength }) => (
                 <div key={role}>
@@ -188,11 +175,8 @@ export function EditLinkedPsd({ document, scheduledPriceCents, close, save }: Pr
                     <img className="psd-original" src={analysis.originalPreview} alt="Arte original do PSD" />
                   </div>
                   <div>
-                    <h3>Prévia com preço da oferta</h3>
-                    <PosterView poster={posterFromDocument({
-                      ...preview.document,
-                      product: { ...preview.document.product, priceCents: scheduledPriceCents },
-                    })} />
+                    <h3>Prévia do cartaz preparado</h3>
+                    <PosterView poster={posterFromDocument(preview.document)} />
                   </div>
                 </div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>

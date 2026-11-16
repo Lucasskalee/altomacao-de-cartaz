@@ -10,6 +10,7 @@ import { digitsOnly } from '../features/cartazes/f7';
 import { repairInvertedPsdArtwork } from '../components/editor/importedRenderer';
 import { readPsdByPath, selectPsd } from '../features/psd/service';
 import { analyzePsd, buildArtwork } from '../features/psd/importer';
+import { prepareLinkedArtworkAutomatically } from '../features/psd/editLinkedArtwork';
 import { exportDerivedPsdDirect } from '../features/scantech/directExport';
 export function useCartaz() {
   const [document, setDocument] = useState(createDocument);
@@ -105,13 +106,31 @@ export function useCartaz() {
       load(doc, null, true);
       return true;
     },
-    async open(p?: string) {
-      if (!await confirmDiscard()) return false;
+    async open(p?: string, prepareTexts = false) {
+      if (!await confirmDiscard()) return null;
       const selected = p ?? await storage.chooseOpen();
-      if (!selected) return false;
-      const d = await storage.openDocument(selected); load(d, selected); return true;
+      if (!selected) return null;
+      const original = await storage.openDocument(selected);
+      let document = original;
+      let preparationError = '';
+      let prepared = false;
+      if (prepareTexts && original.layout.template === 'imported-psd' &&
+          !original.layout.artwork.templateParts?.length) {
+        try {
+          const sourcePath = original.layout.artwork.source.sourcePath;
+          if (!sourcePath) throw new Error('O caminho do PSD original não está registrado.');
+          const source = await readPsdByPath(sourcePath);
+          const analysis = await analyzePsd(source.buffer, source.name, source.path);
+          document = prepareLinkedArtworkAutomatically(original, analysis);
+          prepared = true;
+        } catch (ex) {
+          preparationError = ex instanceof Error ? ex.message : String(ex);
+        }
+      }
+      load(document, selected, prepared);
+      return { prepared, preparationError };
     },
-    stageDocument(d: Cartaz, expectedPath: string) {
+    stageDocument(d: Cartaz, expectedPath: string | null) {
       if (path !== expectedPath) throw new Error('O cartaz aberto no editor mudou. Reabra-o pela pasta de ofertas antes de continuar.');
       load(d, expectedPath, true);
     },

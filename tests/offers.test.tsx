@@ -399,6 +399,75 @@ test('Pastas de Ofertas: oculta cópias idênticas de um cartaz em caminhos dife
   assert.equal(view.unlinkedLibraryPosters.length, 0);
 });
 
+test('Pastas de Ofertas: compara PSDs com textos não mapeados sem ocultar artes ou textos diferentes', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  const original = createDocument();
+  original.product = { name: 'ACUCAR MASCAVO', complement: 'SANTO ANTONIO', unit: '500G', priceCents: 1149, productCode: '11167' };
+  const bounds = { left: 0, top: 0, right: 10, bottom: 10 };
+  const pixel = 'data:image/png;base64,AA==';
+  const artwork: ImportedArtwork = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'original.psd', sha256: 'a'.repeat(64), sourcePath: 'C:\\original.psd' },
+    canvas: { width: 100, height: 100, resolutionPpi: 150, fit: 'contain' },
+    staticBackground: pixel,
+    originalPreview: pixel,
+    priceParts: [
+      { role: 'whole', layerId: '1', bounds, color: '#000000' },
+      { role: 'fraction', layerId: '2', bounds: { left: 20, top: 0, right: 30, bottom: 10 }, color: '#000000' },
+    ],
+    layers: [],
+    warnings: [],
+  };
+  original.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
+  const copy = structuredClone(original);
+  copy.id = crypto.randomUUID();
+  copy.product = {
+    name: 'ACUCAR MASCAVO STO ANTONIO 500G', complement: '', unit: 'UN',
+    priceCents: 1149, productCode: '11167', validityText: '',
+  };
+  if (copy.layout.template !== 'imported-psd') throw new Error('PSD esperado.');
+  copy.layout.artwork.source.sourcePath = 'C:\\outro\\original.psd';
+  const paths = ['C:\\Cartazes\\original.skcartaz', 'C:\\Cartazes\\copia.skcartaz'];
+  campaign.items.push({
+    id: 'item-acucar', rowNumber: 1, f7: '11167', description: 'ACUCAR MASCAVO',
+    scheduledPriceCents: 1099, conflicting: false, issues: [],
+    posters: [original, copy].map((document, index) => ({
+      cartazId: document.id, cartazPath: paths[index], selected: true, copies: 1, status: 'preparado',
+    })),
+  });
+  const viewFor = (first: typeof original, second: typeof copy) => buildCampaignMatchViews(
+    campaign,
+    indexCartazes([first, second].map((document, index) => ({
+      name: `${index}.skcartaz`, path: paths[index], folder: false, content: serialize(document),
+    })))
+  )[0];
+
+  assert.equal(viewFor(original, copy).matchedPosters.length, 1);
+  const otherArtwork = structuredClone(copy);
+  if (otherArtwork.layout.template !== 'imported-psd') throw new Error('PSD esperado.');
+  otherArtwork.layout.artwork.staticBackground = 'data:image/png;base64,AQ==';
+  assert.equal(viewFor(original, otherArtwork).matchedPosters.length, 2);
+
+  const mappedOriginal = structuredClone(original);
+  const mappedCopy = structuredClone(copy);
+  if (mappedOriginal.layout.template !== 'imported-psd' || mappedCopy.layout.template !== 'imported-psd') throw new Error('PSD esperado.');
+  const titlePart = { role: 'title' as const, layerId: '3', bounds, color: '#000000' };
+  mappedOriginal.layout.artwork.templateParts = [titlePart];
+  mappedCopy.layout.artwork.templateParts = [titlePart];
+  assert.equal(viewFor(mappedOriginal, mappedCopy).matchedPosters.length, 2);
+
+  const validityOriginal = structuredClone(original);
+  const validityCopy = structuredClone(copy);
+  if (validityOriginal.layout.template !== 'imported-psd' || validityCopy.layout.template !== 'imported-psd') throw new Error('PSD esperado.');
+  const validityPart = { role: 'validity' as const, layerId: '4', bounds, color: '#000000', originalText: 'ATÉ AMANHÃ' };
+  validityOriginal.layout.artwork.priceParts.push(validityPart);
+  validityCopy.layout.artwork.priceParts.push(validityPart);
+  assert.equal(viewFor(validityOriginal, validityCopy).matchedPosters.length, 1);
+  validityCopy.product.validityText = 'ATÉ HOJE';
+  assert.equal(viewFor(validityOriginal, validityCopy).matchedPosters.length, 2);
+});
+
 test('Pastas de Ofertas: mostra cartaz exato da biblioteca ainda não vinculado à oferta', () => {
   const campaign = createCampaign('Ofertas da semana', '2026-11-17');
   const document = createDocument();

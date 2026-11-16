@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { PosterView, type Poster } from './components/editor/PosterView';
 import { exportPng } from './components/editor/exportPng';
 import { Library } from './components/library/Library';
@@ -27,6 +27,10 @@ import {
 import { addPrintHistoryEntries, updatePrintHistoryStatus } from './features/history/service';
 import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
+
+const EditLinkedPsd = lazy(() =>
+  import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
+);
 
 function getDemoLibrary(): LibraryData {
   const root = 'C:\\Skalee\\Cartazes';
@@ -87,6 +91,7 @@ export default function App() {
   const formatMenuRef = useRef<HTMLDivElement>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showCustomModal, setShowCustomModal] = useState(false);
+  const [linkedArtworkEdit, setLinkedArtworkEdit] = useState<{ path: string | null; document: Cartaz } | null>(null);
   const [confirmationModal, setConfirmationModal] = useState<{
     entryIds: string[];
     productName: string;
@@ -262,6 +267,18 @@ export default function App() {
   };
   const newDocument = async () => { if (await editor.newDocument()) setSection('editor'); };
   const open = async (path?: string) => { if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); } };
+  const openOfferPoster = async (path: string) => {
+    const result = await editor.open(path, true);
+    if (!result) return;
+    setSection('editor');
+    if (result.preparationError) {
+      setError(`Cartaz aberto, mas não foi possível preparar os textos automaticamente: ${result.preparationError} Use "Preparar textos do PSD para edição" para revisar ou selecionar o PSD original.`);
+    } else if (result.prepared) {
+      setMessage('Textos preparados automaticamente. Confira os campos e a prévia; use Salvar Como para preservar o original.');
+    } else {
+      setMessage('Cartaz aberto.');
+    }
+  };
   const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
   const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
   return <div className="app">
@@ -606,7 +623,7 @@ export default function App() {
 
             {imported && !poster.artwork?.isReferenceTemplate && (
               <div className="import-warning" style={{ marginBottom: 14 }}>
-                Arte PSD legada: somente preço e F7 são dinâmicos.
+                Arte PSD legada: os textos ainda não estão preparados para edição.
               </div>
             )}
 
@@ -625,6 +642,17 @@ export default function App() {
               >
                 Modelo PSD ativo: somente os campos de texto mapeados são editáveis.
               </div>
+            )}
+
+            {imported && (
+              <button
+                type="button"
+                className="editor-btn subtle"
+                style={{ marginBottom: 14 }}
+                onClick={() => run(async () => setLinkedArtworkEdit({ path: editor.path, document: editor.current() }))}
+              >
+                Preparar textos do PSD para edição
+              </button>
             )}
 
             {/* SEÇÃO 1: Identificação do Produto */}
@@ -957,10 +985,24 @@ export default function App() {
       </div>
     ) : null}
     <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
-    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={open} onRefreshLibrary={refresh}/></div>
+    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={openOfferPoster} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
+
+    {linkedArtworkEdit && (
+      <Suspense fallback={<div className="modal-backdrop" role="status">Carregando ferramentas para editar o PSD…</div>}>
+        <EditLinkedPsd
+          document={linkedArtworkEdit.document}
+          close={() => setLinkedArtworkEdit(null)}
+          save={async document => {
+            editor.stageDocument(document, linkedArtworkEdit.path);
+            setLinkedArtworkEdit(null);
+            setMessage('Textos preparados. Edite os campos mapeados e use Salvar Como para preservar o original.');
+          }}
+        />
+      </Suspense>
+    )}
 
     {/* Modal de Formato Personalizado */}
     {showCustomModal && (

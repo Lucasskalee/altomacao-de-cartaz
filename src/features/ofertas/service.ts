@@ -30,13 +30,28 @@ function cartazContentKey(document: Cartaz): string {
   content.metadata.createdAt = '';
   content.metadata.updatedAt = '';
   if (content.layout.template === 'imported-psd') {
+    const artwork = content.layout.artwork;
+    const roles = new Set(artwork.templateParts?.map(part => part.role) ?? []);
+    if (!roles.has('title')) content.product.name = '';
+    if (!roles.has('complement')) content.product.complement = '';
+    if (!roles.has('packaging')) content.product.unit = '';
+    if (!roles.has('category')) delete content.product.category;
+    if (artwork.priceParts.some(part => part.role === 'validity')) {
+      content.product.validityText = posterFromDocument(document).validityText;
+    } else {
+      delete content.product.validityText;
+    }
     content.layout.artwork.source = {
-      ...content.layout.artwork.source,
+      ...artwork.source,
       fileName: '',
       sourcePath: null,
     };
   }
-  return JSON.stringify(content);
+  return JSON.stringify(content, (_key, value: unknown) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+      : value
+  );
 }
 
 function uniquePosterStates(posters: CampaignPosterState[]): CampaignPosterState[] {

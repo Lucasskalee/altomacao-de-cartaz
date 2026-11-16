@@ -21,14 +21,41 @@ import { Library } from '../src/components/library/Library';
 import type { Entry } from '../src/features/cartazes/types';
 import * as storage from '../src/features/cartazes/storage';
 import { drawImported, importedPriceWarning } from '../src/components/editor/importedRenderer';
-import { analyzePsd, buildArtwork, extractMetadata, extractPriceFromRoles } from '../src/features/psd/importer';
-import { prepareLinkedArtwork } from '../src/features/psd/editLinkedArtwork';
+import { analyzePsd, buildArtwork, extractMetadata, extractPriceFromRoles, type PsdAnalysis } from '../src/features/psd/importer';
+import { prepareLinkedArtwork, prepareLinkedArtworkAutomatically, suggestLinkedArtworkMapping } from '../src/features/psd/editLinkedArtwork';
 import { initializeCanvas } from 'ag-psd';
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { ImportedArtwork } from '../src/features/cartazes/types';
 
 const pixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+test('PSD legado: sugere textos reais e preserva os mapeamentos já editados', () => {
+  const document = createDocument();
+  document.product.name = 'DESCRICAO COMPLETA DO PRODUTO';
+  document.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork: importedArtwork() };
+  const analysis: PsdAnalysis = {
+    fileName: 'repolho.psd', hash: 'a'.repeat(64), width: 886, height: 1240, resolutionPpi: 150,
+    originalPreview: pixel,
+    layers: [
+      { id: '1', name: 'MARCA', type: 'text', visible: true, depth: 0, text: 'MARCA ORIGINAL', font: 'Brush Hand New', bounds: { left: 100, top: 300, right: 600, bottom: 400 } },
+      { id: '6', name: '2', type: 'text', visible: true, depth: 0, text: '2', font: 'Zullia', bounds: { left: 121, top: 606, right: 422, bottom: 1036 } },
+    ],
+    suggested: {}, metadata: { name: '', complement: '', unit: '', price: '', validityText: '' },
+    warnings: [], psd: { width: 886, height: 1240 }, runtime: new Map(),
+  };
+  const suggested = suggestLinkedArtworkMapping(document, analysis);
+  assert.equal(suggested.roles.title, '1');
+  assert.equal(suggested.texts.title, 'MARCA ORIGINAL');
+  assert.notEqual(suggested.texts.title, document.product.name);
+  if (document.layout.template !== 'imported-psd') throw new Error('PSD esperado.');
+  document.layout.artwork.templateParts = [{ role: 'title', layerId: '1', bounds: analysis.layers[0].bounds, color: '#000000' }];
+  document.product.name = 'MARCA EDITADA';
+  assert.equal(suggestLinkedArtworkMapping(document, analysis).texts.title, 'MARCA EDITADA');
+  assert.throws(() => suggestLinkedArtworkMapping(document, { ...analysis, hash: 'b'.repeat(64) }), /não corresponde/);
+  document.layout.artwork.templateParts = [];
+  assert.throws(() => prepareLinkedArtworkAutomatically(document, { ...analysis, layers: [] }), /camada de nome ou marca/);
+});
 
 test('PSD vinculado: prepara camada de sabor sem alterar o arquivo, F7 ou preço', {
   skip: !process.env.SKALEE_TEST_PSD,
