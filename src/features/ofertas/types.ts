@@ -1,5 +1,6 @@
 import type { Cartaz } from '../cartazes/types';
 import type { IndexedCartaz } from '../cartazes/f7';
+import type { ScannedPsdEntry } from '../scantech/types';
 import type { ColumnMapping } from './excel';
 
 export type PrintStatus = 'pendente' | 'preparado' | 'impresso';
@@ -65,3 +66,65 @@ export type PsdImportOfferContext = {
   description: string;
   futurePriceCents: number;
 };
+
+export type PsdSuggestionReason = 'f7-exact' | 'description-similar' | 'no-suggestion';
+
+export type PsdCandidateMatch = {
+  psd: ScannedPsdEntry;
+  reason: 'f7-exact' | 'description-similar';
+  score: number;
+  matchedTerms: string[];
+};
+
+export type CampaignItemPsdSuggestion = {
+  item: CampaignItem;
+  reason: PsdSuggestionReason;
+  reasonLabel: string;
+  candidates: PsdCandidateMatch[];
+  recommendedPsd: ScannedPsdEntry | null;
+  ambiguous: boolean;
+  ambiguityReason: string | null;
+  autoSelectForBatch: boolean;
+  alreadyLinked: boolean;
+};
+
+export type PsdPairingSelection = {
+  psdPath: string;
+  includedInBatch: boolean;
+  reviewedByUser: boolean;
+};
+
+export type PsdBatchConfirmationItem = {
+  item: CampaignItem;
+  psd: ScannedPsdEntry;
+  reason: PsdSuggestionReason;
+  reasonLabel: string;
+  reviewedByUser: boolean;
+};
+
+export type PsdBatchConfirmationSummary = {
+  toLink: PsdBatchConfirmationItem[];
+  exactF7Count: number;
+  reviewedManualOrDescriptionCount: number;
+  skippedAmbiguousOrUnreviewedCount: number;
+  skippedNoSuggestionCount: number;
+  alreadyLinkedCount: number;
+};
+
+export type PsdBatchLinkError = {
+  itemId: string;
+  f7: string;
+  description: string;
+  psdName: string;
+  psdPath: string;
+  error: string;
+};
+
+export type PsdBatchLinkResult = {
+  campaign: OfferCampaign;
+  linkedCount: number;
+  errors: PsdBatchLinkError[];
+  success: boolean;
+  message: string;
+};
+

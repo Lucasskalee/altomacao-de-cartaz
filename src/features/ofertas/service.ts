@@ -1,12 +1,26 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { findCartazesByF7, type IndexedCartaz } from '../cartazes/f7';
-import type { Cartaz } from '../cartazes/types';
+import type { Cartaz, PaperFormat } from '../cartazes/types';
 import { formatCentsBr, posterFromDocument } from '../cartazes/presentation';
 import { priceToCents } from '../cartazes/validation';
 import { sanitizePrice, type Poster } from '../../components/editor/PosterView';
 import { hasInvertedPsdPriceParts, importedPriceWarning } from '../../components/editor/importedRenderer';
+import type { ScannedPsdEntry } from '../scantech/types';
 import type { ColumnMapping, ExcelExtractionResult } from './excel';
-import type { CampaignItem, CampaignMatchView, CampaignPosterState, OfferCampaign, PrintStatus } from './types';
+import type {
+  CampaignItem,
+  CampaignItemPsdSuggestion,
+  CampaignMatchView,
+  CampaignPosterState,
+  OfferCampaign,
+  PrintStatus,
+  PsdBatchConfirmationItem,
+  PsdBatchConfirmationSummary,
+  PsdBatchLinkError,
+  PsdBatchLinkResult,
+  PsdCandidateMatch,
+  PsdPairingSelection,
+} from './types';
 
 const normalizedPath = (path: string) => path.replace(/\//g, '\\').toLocaleLowerCase('en-US');
 
@@ -438,3 +452,510 @@ export async function deleteCampaign(id: string): Promise<boolean> {
   if (!isTauri()) throw new Error('Abra o aplicativo desktop para excluir a pasta de ofertas.');
   return invoke<boolean>('offer_campaigns', { request: { action: 'delete', id } });
 }
+
+const PSD_COMMON_STOPWORDS = new Set([
+  'de',
+  'da',
+  'do',
+  'das',
+  'dos',
+  'com',
+  'sem',
+  'para',
+  'por',
+  'em',
+  'no',
+  'na',
+  'nos',
+  'nas',
+  'ao',
+  'aos',
+  'um',
+  'uma',
+  'uns',
+  'umas',
+  'e',
+  'ou',
+  'un',
+  'und',
+  'unid',
+  'unidade',
+  'kg',
+  'quilo',
+  'g',
+  'gr',
+  'gramas',
+  'mg',
+  'lt',
+  'l',
+  'litro',
+  'litros',
+  'ml',
+  'pct',
+  'pacote',
+  'cx',
+  'caixa',
+  'sc',
+  'saco',
+  'fd',
+  'fardo',
+  'bdj',
+  'bandeja',
+  'dz',
+  'duzia',
+  'maco',
+  'flv',
+  'mer',
+  'beb',
+  'limp',
+  'pad',
+  'horti',
+  'oferta',
+  'ofertas',
+  'promocao',
+  'cartaz',
+  'arte',
+  'psd',
+  'a3',
+  'a4',
+  'a5',
+  'a6',
+  'tipo',
+]);
+
+export function normalizePsdComparisonText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\.psd$/i, '')
+    .replace(/^[a-z]{2,5}\.\s*/, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+export function extractMeaningfulDescriptionTokens(text: string): string[] {
+  const norm = normalizePsdComparisonText(text);
+  if (!norm) return [];
+  const rawTokens = norm.split(/\s+/).filter(Boolean);
+  const result: string[] = [];
+  for (const token of rawTokens) {
+    if (token.length < 2) continue;
+    if (PSD_COMMON_STOPWORDS.has(token)) continue;
+    if (/^\d+$/.test(token)) continue;
+    if (/^\d+(?:[.,]\d+)?(?:kg|g|gr|mg|ml|l|lt|un|und|pct|cx)$/i.test(token)) continue;
+    if (!result.includes(token)) {
+      result.push(token);
+    }
+  }
+  return result;
+}
+
+function extractMeasureTokens(text: string): string[] {
+  const norm = normalizePsdComparisonText(text);
+  if (!norm) return [];
+  return norm
+    .split(/\s+/)
+    .filter(token => /^\d+(?:kg|g|gr|mg|ml|l|lt)$/i.test(token));
+}
+
+export function matchesExactF7InFilename(f7: string, psdFileName: string): boolean {
+  const cleanF7 = f7.trim();
+  if (!cleanF7 || !/^\d+$/.test(cleanF7)) return false;
+  const withoutExt = psdFileName
+    .replace(/\.psd$/i, '')
+    .replace(/\bf7[-_\s]*(?=\d)/gi, ' ')
+    .replace(/\ba[3456]\b/gi, ' ');
+  const tokens: string[] = [];
+  const regex = /(?:^|[^a-z0-9])(\d+)(?!\s*(?:kg|g|gr|mg|ml|l|lt)\b)(?=$|[^a-z0-9])/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(withoutExt)) !== null) {
+    tokens.push(match[1]);
+  }
+  return tokens.includes(cleanF7);
+}
+
+export function buildCampaignPsdSuggestions(
+  campaign: OfferCampaign,
+  scannedPsds: ScannedPsdEntry[]
+): CampaignItemPsdSuggestion[] {
+  const allCampaignF7s = new Set(campaign.items.map(i => i.f7.trim()).filter(Boolean));
+
+  const preliminary = campaign.items.map(item => {
+    const alreadyLinked = item.posters.length > 0;
+    const cleanF7 = item.f7.trim();
+
+    // 1. Prioriza correspondência exata de F7 encontrado no nome do arquivo
+    const exactF7Psds = cleanF7
+      ? scannedPsds.filter(psd => matchesExactF7InFilename(cleanF7, psd.name))
+      : [];
+
+    if (exactF7Psds.length > 0) {
+      const candidates: PsdCandidateMatch[] = exactF7Psds.map(psd => ({
+        psd,
+        reason: 'f7-exact',
+        score: 1.0,
+        matchedTerms: [cleanF7],
+      }));
+      return {
+        item,
+        reason: 'f7-exact' as const,
+        candidates,
+        alreadyLinked,
+      };
+    }
+
+    // 2. Se não houver F7, sugere por similaridade entre descrição do Excel e nome do arquivo
+    const descTokens = extractMeaningfulDescriptionTokens(item.description);
+    const descMeasures = extractMeasureTokens(item.description);
+    const descCandidates: PsdCandidateMatch[] = [];
+
+    if (descTokens.length > 0) {
+      for (const psd of scannedPsds) {
+        // Se o PSD contém explicitamente o F7 exato de outro produto da campanha, não o sugere por descrição
+        const hasOtherCampaignF7 = [...allCampaignF7s].some(
+          otherF7 => otherF7 !== cleanF7 && matchesExactF7InFilename(otherF7, psd.name)
+        );
+        if (hasOtherCampaignF7) continue;
+
+        const psdTokens = extractMeaningfulDescriptionTokens(psd.name);
+        if (psdTokens.length === 0) continue;
+        const psdMeasures = extractMeasureTokens(psd.name);
+
+        // Se o produto especifica medida (ex: 5kg) e o PSD especifica medida diferente da mesma grandeza (ex: 1kg), penaliza/evita
+        const matchedCore = descTokens.filter(dt =>
+          psdTokens.some(
+            pt => pt === dt || (dt.length >= 4 && pt.startsWith(dt)) || (pt.length >= 4 && dt.startsWith(pt))
+          )
+        );
+        if (matchedCore.length === 0) continue;
+
+        const matchedMeasures = descMeasures.filter(dm => psdMeasures.includes(dm));
+        const descCoverage = matchedCore.length / descTokens.length;
+        const psdPrecision = matchedCore.length / psdTokens.length;
+
+        const qualifies =
+          descTokens.length === 1
+            ? matchedCore.length === 1
+            : (matchedCore.length >= 2 && descCoverage >= 0.4) ||
+              (matchedCore.length >= 1 && descCoverage >= 0.5 && psdPrecision >= 0.5);
+
+        if (qualifies) {
+          const score =
+            descCoverage * 0.8 +
+            psdPrecision * 0.15 +
+            (matchedMeasures.length > 0 ? 0.05 : 0);
+          descCandidates.push({
+            psd,
+            reason: 'description-similar',
+            score: Math.min(0.99, Number(score.toFixed(4))),
+            matchedTerms: [...matchedCore, ...matchedMeasures],
+          });
+        }
+      }
+    }
+
+    descCandidates.sort((a, b) => b.score - a.score || a.psd.name.localeCompare(b.psd.name, 'pt-BR'));
+
+    if (descCandidates.length > 0) {
+      return {
+        item,
+        reason: 'description-similar' as const,
+        candidates: descCandidates,
+        alreadyLinked,
+      };
+    }
+
+    return {
+      item,
+      reason: 'no-suggestion' as const,
+      candidates: [] as PsdCandidateMatch[],
+      alreadyLinked,
+    };
+  });
+
+  // Detecta se um mesmo PSD é o candidato único/principal de múltiplos produtos diferentes na campanha
+  const topPsdCount = new Map<string, number>();
+  for (const entry of preliminary) {
+    if (entry.candidates.length > 0) {
+      const topPath = normalizedPath(entry.candidates[0].psd.path);
+      topPsdCount.set(topPath, (topPsdCount.get(topPath) ?? 0) + 1);
+    }
+  }
+
+  return preliminary.map(entry => {
+    const { item, reason, candidates, alreadyLinked } = entry;
+    let ambiguous = false;
+    let ambiguityReason: string | null = null;
+
+    if (candidates.length > 1) {
+      ambiguous = true;
+      ambiguityReason =
+        reason === 'f7-exact'
+          ? `Mais de um arquivo PSD (${candidates.length}) encontrado para o F7 ${item.f7}. Escolha manualmente.`
+          : `Múltiplos arquivos PSD candidatos (${candidates.length}) por descrição parecida. Escolha manualmente.`;
+    } else if (candidates.length === 1) {
+      const topPath = normalizedPath(candidates[0].psd.path);
+      if ((topPsdCount.get(topPath) ?? 0) > 1) {
+        ambiguous = true;
+        ambiguityReason = `O arquivo "${candidates[0].psd.name}" é sugerido para mais de um produto da campanha. Revise manualmente.`;
+      }
+    }
+
+    const reasonLabel =
+      reason === 'f7-exact'
+        ? 'F7 exato'
+        : reason === 'description-similar'
+          ? 'Descrição parecida'
+          : 'Sem sugestão';
+
+    const recommendedPsd = !ambiguous && candidates.length === 1 ? candidates[0].psd : null;
+    const autoSelectForBatch =
+      reason === 'f7-exact' && !ambiguous && candidates.length === 1 && !alreadyLinked;
+
+    return {
+      item,
+      reason,
+      reasonLabel,
+      candidates,
+      recommendedPsd,
+      ambiguous,
+      ambiguityReason,
+      autoSelectForBatch,
+      alreadyLinked,
+    };
+  });
+}
+
+export function getDefaultSelectionForSuggestion(
+  suggestion: CampaignItemPsdSuggestion
+): PsdPairingSelection {
+  if (suggestion.alreadyLinked) {
+    return {
+      psdPath: '',
+      includedInBatch: false,
+      reviewedByUser: false,
+    };
+  }
+  if (suggestion.reason === 'f7-exact' && !suggestion.ambiguous && suggestion.recommendedPsd) {
+    return {
+      psdPath: suggestion.recommendedPsd.path,
+      includedInBatch: true,
+      reviewedByUser: false,
+    };
+  }
+  if (suggestion.reason === 'description-similar' && !suggestion.ambiguous && suggestion.recommendedPsd) {
+    return {
+      psdPath: suggestion.recommendedPsd.path,
+      includedInBatch: false,
+      reviewedByUser: false,
+    };
+  }
+  return {
+    psdPath: '',
+    includedInBatch: false,
+    reviewedByUser: false,
+  };
+}
+
+export function buildInitialPsdPairingSelections(
+  suggestions: CampaignItemPsdSuggestion[]
+): Record<string, PsdPairingSelection> {
+  const result: Record<string, PsdPairingSelection> = {};
+  for (const s of suggestions) {
+    result[s.item.id] = getDefaultSelectionForSuggestion(s);
+  }
+  return result;
+}
+
+export function buildPsdBatchConfirmationSummary(
+  suggestions: CampaignItemPsdSuggestion[],
+  selections: Record<string, PsdPairingSelection>,
+  scannedPsds: ScannedPsdEntry[]
+): PsdBatchConfirmationSummary {
+  const psdByPath = new Map<string, ScannedPsdEntry>();
+  for (const p of scannedPsds) {
+    psdByPath.set(p.path, p);
+    psdByPath.set(normalizedPath(p.path), p);
+  }
+
+  const toLink: PsdBatchConfirmationItem[] = [];
+  let exactF7Count = 0;
+  let reviewedManualOrDescriptionCount = 0;
+  let skippedAmbiguousOrUnreviewedCount = 0;
+  let skippedNoSuggestionCount = 0;
+  let alreadyLinkedCount = 0;
+
+  for (const s of suggestions) {
+    if (s.alreadyLinked) {
+      alreadyLinkedCount++;
+    }
+    const sel = selections[s.item.id] ?? getDefaultSelectionForSuggestion(s);
+    const chosenPsd = sel.psdPath
+      ? (psdByPath.get(sel.psdPath) ?? psdByPath.get(normalizedPath(sel.psdPath)) ?? null)
+      : null;
+
+    const isReliableExactF7 =
+      s.reason === 'f7-exact' && !s.ambiguous && s.candidates.length === 1 && !s.alreadyLinked;
+
+    // Nunca vincula silenciosamente sugestões baseadas apenas em descrição ou ambíguas sem revisão explícita
+    const allowedInBatch =
+      sel.includedInBatch &&
+      chosenPsd !== null &&
+      (isReliableExactF7 || sel.reviewedByUser);
+
+    if (allowedInBatch && chosenPsd) {
+      const matchedCandidate = s.candidates.find(
+        c => normalizedPath(c.psd.path) === normalizedPath(chosenPsd.path)
+      );
+      const effectiveReason = matchedCandidate ? matchedCandidate.reason : s.reason;
+      const effectiveLabel =
+        effectiveReason === 'f7-exact'
+          ? s.ambiguous
+            ? 'F7 exato (escolhido manualmente)'
+            : 'F7 exato'
+          : matchedCandidate?.reason === 'description-similar'
+            ? 'Descrição parecida (revisado)'
+            : 'Escolha manual';
+
+      toLink.push({
+        item: s.item,
+        psd: chosenPsd,
+        reason: effectiveReason,
+        reasonLabel: effectiveLabel,
+        reviewedByUser: sel.reviewedByUser,
+      });
+
+      if (effectiveReason === 'f7-exact' && !s.ambiguous && !sel.reviewedByUser) {
+        exactF7Count++;
+      } else {
+        reviewedManualOrDescriptionCount++;
+      }
+    } else if (!s.alreadyLinked) {
+      if (s.ambiguous || s.reason === 'description-similar') {
+        skippedAmbiguousOrUnreviewedCount++;
+      } else if (s.reason === 'no-suggestion') {
+        skippedNoSuggestionCount++;
+      }
+    }
+  }
+
+  return {
+    toLink,
+    exactF7Count,
+    reviewedManualOrDescriptionCount,
+    skippedAmbiguousOrUnreviewedCount,
+    skippedNoSuggestionCount,
+    alreadyLinkedCount,
+  };
+}
+
+export function buildOfferPsdCartazTargetPath(
+  libraryRoot: string,
+  f7: string,
+  description: string,
+  paperSize: PaperFormat
+): string {
+  const rootDir = libraryRoot.trim().replace(/[\\/]+$/, '');
+  const baseSlug = (description || 'cartaz')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50);
+  const cleanF7 = f7.trim() ? `${f7.trim()} - ` : '';
+  const sizeTag = ` [${paperSize}]`;
+  return `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug || 'cartaz'}${sizeTag}.skcartaz`;
+}
+
+export type PsdLinkingIo = {
+  readPsd: (psdPath: string) => Promise<{ name: string; path: string; buffer: ArrayBuffer }>;
+  buildCartazFromPsd: (
+    psdData: { name: string; path: string; buffer: ArrayBuffer },
+    item: CampaignItem,
+    paperSize: PaperFormat
+  ) => Promise<Cartaz>;
+  saveCartazDocument: (targetPath: string, doc: Cartaz) => Promise<unknown>;
+  persistCampaign: (campaign: OfferCampaign) => Promise<OfferCampaign>;
+  refreshLibrary?: () => Promise<void>;
+};
+
+export async function executePsdBatchLinking(
+  campaign: OfferCampaign,
+  itemsToLink: { item: CampaignItem; psd: ScannedPsdEntry }[],
+  paperSize: PaperFormat,
+  libraryRoot: string,
+  io: PsdLinkingIo
+): Promise<PsdBatchLinkResult> {
+  if (itemsToLink.length === 0) {
+    return {
+      campaign,
+      linkedCount: 0,
+      errors: [],
+      success: false,
+      message: 'Nenhum produto selecionado para vincular.',
+    };
+  }
+
+  let currentCampaign = campaign;
+  let linkedCount = 0;
+  const errors: PsdBatchLinkError[] = [];
+
+  for (const { item, psd } of itemsToLink) {
+    try {
+      const psdData = await io.readPsd(psd.path);
+      const cartazDoc = await io.buildCartazFromPsd(psdData, item, paperSize);
+      const targetPath = buildOfferPsdCartazTargetPath(
+        libraryRoot,
+        item.f7,
+        item.description,
+        paperSize
+      );
+      await io.saveCartazDocument(targetPath, cartazDoc);
+      currentCampaign = linkSavedPosterToCampaignItem(
+        currentCampaign,
+        item.id,
+        targetPath,
+        cartazDoc
+      );
+      linkedCount++;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      errors.push({
+        itemId: item.id,
+        f7: item.f7,
+        description: item.description,
+        psdName: psd.name,
+        psdPath: psd.path,
+        error: errorMsg,
+      });
+    }
+  }
+
+  if (linkedCount > 0) {
+    currentCampaign = await io.persistCampaign(currentCampaign);
+    if (io.refreshLibrary) {
+      await io.refreshLibrary();
+    }
+  }
+
+  const success = errors.length === 0 && linkedCount > 0;
+  let message: string;
+  if (success) {
+    message = `Vinculação concluída com sucesso: ${linkedCount} cartaz(es) ${paperSize} criados e vinculados à campanha.`;
+  } else if (linkedCount > 0 && errors.length > 0) {
+    message = `Atenção: operação concluída com falhas. ${linkedCount} cartaz(es) vinculado(s), mas ${errors.length} falha(s) ocorreram.`;
+  } else {
+    message = `Falha na vinculação: nenhum cartaz pôde ser vinculado (${errors.length} erro(s)).`;
+  }
+
+  return {
+    campaign: currentCampaign,
+    linkedCount,
+    errors,
+    success,
+    message,
+  };
+}
+

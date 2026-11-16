@@ -19,9 +19,14 @@ import {
   applyExcelToCampaign,
   archiveCampaign,
   buildCampaignMatchViews,
+  buildCampaignPsdSuggestions,
+  buildOfferPsdCartazTargetPath,
+  buildPsdBatchConfirmationSummary,
   confirmBatchPrinted,
   createCampaign,
   duplicateCampaign,
+  executePsdBatchLinking,
+  getDefaultSelectionForSuggestion,
   linkSavedPosterToCampaignItem,
   listCampaigns,
   renameCampaign,
@@ -31,7 +36,15 @@ import {
   updatePosterSelection,
   updateScheduledPrice,
 } from '../../features/ofertas/service';
-import type { OfferCampaign, PrintStatus, PsdImportOfferContext } from '../../features/ofertas/types';
+import type {
+  CampaignItem,
+  OfferCampaign,
+  PrintStatus,
+  PsdBatchLinkResult,
+  PsdImportOfferContext,
+  PsdPairingSelection,
+  PsdSuggestionReason,
+} from '../../features/ofertas/types';
 import {
   chooseScantechExportFolder,
   chooseScantechPsdFolder,
@@ -42,18 +55,34 @@ import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
 import { splitCentsToParts } from '../../features/cartazes/presentation';
+import { priceToCents } from '../../features/cartazes/validation';
 import type { PaperFormat } from '../../features/cartazes/types';
-import type { CampaignItem } from '../../features/ofertas/types';
 
 const PsdImport = lazy(() =>
   import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
 );
+
+type PsdPairingFilter =
+  | 'todos'
+  | PsdSuggestionReason
+  | 'ambiguous'
+  | 'selected-batch'
+  | 'already-linked';
 
 type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[]) => void;
   onRefreshLibrary?: () => Promise<void>;
+  initialCampaigns?: OfferCampaign[];
+  initialActiveId?: string | null;
+  initialPsdFolder?: string | null;
+  initialScannedPsds?: ScannedPsdEntry[];
+  initialShowPsdModal?: boolean;
+  initialShowBatchConfirmStep?: boolean;
+  initialPsdPairingSelections?: Record<string, PsdPairingSelection>;
+  initialBatchLinkResult?: PsdBatchLinkResult | null;
+  initialPsdScanError?: string | null;
 };
 
 const money = (cents: number | null) =>
@@ -65,10 +94,26 @@ const tomorrowIso = () => {
   return d.toISOString().slice(0, 10);
 };
 
-export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary }: Props) {
-  const [campaigns, setCampaigns] = useState<OfferCampaign[]>([]);
+export function OfferFolders({
+  libraryData,
+  run,
+  onPrintBatch,
+  onRefreshLibrary,
+  initialCampaigns = [],
+  initialActiveId = null,
+  initialPsdFolder = null,
+  initialScannedPsds = [],
+  initialShowPsdModal = false,
+  initialShowBatchConfirmStep = false,
+  initialPsdPairingSelections = {},
+  initialBatchLinkResult = null,
+  initialPsdScanError = null,
+}: Props) {
+  const [campaigns, setCampaigns] = useState<OfferCampaign[]>(initialCampaigns);
   const [loadErrors, setLoadErrors] = useState<string[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(
+    initialActiveId ?? (initialCampaigns[0]?.id || null)
+  );
   const [showArchived, setShowArchived] = useState(false);
 
   const [newFolderName, setNewFolderName] = useState('');
@@ -98,15 +143,20 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
   const [batchSize, setBatchSize] = useState(10);
   const [awaitingPrintConfirm, setAwaitingPrintConfirm] = useState<{ keys: Set<string>; count: number } | null>(null);
 
-  // Pasta de PSDs para pareamento em lote e formato de papel (A6 por padrão)
-  const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>([]);
-  const [psdFolder, setPsdFolder] = useState<string | null>(null);
+  // Pasta de PSDs de referência e pareamento revisável por produto da campanha (A6 por padrão)
+  const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>(initialScannedPsds);
+  const [psdFolder, setPsdFolder] = useState<string | null>(initialPsdFolder);
   const [psdPaperSize, setPsdPaperSize] = useState<PaperFormat>('A6');
-  const [showPsdManagerModal, setShowPsdManagerModal] = useState(false);
+  const [showPsdManagerModal, setShowPsdManagerModal] = useState(initialShowPsdModal);
   const [psdFilterText, setPsdFilterText] = useState('');
-  const [psdSelectedTargets, setPsdSelectedTargets] = useState<Record<string, string>>({});
+  const [psdReasonFilter, setPsdReasonFilter] = useState<PsdPairingFilter>('todos');
+  const [psdPairingSelections, setPsdPairingSelections] = useState<Record<string, PsdPairingSelection>>(
+    initialPsdPairingSelections
+  );
+  const [showBatchConfirmStep, setShowBatchConfirmStep] = useState(initialShowBatchConfirmStep);
   const [batchLinking, setBatchLinking] = useState(false);
-  const [batchLinkFeedback, setBatchLinkFeedback] = useState<string | null>(null);
+  const [batchLinkResult, setBatchLinkResult] = useState<PsdBatchLinkResult | null>(initialBatchLinkResult);
+  const [psdScanError, setPsdScanError] = useState<string | null>(initialPsdScanError);
 
   // Exportação em lote da pasta de ofertas
   const [showExportModal, setShowExportModal] = useState(false);
@@ -248,138 +298,40 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     await persistUpdate(synced);
   };
 
-  const handleChoosePsdFolder = async () => {
-    const folder = await chooseScantechPsdFolder();
-    if (!folder) return;
-    setPsdFolder(folder);
-    const entries = await scanScantechPsdFolder(folder);
-    setScannedPsds(entries);
-
-    // Tenta pareamento automático por similaridade para itens que estão sem cartaz
-    if (activeCampaign && entries.length > 0) {
-      const matchViews = buildCampaignMatchViews(activeCampaign, libraryIndex);
-      const missing = matchViews.filter(v => v.missingPoster);
-      let updatedCampaign = activeCampaign;
-      let matchedCount = 0;
-
-      for (const view of missing) {
-        const f7 = view.item.f7;
-        const descTokens = view.item.description
-          .normalize('NFD')
-          .replace(/[\u0300-\u036f]/g, '')
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, ' ')
-          .trim()
-          .split(' ')
-          .filter(t => t.length >= 2 && !['de', 'da', 'do', 'com', 'para', 'em', 'un', 'kg', 'lt'].includes(t));
-
-        const matchedEntry = entries.find(e => {
-          const normPsd = e.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-          if (f7 && new RegExp(`(?:^|\\D)0*${f7.replace(/^0+/, '') || '0'}(?:\\D|$)`).test(normPsd)) {
-            return true;
-          }
-          const matchedWords = descTokens.filter(t => normPsd.includes(t)).length;
-          return matchedWords >= 2 && matchedWords / Math.max(1, descTokens.length) >= 0.5;
-        });
-
-        if (matchedEntry) {
-          try {
-            const psdData = await readPsdByPath(matchedEntry.path);
-            const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
-            const roles = analysis.suggested;
-            if (roles.whole && roles.fraction) {
-              let artwork = buildArtwork(analysis, roles);
-              if (hasInvertedPsdPriceParts(artwork)) {
-                artwork = repairInvertedPsdArtwork(artwork).artwork;
-              }
-              const now = new Date().toISOString();
-              const cartazDoc: Cartaz = {
-                schemaVersion: 1,
-                id: crypto.randomUUID(),
-                product: {
-                  name: (view.item.description || 'PRODUTO').trim().toUpperCase(),
-                  complement: '',
-                  unit: 'UN',
-                  priceCents: view.item.scheduledPriceCents || 100,
-                  productCode: f7 || null,
-                  validityText: analysis.metadata.validityText || '',
-                },
-                layout: {
-                  template: 'imported-psd',
-                  paper: psdPaperSize,
-                  orientation: 'portrait',
-                  artwork,
-                },
-                metadata: {
-                  createdAt: now,
-                  updatedAt: now,
-                },
-              };
-
-              const rootDir = libraryData?.root || '';
-              const baseSlug = (view.item.description || 'cartaz')
-                .normalize('NFD')
-                .replace(/[\u0300-\u036f]/g, '')
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/^-|-$/g, '')
-                .slice(0, 50);
-              const cleanF7 = f7 ? `${f7} - ` : '';
-              const sizeTag = ` [${psdPaperSize}]`;
-              const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}${sizeTag}.skcartaz`;
-
-              await saveDocument(targetPath, cartazDoc, true);
-              updatedCampaign = linkSavedPosterToCampaignItem(
-                updatedCampaign,
-                view.item.id,
-                targetPath,
-                cartazDoc
-              );
-              matchedCount++;
-            }
-          } catch {
-            // Ignora se o arquivo não tiver camadas válidas
-          }
-        }
-      }
-
-      if (matchedCount > 0) {
-        await persistUpdate(updatedCampaign);
-        if (onRefreshLibrary) await onRefreshLibrary();
-      }
-    }
-  };
-
-  const handleAssignPsdToOfferItem = async (
-    itemId: string,
-    f7: string,
-    description: string,
-    priceCents: number,
-    psdPath: string,
-    paperSize: PaperFormat = psdPaperSize
-  ) => {
-    if (!activeCampaign) return;
-    const psdData = await readPsdByPath(psdPath);
+  const buildCartazFromPsd = async (
+    psdData: { name: string; path: string; buffer: ArrayBuffer },
+    item: CampaignItem,
+    paperSize: PaperFormat
+  ): Promise<Cartaz> => {
     const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
     const roles = analysis.suggested;
     if (!roles.whole || !roles.fraction) {
       throw new Error(`Não foi possível detectar as camadas de preço no PSD "${psdData.name}".`);
     }
     let artwork = buildArtwork(analysis, roles);
+    let libraryBasePriceCents: number | null = null;
     if (hasInvertedPsdPriceParts(artwork)) {
-      artwork = repairInvertedPsdArtwork(artwork).artwork;
+      const repaired = repairInvertedPsdArtwork(artwork);
+      artwork = repaired.artwork;
+      libraryBasePriceCents = repaired.correctedPriceCents;
+    } else if (analysis.metadata.price.trim()) {
+      try {
+        libraryBasePriceCents = priceToCents(analysis.metadata.price);
+      } catch {
+        libraryBasePriceCents = null;
+      }
     }
 
     const now = new Date().toISOString();
-    const cartazDoc: Cartaz = {
+    return {
       schemaVersion: 1,
       id: crypto.randomUUID(),
       product: {
-        name: (description || 'PRODUTO').trim().toUpperCase(),
+        name: (item.description || 'PRODUTO').trim().toUpperCase(),
         complement: '',
         unit: 'UN',
-        priceCents: priceCents || 100,
-        productCode: f7 || null,
+        priceCents: libraryBasePriceCents ?? (item.scheduledPriceCents || 100),
+        productCode: item.f7 || null,
         validityText: analysis.metadata.validityText || '',
       },
       layout: {
@@ -393,116 +345,107 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
         updatedAt: now,
       },
     };
-
-    const rootDir = libraryData?.root || '';
-    const baseSlug = (description || 'cartaz')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 50);
-    const cleanF7 = f7 ? `${f7} - ` : '';
-    const sizeTag = ` [${paperSize}]`;
-    const targetPath = `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug}${sizeTag}.skcartaz`;
-
-    await saveDocument(targetPath, cartazDoc, true);
-    const updated = linkSavedPosterToCampaignItem(
-      activeCampaign,
-      itemId,
-      targetPath,
-      cartazDoc
-    );
-    await persistUpdate(updated);
-    if (onRefreshLibrary) await onRefreshLibrary();
-    setPreviewKey(`${itemId}::${targetPath}`);
   };
 
-  const findBestItemForPsd = (psdName: string): { item: CampaignItem; score: number } | null => {
-    if (!activeCampaign) return null;
-    const normPsd = psdName
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/\.psd$/i, '');
-
-    // 1. Tenta correspondência direta de F7
-    for (const it of activeCampaign.items) {
-      if (it.f7 && new RegExp(`(?:^|\\D)0*${it.f7.replace(/^0+/, '') || '0'}(?:\\D|$)`).test(normPsd)) {
-        return { item: it, score: 1.0 };
-      }
+  const handleChoosePsdFolder = async () => {
+    setPsdScanError(null);
+    let folder: string | null = null;
+    try {
+      folder = await chooseScantechPsdFolder();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setPsdScanError(msg);
+      setShowPsdManagerModal(true);
+      throw err;
     }
+    if (!folder) return;
 
-    // 2. Tenta correspondência por palavras da descrição
-    let best: { item: CampaignItem; score: number } | null = null;
-    let maxScore = 0;
-    for (const it of activeCampaign.items) {
-      const tokens = it.description
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim()
-        .split(' ')
-        .filter(t => t.length >= 2 && !['de', 'da', 'do', 'com', 'para', 'em', 'un', 'kg', 'lt', 'cx', 'sc'].includes(t));
-      if (tokens.length === 0) continue;
-      const matches = tokens.filter(t => normPsd.includes(t)).length;
-      const score = matches / tokens.length;
-      if (matches >= 2 && score > maxScore) {
-        maxScore = score;
-        best = { item: it, score };
-      } else if (matches === 1 && tokens.length === 1 && score > maxScore) {
-        maxScore = score;
-        best = { item: it, score };
-      }
-    }
-    return best;
-  };
-
-  const handleBatchLinkSuggested = async () => {
-    if (!activeCampaign || scannedPsds.length === 0) return;
-    setBatchLinking(true);
-    setBatchLinkFeedback(null);
-    let linkedCount = 0;
-    let errorsCount = 0;
+    setPsdFolder(folder);
+    setBatchLinkResult(null);
+    setShowBatchConfirmStep(false);
+    setPsdPairingSelections({});
+    setShowPsdManagerModal(true);
 
     try {
-      for (const entry of scannedPsds) {
-        const targetItemId = psdSelectedTargets[entry.path];
-        let targetItem: CampaignItem | null = null;
-        if (targetItemId) {
-          targetItem = activeCampaign.items.find(i => i.id === targetItemId) ?? null;
-        } else {
-          const match = findBestItemForPsd(entry.name);
-          if (match && match.score >= 0.5) {
-            targetItem = match.item;
-          }
+      const entries = await scanScantechPsdFolder(folder);
+      setScannedPsds(entries);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setScannedPsds([]);
+      setPsdScanError(`Falha ao ler os arquivos PSD da pasta "${folder}": ${msg}`);
+      throw err;
+    }
+  };
+
+  const handleAssignPsdToOfferItem = async (
+    itemId: string,
+    psdPath: string,
+    paperSize: PaperFormat = psdPaperSize
+  ) => {
+    if (!activeCampaign) return;
+    const item = activeCampaign.items.find(i => i.id === itemId);
+    const psdEntry = scannedPsds.find(p => p.path === psdPath) ?? {
+      name: psdPath.split(/[\\/]/).pop() || psdPath,
+      path: psdPath,
+      size: 0,
+    };
+    if (!item) {
+      throw new Error('Produto da campanha não encontrado para vincular a arte PSD.');
+    }
+
+    setBatchLinking(true);
+    setBatchLinkResult(null);
+    try {
+      const res = await executePsdBatchLinking(
+        activeCampaign,
+        [{ item, psd: psdEntry }],
+        paperSize,
+        libraryData?.root || '',
+        {
+          readPsd: readPsdByPath,
+          buildCartazFromPsd,
+          saveCartazDocument: (targetPath, doc) => saveDocument(targetPath, doc, true),
+          persistCampaign: persistUpdate,
+          refreshLibrary: onRefreshLibrary,
         }
-
-        if (!targetItem) continue;
-
-        // Se já tiver cartaz vinculado com este psd, pula
-        const normEntryName = entry.name.toLowerCase();
-        const alreadyLinked = targetItem.posters.some(p => p.cartazPath.toLowerCase().includes(normEntryName));
-        if (alreadyLinked) continue;
-
-        try {
-          await handleAssignPsdToOfferItem(
-            targetItem.id,
-            targetItem.f7,
-            targetItem.description,
-            targetItem.scheduledPriceCents,
-            entry.path,
-            psdPaperSize
-          );
-          linkedCount++;
-        } catch {
-          errorsCount++;
-        }
-      }
-      setBatchLinkFeedback(
-        `Vinculação concluída: ${linkedCount} cartaz(es) ${psdPaperSize} criados e vinculados à campanha.${errorsCount > 0 ? ` (${errorsCount} falhas)` : ''}`
       );
+      setBatchLinkResult(res);
+      if (res.success) {
+        const targetPath = buildOfferPsdCartazTargetPath(
+          libraryData?.root || '',
+          item.f7,
+          item.description,
+          paperSize
+        );
+        setPreviewKey(`${item.id}::${targetPath}`);
+      }
+    } finally {
+      setBatchLinking(false);
+    }
+  };
+
+  const handleExecuteConfirmedBatchLink = async (
+    itemsToLink: { item: CampaignItem; psd: ScannedPsdEntry }[]
+  ) => {
+    if (!activeCampaign || itemsToLink.length === 0) return;
+    setBatchLinking(true);
+    setBatchLinkResult(null);
+    try {
+      const res = await executePsdBatchLinking(
+        activeCampaign,
+        itemsToLink,
+        psdPaperSize,
+        libraryData?.root || '',
+        {
+          readPsd: readPsdByPath,
+          buildCartazFromPsd,
+          saveCartazDocument: (targetPath, doc) => saveDocument(targetPath, doc, true),
+          persistCampaign: persistUpdate,
+          refreshLibrary: onRefreshLibrary,
+        }
+      );
+      setBatchLinkResult(res);
+      setShowBatchConfirmStep(false);
     } finally {
       setBatchLinking(false);
     }
@@ -748,11 +691,60 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
     return { totalItems, missing, pending, prepared, printed, divergent };
   }, [matchViews]);
 
-  const filteredScannedPsds = useMemo(() => {
-    const q = psdFilterText.trim().toLowerCase();
-    if (!q) return scannedPsds;
-    return scannedPsds.filter(p => p.name.toLowerCase().includes(q));
-  }, [scannedPsds, psdFilterText]);
+  const psdSuggestions = useMemo(() => {
+    if (!activeCampaign) return [];
+    return buildCampaignPsdSuggestions(activeCampaign, scannedPsds);
+  }, [activeCampaign, scannedPsds]);
+
+  const psdSuggestionsByItemId = useMemo(() => {
+    const map = new Map<string, (typeof psdSuggestions)[number]>();
+    for (const s of psdSuggestions) {
+      map.set(s.item.id, s);
+    }
+    return map;
+  }, [psdSuggestions]);
+
+  const pairingStats = useMemo(() => {
+    let exactF7 = 0;
+    let descriptionSimilar = 0;
+    let ambiguous = 0;
+    let noSuggestion = 0;
+    let alreadyLinked = 0;
+    for (const s of psdSuggestions) {
+      if (s.alreadyLinked) alreadyLinked++;
+      if (s.ambiguous) ambiguous++;
+      if (s.reason === 'f7-exact') exactF7++;
+      else if (s.reason === 'description-similar') descriptionSimilar++;
+      else noSuggestion++;
+    }
+    return { exactF7, descriptionSimilar, ambiguous, noSuggestion, alreadyLinked };
+  }, [psdSuggestions]);
+
+  const batchConfirmationSummary = useMemo(
+    () => buildPsdBatchConfirmationSummary(psdSuggestions, psdPairingSelections, scannedPsds),
+    [psdSuggestions, psdPairingSelections, scannedPsds]
+  );
+
+  const filteredPsdSuggestions = useMemo(() => {
+    const q = psdFilterText.trim().toLocaleLowerCase('pt-BR');
+    return psdSuggestions.filter(s => {
+      const sel = psdPairingSelections[s.item.id] ?? getDefaultSelectionForSuggestion(s);
+      if (psdReasonFilter === 'f7-exact' && s.reason !== 'f7-exact') return false;
+      if (psdReasonFilter === 'description-similar' && s.reason !== 'description-similar') return false;
+      if (psdReasonFilter === 'no-suggestion' && s.reason !== 'no-suggestion') return false;
+      if (psdReasonFilter === 'ambiguous' && !s.ambiguous) return false;
+      if (psdReasonFilter === 'already-linked' && !s.alreadyLinked) return false;
+      if (psdReasonFilter === 'selected-batch' && (!sel.includedInBatch || !sel.psdPath)) return false;
+
+      if (!q) return true;
+      const candidateNames = s.candidates.map(c => c.psd.name).join(' ');
+      const selectedPsdName = scannedPsds.find(p => p.path === sel.psdPath)?.name ?? '';
+      const haystack = `${s.item.f7} ${s.item.description} ${s.reasonLabel} ${candidateNames} ${selectedPsdName}`.toLocaleLowerCase(
+        'pt-BR'
+      );
+      return haystack.includes(q);
+    });
+  }, [psdSuggestions, psdFilterText, psdReasonFilter, psdPairingSelections, scannedPsds]);
 
   const handleTriggerPartialPrint = (reprintPrinted = false) => {
     if (!activeCampaign) return;
@@ -917,22 +909,20 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                 <div className="toolbar">
                   <button onClick={() => run(handleOpenExcel)}>Importar Excel (.xlsx, .xls)</button>
                   <button
-                    className={scannedPsds.length > 0 ? '' : 'subtle'}
+                    className={psdFolder ? '' : 'subtle'}
                     onClick={() => {
-                      if (scannedPsds.length > 0) {
+                      if (psdFolder) {
                         setShowPsdManagerModal(true);
                       } else {
                         run(handleChoosePsdFolder);
                       }
                     }}
                   >
-                    📁 Pasta PSDs {scannedPsds.length > 0 ? `(${scannedPsds.length} ${psdPaperSize})` : ''}
+                    📁 {psdFolder ? `Pasta PSDs (${scannedPsds.length} ref.)` : 'Procurar Pasta de PSDs'}
                   </button>
-                  {scannedPsds.length > 0 && (
-                    <button className="subtle" onClick={() => setShowPsdManagerModal(true)}>
-                      ⚡ Pareamento ({psdPaperSize})
-                    </button>
-                  )}
+                  <button className="subtle" onClick={() => setShowPsdManagerModal(true)}>
+                    ⚡ Pareamento PSD ({psdPaperSize})
+                  </button>
                   <button className="subtle" onClick={() => run(handleSyncLibrary)}>
                     Localizar cartazes na biblioteca
                   </button>
@@ -1158,34 +1148,40 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                                     <span className="comparison-status conflict">
                                       Sem cartaz (F7 {v.item.f7})
                                     </span>
-                                    {scannedPsds.length > 0 && (
-                                      <select
-                                        className="subtle"
-                                        style={{ maxWidth: 200, fontSize: 11, padding: '4px 6px', background: '#f8fafc', borderColor: '#cbd5e1' }}
-                                        value=""
-                                        aria-label={`Ligar PSD da pasta para ${v.item.description}`}
-                                        onChange={e => {
-                                          if (e.target.value) {
-                                            run(() =>
-                                              handleAssignPsdToOfferItem(
-                                                v.item.id,
-                                                v.item.f7,
-                                                v.item.description,
-                                                v.item.scheduledPriceCents,
-                                                e.target.value
-                                              )
-                                            );
-                                          }
-                                        }}
-                                      >
-                                        <option value="">⚡ Ligar PSD da pasta...</option>
-                                        {scannedPsds.map(p => (
-                                          <option key={p.path} value={p.path}>
-                                            {p.name}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    )}
+                                    {scannedPsds.length > 0 && (() => {
+                                      const sug = psdSuggestionsByItemId.get(v.item.id);
+                                      return (
+                                        <>
+                                          {sug && (
+                                            <span
+                                              className={
+                                                sug.ambiguous || sug.reason === 'no-suggestion'
+                                                  ? 'comparison-status conflict'
+                                                  : 'comparison-status'
+                                              }
+                                              style={{ fontSize: 11 }}
+                                            >
+                                              PSD: {sug.reasonLabel}
+                                              {sug.ambiguous
+                                                ? ` (${sug.candidates.length} candidatos)`
+                                                : sug.recommendedPsd
+                                                  ? ` (${sug.recommendedPsd.name})`
+                                                  : ''}
+                                            </span>
+                                          )}
+                                          <button
+                                            className="subtle"
+                                            style={{ padding: '6px 10px', fontSize: 12 }}
+                                            onClick={() => {
+                                              setPsdFilterText(v.item.f7 || v.item.description);
+                                              setShowPsdManagerModal(true);
+                                            }}
+                                          >
+                                            ⚡ Revisar no Pareamento PSD
+                                          </button>
+                                        </>
+                                      );
+                                    })()}
                                     <button
                                       className="subtle"
                                       style={{ padding: '6px 10px', fontSize: 12 }}
@@ -1525,18 +1521,26 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
       )}
 
       {showPsdManagerModal && (
-        <div className="modal-backdrop" onClick={() => setShowPsdManagerModal(false)}>
+        <div className="modal-backdrop" onClick={() => !batchLinking && setShowPsdManagerModal(false)}>
           <section
             className="panel modal"
-            style={{ maxWidth: 960, width: '92vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Pareamento de Artes PSD com Produtos da Campanha"
+            style={{ maxWidth: 1080, width: '94vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
             onClick={e => e.stopPropagation()}
           >
-            <div className="library-heading" style={{ marginBottom: 10 }}>
+            <div className="library-heading" style={{ marginBottom: 8 }}>
               <div>
-                <h3>⚡ Vincular Pasta de PSDs à Campanha</h3>
-                <p style={{ margin: 0, fontSize: 13, color: '#475569' }}>
-                  {psdFolder ? `Pasta: ${psdFolder}` : 'Nenhuma pasta selecionada'}
+                <h3>⚡ Pareamento de Artes PSD com Produtos da Campanha</h3>
+                <p style={{ margin: '2px 0 0', fontSize: 13, color: '#475569' }}>
+                  Selecionar uma pasta serve apenas para procurar arquivos PSD de referência; importar e vincular uma arte é uma ação posterior mediante sua revisão e confirmação.
                 </p>
+                <small className="document-path" style={{ display: 'block', marginTop: 4 }}>
+                  {psdFolder
+                    ? `Pasta de referência: ${psdFolder} (${scannedPsds.length} arquivo(s) PSD)`
+                    : 'Nenhuma pasta de PSDs selecionada ainda. Clique em "Procurar Pasta de PSDs" para localizar candidatos.'}
+                </small>
               </div>
               <div className="toolbar" style={{ marginTop: 0 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 'bold' }}>
@@ -1552,130 +1556,312 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
                     <option value="A3">A3 — Extra Grande (297 × 420 mm)</option>
                   </select>
                 </label>
-                <button className="subtle" onClick={() => run(handleChoosePsdFolder)}>
-                  📁 {psdFolder ? 'Trocar Pasta' : 'Selecionar Pasta'}
+                <button className="subtle" disabled={batchLinking} onClick={() => run(handleChoosePsdFolder)}>
+                  📁 {psdFolder ? 'Trocar Pasta de PSDs' : 'Procurar Pasta de PSDs'}
                 </button>
               </div>
             </div>
 
-            {batchLinkFeedback && (
-              <div className="import-warning" style={{ margin: '6px 0 10px', padding: 10 }}>
-                <strong>{batchLinkFeedback}</strong>
+            {psdScanError && (
+              <div
+                className="import-warning"
+                role="alert"
+                style={{ margin: '6px 0 10px', padding: 10, background: '#fef2f2', borderColor: '#fca5a5', color: '#991b1b' }}
+              >
+                <strong>Erro na leitura da pasta de PSDs:</strong> {psdScanError}
               </div>
             )}
 
-            <div className="import-stats" style={{ margin: '4px 0 12px' }}>
-              <span><strong>{scannedPsds.length}</strong> PSDs na pasta</span>
-              <span><strong>{psdPaperSize}</strong> formato selecionado</span>
+            {batchLinkResult && (
+              <div
+                className="import-warning"
+                role={batchLinkResult.success ? 'status' : 'alert'}
+                style={
+                  batchLinkResult.success
+                    ? { margin: '6px 0 10px', padding: 10, background: '#f0fdf4', borderColor: '#86efac', color: '#166534' }
+                    : { margin: '6px 0 10px', padding: 10, background: '#fef2f2', borderColor: '#fca5a5', color: '#991b1b' }
+                }
+              >
+                <strong>{batchLinkResult.message}</strong>
+                {batchLinkResult.errors.length > 0 && (
+                  <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 12 }}>
+                    {batchLinkResult.errors.map(err => (
+                      <li key={`${err.itemId}::${err.psdPath}`}>
+                        <strong>F7 {err.f7} ({err.description})</strong> ← <code>{err.psdName}</code>: {err.error}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="import-stats" style={{ margin: '4px 0 10px' }}>
               <span><strong>{activeCampaign?.items.length ?? 0}</strong> produtos na campanha</span>
+              <span><strong>{scannedPsds.length}</strong> PSDs na pasta</span>
+              <span><strong>{pairingStats.exactF7}</strong> F7 exato</span>
+              <span><strong>{pairingStats.descriptionSimilar}</strong> descrição parecida</span>
+              <span><strong>{pairingStats.ambiguous}</strong> ambíguos / múltiplos candidatos</span>
+              <span><strong>{pairingStats.noSuggestion}</strong> sem sugestão</span>
+              <span><strong>{batchConfirmationSummary.toLink.length}</strong> prontos para o lote</span>
             </div>
 
-            <div className="toolbar" style={{ marginBottom: 12, justifyContent: 'space-between' }}>
-              <input
-                placeholder="Filtrar arquivos PSD por nome…"
-                value={psdFilterText}
-                onChange={e => setPsdFilterText(e.target.value)}
-                style={{ maxWidth: 350 }}
-              />
-              <button
-                disabled={batchLinking || scannedPsds.length === 0}
-                onClick={() => run(handleBatchLinkSuggested)}
-                style={{ background: '#0284c7', color: '#fff' }}
+            {showBatchConfirmStep && batchConfirmationSummary.toLink.length > 0 && (
+              <div
+                className="import-warning"
+                role="region"
+                aria-label="Confirmação de vínculos em lote"
+                style={{ margin: '0 0 12px', padding: 12, background: '#f8fafc', borderColor: '#0284c7' }}
               >
-                {batchLinking ? 'Vinculando…' : `⚡ Vincular Todos Sugeridos (${psdPaperSize})`}
-              </button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <strong style={{ fontSize: 14, color: '#0f172a' }}>
+                      Confirmar aplicação de vínculos em lote ({batchConfirmationSummary.toLink.length} produto(s) · Formato {psdPaperSize})
+                    </strong>
+                    <div style={{ fontSize: 12, color: '#334155', marginTop: 4 }}>
+                      Resumo do lote:{' '}
+                      <strong>{batchConfirmationSummary.exactF7Count}</strong> por F7 exato confiável ·{' '}
+                      <strong>{batchConfirmationSummary.reviewedManualOrDescriptionCount}</strong> revisado(s) manualmente / por descrição ·{' '}
+                      <strong>{batchConfirmationSummary.skippedAmbiguousOrUnreviewedCount}</strong> ambíguo(s) ou por descrição não revisados (não incluídos) ·{' '}
+                      <strong>{batchConfirmationSummary.skippedNoSuggestionCount}</strong> sem sugestão.
+                    </div>
+                  </div>
+                  <div className="toolbar" style={{ marginTop: 0 }}>
+                    <button
+                      disabled={batchLinking}
+                      style={{ background: '#0284c7', color: '#fff' }}
+                      onClick={() =>
+                        run(() =>
+                          handleExecuteConfirmedBatchLink(
+                            batchConfirmationSummary.toLink.map(entry => ({
+                              item: entry.item,
+                              psd: entry.psd,
+                            }))
+                          )
+                        )
+                      }
+                    >
+                      {batchLinking
+                        ? 'Aplicando vínculos…'
+                        : `✓ Confirmar e Aplicar Vínculos (${batchConfirmationSummary.toLink.length})`}
+                    </button>
+                    <button
+                      className="subtle"
+                      disabled={batchLinking}
+                      onClick={() => setShowBatchConfirmStep(false)}
+                    >
+                      Voltar e Revisar
+                    </button>
+                  </div>
+                </div>
+                <ul style={{ margin: '8px 0 0 18px', padding: 0, fontSize: 12, maxHeight: 120, overflowY: 'auto' }}>
+                  {batchConfirmationSummary.toLink.map(entry => (
+                    <li key={entry.item.id}>
+                      <strong>F7 {entry.item.f7}</strong> — {entry.item.description} ({money(entry.item.scheduledPriceCents)}) ←{' '}
+                      <strong>{entry.psd.name}</strong> <em>[{entry.reasonLabel}]</em>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="toolbar" style={{ marginBottom: 10, justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, flex: 1, minWidth: 280 }}>
+                <input
+                  aria-label="Pesquisar produto ou arquivo PSD no pareamento"
+                  placeholder="Pesquisar por F7, descrição do produto ou arquivo PSD…"
+                  value={psdFilterText}
+                  onChange={e => setPsdFilterText(e.target.value)}
+                  style={{ maxWidth: 340, flex: 1 }}
+                />
+                <select
+                  aria-label="Filtrar recomendações de pareamento PSD"
+                  value={psdReasonFilter}
+                  onChange={e => setPsdReasonFilter(e.target.value as PsdPairingFilter)}
+                >
+                  <option value="todos">Todos os produtos ({psdSuggestions.length})</option>
+                  <option value="f7-exact">F7 exato ({pairingStats.exactF7})</option>
+                  <option value="description-similar">Descrição parecida ({pairingStats.descriptionSimilar})</option>
+                  <option value="ambiguous">Ambíguos / Múltiplos candidatos ({pairingStats.ambiguous})</option>
+                  <option value="no-suggestion">Sem sugestão ({pairingStats.noSuggestion})</option>
+                  <option value="selected-batch">Selecionados para o lote ({batchConfirmationSummary.toLink.length})</option>
+                  <option value="already-linked">Já vinculados ({pairingStats.alreadyLinked})</option>
+                </select>
+              </div>
+              <div className="toolbar" style={{ marginTop: 0 }}>
+                <button
+                  className="subtle"
+                  disabled={batchLinking || scannedPsds.length === 0}
+                  onClick={() => {
+                    setPsdPairingSelections({});
+                    setShowBatchConfirmStep(false);
+                  }}
+                >
+                  Apenas F7 exatos confiáveis
+                </button>
+                <button
+                  disabled={batchLinking || batchConfirmationSummary.toLink.length === 0}
+                  onClick={() => setShowBatchConfirmStep(true)}
+                  style={{ background: '#0284c7', color: '#fff' }}
+                >
+                  {batchLinking
+                    ? 'Vinculando…'
+                    : `⚡ Revisar e Vincular em Lote (${batchConfirmationSummary.toLink.length})`}
+                </button>
+              </div>
             </div>
 
             <div className="import-table-wrap" style={{ flex: 1, overflowY: 'auto', maxHeight: '48vh' }}>
               <table className="import-table">
                 <thead>
                   <tr>
-                    <th>Arquivo PSD</th>
-                    <th>Tamanho</th>
-                    <th>Produto Sugerido / Selecionado</th>
-                    <th>Ação</th>
+                    <th>Produto da Campanha (Excel)</th>
+                    <th>Motivo da Sugestão</th>
+                    <th>Arquivo PSD Candidato / Escolha Manual</th>
+                    <th>Revisão e Vínculo</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredScannedPsds.map(entry => {
-                    const normEntryName = entry.name.toLowerCase();
-                    const linkedItem = activeCampaign?.items.find(i =>
-                      i.posters.some(p => p.cartazPath.toLowerCase().includes(normEntryName))
-                    );
-                    const suggested = !linkedItem ? findBestItemForPsd(entry.name) : null;
-                    const selectedItemId = psdSelectedTargets[entry.path] ?? (suggested?.item.id || '');
-                    const currentTargetItem = activeCampaign?.items.find(i => i.id === selectedItemId);
+                  {filteredPsdSuggestions.map(s => {
+                    const effectiveSel = psdPairingSelections[s.item.id] ?? getDefaultSelectionForSuggestion(s);
+                    const candidatePaths = new Set(s.candidates.map(c => c.psd.path));
+                    const otherPsds = scannedPsds.filter(p => !candidatePaths.has(p.path));
+                    const selectedPsd = scannedPsds.find(p => p.path === effectiveSel.psdPath) ?? null;
+                    const topCandidate = s.candidates[0] ?? null;
 
                     return (
-                      <tr key={entry.path}>
+                      <tr key={s.item.id}>
                         <td>
-                          <strong>{entry.name}</strong>
-                        </td>
-                        <td style={{ whiteSpace: 'nowrap', fontSize: 12, color: '#64748b' }}>
-                          {(entry.size / (1024 * 1024)).toFixed(1)} MB
+                          <div>
+                            <span className="code-cell" style={{ fontWeight: 'bold' }}>
+                              F7 {s.item.f7}
+                            </span>{' '}
+                            — <strong>{s.item.description}</strong>
+                          </div>
+                          <small style={{ color: '#475569' }}>
+                            Preço programado: <strong>{money(s.item.scheduledPriceCents)}</strong> · Linha Excel: {s.item.rowNumber}
+                            {s.alreadyLinked ? ' · ✓ Já possui cartaz vinculado' : ''}
+                          </small>
                         </td>
                         <td>
-                          {linkedItem ? (
-                            <span className="comparison-status">
-                              F7 {linkedItem.f7} — {linkedItem.description} ({money(linkedItem.scheduledPriceCents)})
-                            </span>
-                          ) : (
-                            <select
-                              style={{ width: '100%', maxWidth: 440, fontSize: 12, padding: '4px 6px' }}
-                              value={selectedItemId}
-                              onChange={e =>
-                                setPsdSelectedTargets(prev => ({
-                                  ...prev,
-                                  [entry.path]: e.target.value,
-                                }))
-                              }
-                            >
-                              <option value="">(Selecione um produto da campanha)</option>
-                              {activeCampaign?.items.map(it => (
-                                <option key={it.id} value={it.id}>
-                                  {suggested?.item.id === it.id ? '⭐ [Sugerido] ' : ''}
-                                  F7 {it.f7} — {it.description} ({money(it.scheduledPriceCents)})
-                                </option>
-                              ))}
-                            </select>
+                          <span
+                            className={
+                              s.reason === 'f7-exact' && !s.ambiguous
+                                ? 'comparison-status'
+                                : s.reason === 'no-suggestion' || s.ambiguous
+                                  ? 'comparison-status conflict'
+                                  : 'comparison-status'
+                            }
+                            style={
+                              s.reason === 'description-similar' && !s.ambiguous
+                                ? { background: '#fef3c7', color: '#92400e' }
+                                : undefined
+                            }
+                          >
+                            {s.reasonLabel}
+                          </span>
+                          {topCandidate && topCandidate.reason === 'description-similar' && topCandidate.matchedTerms.length > 0 && (
+                            <small style={{ display: 'block', marginTop: 4, color: '#64748b' }}>
+                              Termos: {topCandidate.matchedTerms.join(', ')}
+                            </small>
                           )}
+                          {s.ambiguous && s.ambiguityReason && (
+                            <small className="error-text" style={{ display: 'block', marginTop: 4 }}>
+                              ⚠️ {s.ambiguityReason}
+                            </small>
+                          )}
+                          {s.candidates.length > 1 && (
+                            <small style={{ display: 'block', marginTop: 2, color: '#475569' }}>
+                              Candidatos: {s.candidates.map(c => c.psd.name).join(' | ')}
+                            </small>
+                          )}
+                        </td>
+                        <td>
+                          <select
+                            aria-label={`Arquivo PSD para F7 ${s.item.f7} ${s.item.description}`}
+                            style={{ width: '100%', maxWidth: 420, fontSize: 12, padding: '4px 6px' }}
+                            value={effectiveSel.psdPath}
+                            onChange={e => {
+                              const nextPath = e.target.value;
+                              setPsdPairingSelections(prev => ({
+                                ...prev,
+                                [s.item.id]: {
+                                  psdPath: nextPath,
+                                  includedInBatch: Boolean(nextPath),
+                                  reviewedByUser: true,
+                                },
+                              }));
+                              setShowBatchConfirmStep(false);
+                            }}
+                          >
+                            <option value="">
+                              {s.ambiguous
+                                ? `(Correspondência ambígua: escolha entre ${s.candidates.length} candidatos...)`
+                                : s.reason === 'no-suggestion'
+                                  ? '(Sem sugestão — escolher PSD manualmente...)'
+                                  : '(Não vincular neste lote)'}
+                            </option>
+                            {s.candidates.map(c => (
+                              <option key={c.psd.path} value={c.psd.path}>
+                                {c.reason === 'f7-exact' ? '⭐ [Candidato · F7 exato] ' : '💡 [Candidato · Descrição parecida] '}
+                                {c.psd.name}
+                              </option>
+                            ))}
+                            {otherPsds.map(p => (
+                              <option key={p.path} value={p.path}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </select>
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          {linkedItem ? (
-                            <span className="comparison-status" style={{ background: '#dcfce7', color: '#15803d' }}>
-                              ✓ Vinculado
-                            </span>
-                          ) : (
-                            <button
-                              disabled={!currentTargetItem}
-                              className="subtle"
-                              style={{ fontSize: 11, padding: '4px 8px' }}
-                              onClick={() => {
-                                if (currentTargetItem) {
-                                  run(() =>
-                                    handleAssignPsdToOfferItem(
-                                      currentTargetItem.id,
-                                      currentTargetItem.f7,
-                                      currentTargetItem.description,
-                                      currentTargetItem.scheduledPriceCents,
-                                      entry.path,
-                                      psdPaperSize
-                                    )
-                                  );
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
+                              <input
+                                type="checkbox"
+                                checked={effectiveSel.includedInBatch && Boolean(selectedPsd)}
+                                disabled={!selectedPsd || batchLinking}
+                                onChange={e => {
+                                  const checked = e.target.checked;
+                                  setPsdPairingSelections(prev => ({
+                                    ...prev,
+                                    [s.item.id]: {
+                                      psdPath: effectiveSel.psdPath,
+                                      includedInBatch: checked && Boolean(effectiveSel.psdPath),
+                                      reviewedByUser: true,
+                                    },
+                                  }));
+                                  setShowBatchConfirmStep(false);
+                                }}
+                              />
+                              <span>
+                                {s.reason === 'description-similar' && !effectiveSel.reviewedByUser
+                                  ? 'Confirmar sugestão p/ lote'
+                                  : 'Incluir no lote'}
+                              </span>
+                            </label>
+                            {selectedPsd && (
+                              <button
+                                disabled={batchLinking}
+                                className="subtle"
+                                style={{ fontSize: 11, padding: '3px 8px' }}
+                                onClick={() =>
+                                  run(() => handleAssignPsdToOfferItem(s.item.id, selectedPsd.path, psdPaperSize))
                                 }
-                              }}
-                            >
-                              ⚡ Vincular ({psdPaperSize})
-                            </button>
-                          )}
+                              >
+                                ⚡ Vincular agora ({psdPaperSize})
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
                   })}
-                  {filteredScannedPsds.length === 0 && (
+                  {filteredPsdSuggestions.length === 0 && (
                     <tr>
                       <td colSpan={4} style={{ textAlign: 'center', padding: 24, color: '#64748b' }}>
-                        Nenhum arquivo PSD encontrado{psdFilterText ? ' com este filtro' : ''}.
+                        {activeCampaign && activeCampaign.items.length === 0
+                          ? 'Importe uma planilha Excel na campanha antes de parear artes PSD.'
+                          : 'Nenhum produto da campanha encontrado para este filtro/pesquisa.'}
                       </td>
                     </tr>
                   )}
@@ -1684,7 +1870,7 @@ export function OfferFolders({ libraryData, run, onPrintBatch, onRefreshLibrary 
             </div>
 
             <div className="toolbar" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
-              <button className="subtle" onClick={() => setShowPsdManagerModal(false)}>
+              <button className="subtle" disabled={batchLinking} onClick={() => setShowPsdManagerModal(false)}>
                 Fechar
               </button>
             </div>

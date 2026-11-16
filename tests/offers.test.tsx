@@ -19,15 +19,21 @@ import {
   applyExcelToCampaign,
   archiveCampaign,
   buildCampaignMatchViews,
+  buildCampaignPsdSuggestions,
+  buildInitialPsdPairingSelections,
+  buildPsdBatchConfirmationSummary,
   buildScheduledDocument,
   buildScheduledPoster,
   confirmBatchPrinted,
   createCampaign,
   deleteCampaign,
   duplicateCampaign,
+  executePsdBatchLinking,
+  extractMeaningfulDescriptionTokens,
   inspectScheduledPriceApplication,
   linkSavedPosterToCampaignItem,
   listCampaigns,
+  matchesExactF7InFilename,
   renameCampaign,
   saveCampaign,
   suggestFromExcelDescription,
@@ -36,6 +42,7 @@ import {
   updateScheduledPrice,
 } from '../src/features/ofertas/service';
 import type { OfferCampaign, PsdImportOfferContext } from '../src/features/ofertas/types';
+import type { ScannedPsdEntry } from '../src/features/scantech/types';
 import { OfferFolders } from '../src/components/ofertas/OfferFolders';
 import { PsdImport } from '../src/components/library/PsdImport';
 import { formatCentsBr, splitCentsToParts } from '../src/features/cartazes/presentation';
@@ -706,4 +713,311 @@ test('Correção de preços decimais e camadas PSD: R$ 19,89 vs R$ 89,19 (F7 383
     assert.equal(check.priceMismatchReason, null, `Erro inesperado para ${tc.expectedBr}: ${check.priceMismatchReason}`);
     assert.equal(check.appliedPriceCents, tc.expectedCents);
   }
+});
+
+test('Pareamento de artes PSD na Pasta de Ofertas: F7 exato, descrição parecida (normalização de acentos e stopwords), ausência e ambiguidade de candidatos', () => {
+  // 1. Teste de detecção de F7 exato no nome do arquivo PSD e distinção de zeros à esquerda
+  assert.equal(matchesExactF7InFilename('25037', '25037 - abobora cabotia.psd'), true);
+  assert.equal(matchesExactF7InFilename('001245', 'F7_001245_repolho_verde.psd'), true);
+  assert.equal(matchesExactF7InFilename('001245', '1245_repolho_verde.psd'), false);
+  assert.equal(matchesExactF7InFilename('25037', '0025037_abobora.psd'), false);
+  assert.equal(matchesExactF7InFilename('5', 'arroz rampinelli 5kg [A5].psd'), false);
+
+  // 2. Teste de normalização de acentos e remoção de palavras comuns / unidades
+  assert.deepEqual(
+    extractMeaningfulDescriptionTokens('FLV.ABÓBORA DE CABOTIÁ KG PARA OFERTA'),
+    ['abobora', 'cabotia']
+  );
+  assert.deepEqual(
+    extractMeaningfulDescriptionTokens('AÇÚCAR CRISTAL BARRÁLCOOL 2KG COM DESCONTO'),
+    ['acucar', 'cristal', 'barralcool', 'desconto']
+  );
+
+  // 3. Montar campanha com 5 produtos cobrindo todos os cenários:
+  // - Item 1 (F7 38340): F7 exato único -> confiável
+  // - Item 2 (F7 25037): Sem F7 no arquivo, mas descrição parecida com acentos -> requer revisão
+  // - Item 3 (F7 001245): Múltiplos candidatos com mesmo F7 -> ambíguo
+  // - Item 4 (F7 77889): Múltiplos candidatos por descrição parecida -> ambíguo
+  // - Item 5 (F7 999999): Sem nenhum PSD candidato -> sem sugestão
+  let campaign = createCampaign('Campanha Fim de Semana', '2026-11-20');
+  const sheet = {
+    name: 'Ofertas',
+    rows: [
+      ['F7', 'DESCRIÇÃO', 'PREÇO OFERTA'],
+      ['38340', 'ARROZ RAMPINELLI TIPO 1 5KG', '19,89'],
+      ['25037', 'FLV.ABÓBORA KG CABOTIÁ', '2,89'],
+      ['001245', 'REPOLHO VERDE KG', '3,49'],
+      ['77889', 'CERVEJA CORONA EXTRA 350ML', '4,99'],
+      ['999999', 'DETERGENTE NEUTRO INEXISTENTE 500ML', '1,99'],
+    ],
+  };
+  const extraction = extractCampaignItemsFromSheet(sheet, 0, { f7Col: 0, descriptionCol: 1, priceCol: 2 });
+  campaign = applyExcelToCampaign(campaign, extraction, [], {
+    fileName: 'campanha.xlsx',
+    sheetName: 'Ofertas',
+    headerRowIndex: 0,
+    mapping: { f7Col: 0, descriptionCol: 1, priceCol: 2 },
+  });
+
+  const scannedPsds: ScannedPsdEntry[] = [
+    { name: 'F7 38340 - arroz outro nome.psd', path: 'C:\\PSDs\\38340.psd', size: 1024 * 1024 },
+    { name: 'arroz rampinelli 5kg sem f7.psd', path: 'C:\\PSDs\\arroz_desc.psd', size: 1024 * 1024 },
+    { name: 'abobora cabotia oferta.psd', path: 'C:\\PSDs\\abobora.psd', size: 1024 * 1024 },
+    { name: '001245 - repolho verde a5.psd', path: 'C:\\PSDs\\repolho_a5.psd', size: 1024 * 1024 },
+    { name: '001245 - repolho verde a6.psd', path: 'C:\\PSDs\\repolho_a6.psd', size: 1024 * 1024 },
+    { name: 'cerveja corona extra lata.psd', path: 'C:\\PSDs\\corona_lata.psd', size: 1024 * 1024 },
+    { name: 'cerveja corona extra long neck.psd', path: 'C:\\PSDs\\corona_ln.psd', size: 1024 * 1024 },
+  ];
+
+  const suggestions = buildCampaignPsdSuggestions(campaign, scannedPsds);
+  assert.equal(suggestions.length, 5);
+
+  // Item 1 (38340): Prioriza F7 exato sobre arquivo com descrição parecida
+  const sugArroz = suggestions.find(s => s.item.f7 === '38340')!;
+  assert.equal(sugArroz.reason, 'f7-exact');
+  assert.equal(sugArroz.reasonLabel, 'F7 exato');
+  assert.equal(sugArroz.ambiguous, false);
+  assert.equal(sugArroz.candidates.length, 1);
+  assert.equal(sugArroz.recommendedPsd?.path, 'C:\\PSDs\\38340.psd');
+  assert.equal(sugArroz.autoSelectForBatch, true);
+
+  // Item 2 (25037): Sugestão por descrição parecida (normalizando acentos de ABÓBORA CABOTIÁ e ignorando FLV/KG)
+  const sugAbobora = suggestions.find(s => s.item.f7 === '25037')!;
+  assert.equal(sugAbobora.reason, 'description-similar');
+  assert.equal(sugAbobora.reasonLabel, 'Descrição parecida');
+  assert.equal(sugAbobora.ambiguous, false);
+  assert.equal(sugAbobora.recommendedPsd?.path, 'C:\\PSDs\\abobora.psd');
+  assert.deepEqual(sugAbobora.candidates[0].matchedTerms, ['abobora', 'cabotia']);
+  // Não deve ser marcado automaticamente para lote sem revisão explícita!
+  assert.equal(sugAbobora.autoSelectForBatch, false);
+
+  // Item 3 (001245): Múltiplos candidatos com o mesmo F7 -> ambíguo
+  const sugRepolho = suggestions.find(s => s.item.f7 === '001245')!;
+  assert.equal(sugRepolho.reason, 'f7-exact');
+  assert.equal(sugRepolho.reasonLabel, 'F7 exato');
+  assert.equal(sugRepolho.ambiguous, true);
+  assert.equal(sugRepolho.candidates.length, 2);
+  assert.equal(sugRepolho.recommendedPsd, null);
+  assert.equal(sugRepolho.autoSelectForBatch, false);
+  assert.ok(sugRepolho.ambiguityReason?.includes('Mais de um arquivo PSD (2)'));
+
+  // Item 4 (77889): Múltiplos candidatos por descrição parecida -> ambíguo
+  const sugCorona = suggestions.find(s => s.item.f7 === '77889')!;
+  assert.equal(sugCorona.reason, 'description-similar');
+  assert.equal(sugCorona.reasonLabel, 'Descrição parecida');
+  assert.equal(sugCorona.ambiguous, true);
+  assert.equal(sugCorona.candidates.length, 2);
+  assert.equal(sugCorona.recommendedPsd, null);
+  assert.equal(sugCorona.autoSelectForBatch, false);
+
+  // Item 5 (999999): Sem sugestão
+  const sugInexistente = suggestions.find(s => s.item.f7 === '999999')!;
+  assert.equal(sugInexistente.reason, 'no-suggestion');
+  assert.equal(sugInexistente.reasonLabel, 'Sem sugestão');
+  assert.equal(sugInexistente.ambiguous, false);
+  assert.equal(sugInexistente.candidates.length, 0);
+  assert.equal(sugInexistente.recommendedPsd, null);
+  assert.equal(sugInexistente.autoSelectForBatch, false);
+});
+
+test('Pareamento PSD: revisão, confirmação em lote, separação de preços (biblioteca vs oferta) e relato claro de erros parciais', async () => {
+  let campaign = createCampaign('Ofertas Quarta', '2026-11-21');
+  const sheet = {
+    name: 'Ofertas',
+    rows: [
+      ['F7', 'DESCRIÇÃO', 'PREÇO OFERTA'],
+      ['38340', 'ARROZ RAMPINELLI 5KG', '19,89'],
+      ['25037', 'FLV.ABÓBORA KG CABOTIÁ', '2,89'],
+      ['001245', 'REPOLHO VERDE KG', '3,49'],
+      ['999999', 'PRODUTO SEM SUGESTÃO', '9,99'],
+    ],
+  };
+  const extraction = extractCampaignItemsFromSheet(sheet, 0, { f7Col: 0, descriptionCol: 1, priceCol: 2 });
+  campaign = applyExcelToCampaign(campaign, extraction, [], {
+    fileName: 'quarta.xlsx',
+    sheetName: 'Ofertas',
+    headerRowIndex: 0,
+    mapping: { f7Col: 0, descriptionCol: 1, priceCol: 2 },
+  });
+
+  const scannedPsds: ScannedPsdEntry[] = [
+    { name: '38340 - arroz rampinelli.psd', path: 'C:\\PSDs\\38340.psd', size: 2048 },
+    { name: 'abobora cabotia.psd', path: 'C:\\PSDs\\abobora.psd', size: 2048 },
+    { name: '001245 - repolho a5.psd', path: 'C:\\PSDs\\repolho_a5.psd', size: 2048 },
+    { name: '001245 - repolho a6.psd', path: 'C:\\PSDs\\repolho_a6.psd', size: 2048 },
+  ];
+
+  const suggestions = buildCampaignPsdSuggestions(campaign, scannedPsds);
+  const selections = buildInitialPsdPairingSelections(suggestions);
+
+  // 1. Antes da revisão manual: o resumo de confirmação em lote inclui APENAS o F7 exato não ambíguo (38340)
+  // Sugestão apenas por descrição (25037) e ambígua com 2 candidatos (001245) NÃO entram silenciosamente!
+  const summaryDefault = buildPsdBatchConfirmationSummary(suggestions, selections, scannedPsds);
+  assert.equal(summaryDefault.toLink.length, 1);
+  assert.equal(summaryDefault.toLink[0].item.f7, '38340');
+  assert.equal(summaryDefault.exactF7Count, 1);
+  assert.equal(summaryDefault.reviewedManualOrDescriptionCount, 0);
+  assert.equal(summaryDefault.skippedAmbiguousOrUnreviewedCount, 2); // 25037 (descrição) + 001245 (ambíguo)
+  assert.equal(summaryDefault.skippedNoSuggestionCount, 1); // 999999
+
+  // Mesmo que alguém tente forçar includedInBatch=true sem reviewedByUser=true em item de descrição, o guard bloqueia
+  const aboboraItem = campaign.items.find(i => i.f7 === '25037')!;
+  const unreviewedAttempt = {
+    ...selections,
+    [aboboraItem.id]: {
+      psdPath: 'C:\\PSDs\\abobora.psd',
+      includedInBatch: true,
+      reviewedByUser: false,
+    },
+  };
+  assert.equal(buildPsdBatchConfirmationSummary(suggestions, unreviewedAttempt, scannedPsds).toLink.length, 1);
+
+  // 2. Usuário revisa explicitamente a sugestão por descrição (25037) e escolhe manualmente um candidato para o ambíguo (001245)
+  const repolhoItem = campaign.items.find(i => i.f7 === '001245')!;
+  const reviewedSelections = {
+    ...selections,
+    [aboboraItem.id]: {
+      psdPath: 'C:\\PSDs\\abobora.psd',
+      includedInBatch: true,
+      reviewedByUser: true,
+    },
+    [repolhoItem.id]: {
+      psdPath: 'C:\\PSDs\\repolho_a6.psd',
+      includedInBatch: true,
+      reviewedByUser: true,
+    },
+  };
+
+  const summaryReviewed = buildPsdBatchConfirmationSummary(suggestions, reviewedSelections, scannedPsds);
+  assert.equal(summaryReviewed.toLink.length, 3);
+  assert.equal(summaryReviewed.exactF7Count, 1);
+  assert.equal(summaryReviewed.reviewedManualOrDescriptionCount, 2);
+  assert.equal(summaryReviewed.skippedAmbiguousOrUnreviewedCount, 0);
+  assert.equal(summaryReviewed.skippedNoSuggestionCount, 1);
+
+  // 3. Renderização da interface de Pareamento PSD e da etapa de Confirmação em Lote
+  const modalMarkup = renderToStaticMarkup(
+    <OfferFolders
+      libraryData={null}
+      run={() => {}}
+      onPrintBatch={() => {}}
+      initialCampaigns={[campaign]}
+      initialActiveId={campaign.id}
+      initialPsdFolder="C:\\PSDs"
+      initialScannedPsds={scannedPsds}
+      initialShowPsdModal={true}
+      initialShowBatchConfirmStep={true}
+      initialPsdPairingSelections={reviewedSelections}
+    />
+  );
+  assert.ok(modalMarkup.includes('Pareamento de Artes PSD com Produtos da Campanha'));
+  assert.ok(modalMarkup.includes('Selecionar uma pasta serve apenas para procurar arquivos PSD de referência'));
+  assert.ok(modalMarkup.includes('F7 exato'));
+  assert.ok(modalMarkup.includes('Descrição parecida'));
+  assert.ok(modalMarkup.includes('Sem sugestão'));
+  assert.ok(modalMarkup.includes('Mais de um arquivo PSD (2) encontrado para o F7 001245'));
+  assert.ok(modalMarkup.includes('Confirmar aplicação de vínculos em lote (3 produto(s)'));
+
+  // 4. Executar lote preservando integridade do PSD original e separação entre preço base da biblioteca e preço futuro da oferta
+  const originalPsdBytes = new Uint8Array([0x38, 0x42, 0x50, 0x53, 1, 2, 3, 4]);
+  const savedDocs = new Map<string, ReturnType<typeof createDocument>>();
+
+  const batchSuccess = await executePsdBatchLinking(
+    campaign,
+    summaryReviewed.toLink.map(e => ({ item: e.item, psd: e.psd })),
+    'A6',
+    'C:\\Biblioteca',
+    {
+      readPsd: async psdPath => ({
+        name: psdPath.split('\\').pop()!,
+        path: psdPath,
+        buffer: originalPsdBytes.buffer.slice(0),
+      }),
+      buildCartazFromPsd: async (_psdData, item, paperSize) => {
+        const doc = createDocument();
+        doc.product.name = item.description;
+        doc.product.productCode = item.f7;
+        // Simula preço base original extraído da arte PSD (R$ 24,90 para arroz, R$ 3,99 para demais)
+        doc.product.priceCents = item.f7 === '38340' ? 2490 : 399;
+        doc.layout.paper = paperSize;
+        return doc;
+      },
+      saveCartazDocument: async (targetPath, doc) => {
+        savedDocs.set(targetPath, doc);
+      },
+      persistCampaign: async updated => updated,
+    }
+  );
+
+  assert.equal(batchSuccess.success, true);
+  assert.equal(batchSuccess.linkedCount, 3);
+  assert.equal(batchSuccess.errors.length, 0);
+  assert.ok(batchSuccess.message.includes('Vinculação concluída com sucesso'));
+  // Buffer original permanece intacto
+  assert.deepEqual(originalPsdBytes, new Uint8Array([0x38, 0x42, 0x53 === 0 ? 0 : 0x50, 0x53, 1, 2, 3, 4]));
+
+  // Verifica que na biblioteca o preço base do PSD (2490 = R$ 24,90) foi salvo, enquanto na campanha o preço futuro permanece 1989 (R$ 19,89)
+  const libEntries: Entry[] = [...savedDocs.entries()].map(([path, doc]) => ({
+    name: path.split('\\').pop()!,
+    path,
+    folder: false,
+    content: serialize(doc),
+  }));
+  const viewsAfter = buildCampaignMatchViews(batchSuccess.campaign, indexCartazes(libEntries));
+  const arrozView = viewsAfter.find(v => v.item.f7 === '38340')!;
+  assert.equal(arrozView.missingPoster, false);
+  assert.equal(arrozView.matchedPosters[0].currentPriceCents, 2490); // Preço base na biblioteca intacto
+  assert.equal(arrozView.item.scheduledPriceCents, 1989); // Preço futuro da oferta intacto
+  assert.equal(arrozView.matchedPosters[0].scheduledDocument?.product.priceCents, 1989);
+
+  // 5. Falha parcial durante vinculação: não deve informar sucesso se parte da operação falhou
+  const batchPartialFailure = await executePsdBatchLinking(
+    campaign,
+    summaryReviewed.toLink.map(e => ({ item: e.item, psd: e.psd })),
+    'A6',
+    'C:\\Biblioteca',
+    {
+      readPsd: async psdPath => {
+        if (psdPath.includes('abobora')) {
+          throw new Error('Arquivo PSD corrompido ou inacessível.');
+        }
+        return { name: psdPath, path: psdPath, buffer: new ArrayBuffer(8) };
+      },
+      buildCartazFromPsd: async (_psdData, item) => {
+        if (item.f7 === '001245') {
+          throw new Error('Camadas de preço Reais/Centavos não encontradas no PSD.');
+        }
+        const doc = createDocument();
+        doc.product.productCode = item.f7;
+        return doc;
+      },
+      saveCartazDocument: async () => {},
+      persistCampaign: async updated => updated,
+    }
+  );
+
+  assert.equal(batchPartialFailure.success, false);
+  assert.equal(batchPartialFailure.linkedCount, 1);
+  assert.equal(batchPartialFailure.errors.length, 2);
+  assert.ok(!batchPartialFailure.message.includes('Vinculação concluída com sucesso'));
+  assert.ok(batchPartialFailure.message.includes('Atenção: operação concluída com falhas'));
+  assert.ok(batchPartialFailure.errors.some(e => e.f7 === '25037' && e.error.includes('Arquivo PSD corrompido')));
+  assert.ok(batchPartialFailure.errors.some(e => e.f7 === '001245' && e.error.includes('Camadas de preço')));
+
+  const errorMarkup = renderToStaticMarkup(
+    <OfferFolders
+      libraryData={null}
+      run={() => {}}
+      onPrintBatch={() => {}}
+      initialCampaigns={[batchPartialFailure.campaign]}
+      initialActiveId={batchPartialFailure.campaign.id}
+      initialPsdFolder="C:\\PSDs"
+      initialScannedPsds={scannedPsds}
+      initialShowPsdModal={true}
+      initialBatchLinkResult={batchPartialFailure}
+    />
+  );
+  assert.ok(errorMarkup.includes('Atenção: operação concluída com falhas'));
+  assert.ok(errorMarkup.includes('Arquivo PSD corrompido ou inacessível.'));
+  assert.ok(errorMarkup.includes('Camadas de preço Reais/Centavos não encontradas no PSD.'));
 });
