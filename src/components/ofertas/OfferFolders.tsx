@@ -2,8 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
 import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
-import { digitsOnly, indexCartazes } from '../../features/cartazes/f7';
-import { chooseSave, saveDocument } from '../../features/cartazes/storage';
+import { digitsOnly, indexCartazes, type IndexedCartaz } from '../../features/cartazes/f7';
+import { chooseSave, saveDocument, saveExportDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
@@ -55,7 +55,6 @@ import {
 import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech/types';
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
-import { saveLinkedArtwork } from '../../features/psd/editLinkedArtwork';
 import { splitCentsToParts } from '../../features/cartazes/presentation';
 import { fileName, priceToCents } from '../../features/cartazes/validation';
 import type { PaperFormat } from '../../features/cartazes/types';
@@ -63,10 +62,6 @@ import type { PaperFormat } from '../../features/cartazes/types';
 const PsdImport = lazy(() =>
   import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
 );
-const EditLinkedPsd = lazy(() =>
-  import('./EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
-);
-
 type PsdPairingFilter =
   | 'todos'
   | PsdSuggestionReason
@@ -85,9 +80,8 @@ type Props = {
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[]) => void;
   onEditPoster?: (path: string) => Promise<void>;
+  onEditLinkedArtwork?: (path: string, document: Cartaz, scheduledPriceCents: number) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
-  getEditorGuard?: () => { path: string | null; dirty: boolean };
-  onArtworkSaved?: (path: string) => Promise<void>;
   initialCampaigns?: OfferCampaign[];
   initialActiveId?: string | null;
   initialPsdFolder?: string | null;
@@ -119,9 +113,8 @@ export function OfferFolders({
   run,
   onPrintBatch,
   onEditPoster,
+  onEditLinkedArtwork,
   onRefreshLibrary,
-  getEditorGuard,
-  onArtworkSaved,
   initialCampaigns = [],
   initialActiveId = null,
   initialPsdFolder = null,
@@ -154,11 +147,6 @@ export function OfferFolders({
 
   // PSD import modal state from "Sem cartaz" row
   const [psdOfferContext, setPsdOfferContext] = useState<PsdImportOfferContext | null>(null);
-  const [editingArtwork, setEditingArtwork] = useState<{
-    path: string;
-    document: Cartaz;
-    scheduledPriceCents: number;
-  } | null>(null);
   const [variantSource, setVariantSource] = useState<OfferVariantSource | null>(null);
   const [variantName, setVariantName] = useState('');
   const [variantComplement, setVariantComplement] = useState('');
@@ -199,7 +187,12 @@ export function OfferFolders({
   const [exportFolder, setExportFolder] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; message: string } | null>(null);
-  const [exportResult, setExportResult] = useState<{ psdCount: number; skCount: number; errors: string[] } | null>(null);
+  const [exportResult, setExportResult] = useState<{
+    psdCount: number;
+    skCount: number;
+    candidateCount: number;
+    errors: string[];
+  } | null>(null);
 
   const libraryIndex = useMemo(() => indexCartazes(libraryData?.entries ?? []), [libraryData]);
 
@@ -513,11 +506,15 @@ export function OfferFolders({
         cartazPath: string;
         doc: Cartaz;
       }[] = [];
+      const candidateKeys = new Set<string>();
 
       for (const v of matchViews) {
         for (const m of v.matchedPosters) {
           if (!m.scheduledDocument) continue;
           if (exportOnlySelected && !m.state.selected) continue;
+          const candidateKey = `${v.item.id}::${m.state.cartazPath.replace(/\//g, '\\').toLocaleLowerCase('en-US')}`;
+          if (candidateKeys.has(candidateKey)) continue;
+          candidateKeys.add(candidateKey);
           candidates.push({
             item: v.item,
             cartazPath: m.state.cartazPath,
@@ -559,7 +556,7 @@ export function OfferFolders({
           try {
             const skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
             const skPath = `${targetFolder}\\${skFileName}`;
-            await saveDocument(skPath, doc, true);
+            await saveExportDocument(skPath, doc);
             skCount++;
           } catch (e) {
             errors.push(`SK ${item.f7}: ${e instanceof Error ? e.message : String(e)}`);
@@ -610,7 +607,7 @@ export function OfferFolders({
         }
       }
 
-      setExportResult({ psdCount, skCount, errors });
+      setExportResult({ psdCount, skCount, candidateCount: candidates.length, errors });
     } finally {
       setExporting(false);
       setExportProgress(null);
@@ -630,16 +627,11 @@ export function OfferFolders({
     setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
   };
 
-  const handleSaveArtwork = async (updated: Cartaz) => {
-    if (!editingArtwork) throw new Error('Cartaz selecionado não está mais disponível.');
-    const { path, document } = editingArtwork;
-    await saveLinkedArtwork(path, document, updated, getEditorGuard?.());
-    try {
-      if (onArtworkSaved) await onArtworkSaved(path);
-      else if (onRefreshLibrary) await onRefreshLibrary();
-    } catch (ex) {
-      throw new Error(`O cartaz foi salvo, mas a biblioteca não pôde ser atualizada. Atualize-a antes de continuar. ${String(ex)}`);
-    }
+  const handleLinkLibraryPoster = async (offerItemId: string, poster: IndexedCartaz) => {
+    if (!activeCampaign) return;
+    const linked = linkSavedPosterToCampaignItem(activeCampaign, offerItemId, poster.path, poster.document);
+    await persistUpdate(linked);
+    setPreviewKey(`${offerItemId}::${poster.path}`);
   };
 
   const handleOpenVariant = (
@@ -732,7 +724,7 @@ export function OfferFolders({
       if (q && !`${v.item.f7} ${v.item.description}`.toLocaleLowerCase('pt-BR').includes(q)) {
         return false;
       }
-      if (statusFilter === 'com-cartaz') return !v.missingPoster;
+      if (statusFilter === 'com-cartaz') return v.matchedPosters.some(m => Boolean(m.libraryCartaz));
       if (statusFilter === 'sem-cartaz') return v.missingPoster;
       if (statusFilter === 'pendente' || statusFilter === 'preparado' || statusFilter === 'impresso') {
         return v.matchedPosters.some(m => m.state.status === statusFilter);
@@ -1417,28 +1409,14 @@ export function OfferFolders({
                                               <button
                                                 className="subtle"
                                                 style={{ padding: '5px 10px', fontSize: 12 }}
-                                                title={
-                                                  m.libraryCartaz.document.layout.template === 'imported-psd' &&
-                                                  !m.libraryCartaz.document.layout.artwork.isReferenceTemplate
-                                                    ? 'Arte PSD legada: o editor permite alterar preço e F7, mas não o conteúdo visual.'
-                                                    : 'Abrir este cartaz no editor.'
-                                                }
-                                                onClick={() => run(() => onEditPoster(m.state.cartazPath))}
+                                                title={m.libraryCartaz.document.layout.template === 'imported-psd'
+                                                  ? 'Abrir este cartaz e seu PSD vinculado no editor.'
+                                                  : 'Abrir este cartaz no editor.'}
+                                                onClick={() => run(() => m.libraryCartaz!.document.layout.template === 'imported-psd' && onEditLinkedArtwork
+                                                  ? onEditLinkedArtwork(m.libraryCartaz!.path, m.libraryCartaz!.document, v.item.scheduledPriceCents)
+                                                  : onEditPoster(m.libraryCartaz!.path))}
                                               >
                                                 Editar cartaz
-                                              </button>
-                                            )}
-                                            {m.libraryCartaz?.document.layout.template === 'imported-psd' && (
-                                              <button
-                                                className="subtle"
-                                                style={{ padding: '5px 10px', fontSize: 12 }}
-                                                onClick={() => setEditingArtwork({
-                                                  path: m.libraryCartaz!.path,
-                                                  document: m.libraryCartaz!.document,
-                                                  scheduledPriceCents: v.item.scheduledPriceCents,
-                                                })}
-                                              >
-                                                Editar textos da arte
                                               </button>
                                             )}
                                             {m.libraryCartaz && (
@@ -1466,6 +1444,24 @@ export function OfferFolders({
                                         </div>
                                       );
                                     })}
+                                    {v.unlinkedLibraryPosters.map(poster => (
+                                      <div key={poster.path} className="offer-poster-row">
+                                        <strong>
+                                          Encontrado na biblioteca: {poster.document.product.name}{' '}
+                                          {poster.document.product.complement}
+                                        </strong>
+                                        <small>
+                                          F7 {v.item.f7} · {poster.path}
+                                        </small>
+                                        <button
+                                          className="subtle"
+                                          style={{ padding: '5px 10px', fontSize: 12 }}
+                                          onClick={() => run(() => handleLinkLibraryPoster(v.item.id, poster))}
+                                        >
+                                          Vincular cartaz
+                                        </button>
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                               </td>
@@ -1503,17 +1499,6 @@ export function OfferFolders({
           )}
         </div>
       </div>
-
-      {editingArtwork && (
-        <Suspense fallback={<div className="modal-backdrop" role="status">Carregando editor PSD…</div>}>
-          <EditLinkedPsd
-            document={editingArtwork.document}
-            scheduledPriceCents={editingArtwork.scheduledPriceCents}
-            close={() => setEditingArtwork(null)}
-            save={handleSaveArtwork}
-          />
-        </Suspense>
-      )}
 
       {variantSource && (
         <div className="modal-backdrop psd-backdrop">
@@ -2233,10 +2218,10 @@ export function OfferFolders({
 
             {exportResult && (
               <div className="import-warning" style={{ margin: '14px 0', padding: 12 }}>
-                <strong>Exportação Concluída!</strong>
+                <strong>{exportResult.errors.length ? 'Exportação parcial' : 'Exportação concluída'}</strong>
                 <ul style={{ margin: '6px 0 0 16px', padding: 0, fontSize: 13 }}>
-                  {exportResult.psdCount > 0 && <li><strong>{exportResult.psdCount}</strong> arquivos .PSD gerados.</li>}
-                  {exportResult.skCount > 0 && <li><strong>{exportResult.skCount}</strong> arquivos .skcartaz gerados.</li>}
+                  {exportFormatPsd && <li><strong>{exportResult.psdCount} de {exportResult.candidateCount}</strong> arquivos .PSD gerados.</li>}
+                  {exportFormatSk && <li><strong>{exportResult.skCount} de {exportResult.candidateCount}</strong> arquivos .skcartaz gerados.</li>}
                 </ul>
                 {exportResult.errors.length > 0 && (
                   <div style={{ marginTop: 8, color: '#b91c1c' }}>

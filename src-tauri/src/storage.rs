@@ -1,11 +1,33 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashSet, fs, io::Write, path::{Path, PathBuf}, sync::Mutex};
+use std::{collections::HashSet, fs, io::Write, path::{Component, Path, PathBuf}, sync::Mutex};
 use tauri::Manager;
 pub(crate) const MAX_DOCUMENT_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Default)]
-pub struct Access(Mutex<HashSet<PathBuf>>);
+pub struct Access {
+    files: Mutex<HashSet<PathBuf>>,
+    export_directories: Mutex<HashSet<PathBuf>>,
+}
+impl Access {
+    pub(crate) fn authorize_export_directory(&self, path: &Path) -> Result<PathBuf, String> {
+        let directory = path.canonicalize().map_err(err)?;
+        if !directory.is_dir() {
+            return Err("A pasta de exportação selecionada não está disponível.".into());
+        }
+        self.export_directories.lock().map_err(err)?.insert(directory.clone());
+        Ok(directory)
+    }
+
+    fn export_root_for(&self, path: &Path) -> Result<PathBuf, String> {
+        self.export_directories
+            .lock().map_err(err)?
+            .iter()
+            .find(|root| path.starts_with(root))
+            .cloned()
+            .ok_or_else(|| "Selecione novamente a pasta de exportação para autorizar o acesso.".into())
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
@@ -81,6 +103,25 @@ pub(crate) fn write(p: &Path, s: &str, overwrite: bool) -> Result<(), String> {
     else { tmp.persist_noclobber(p).map_err(|_| "Já existe um arquivo nesse destino. Escolha outro nome.")?; }
     Ok(())
 }
+fn save_export_cartaz(access: &Access, raw_path: &Path, content: &str) -> Result<PathBuf, String> {
+    extension(raw_path)?;
+    let file_name = raw_path.file_name().ok_or("Nome de arquivo inválido.")?;
+    name(&file_name.to_string_lossy())?;
+    let root = access.export_root_for(raw_path)?;
+    let relative = raw_path.strip_prefix(&root).map_err(err)?;
+    if relative.components().any(|component| !matches!(component, Component::Normal(_))) {
+        return Err("O caminho de exportação contém componentes inválidos.".into());
+    }
+    let parent = raw_path.parent().ok_or("Caminho inválido.")?;
+    fs::create_dir_all(parent).map_err(err)?;
+    let parent = parent.canonicalize().map_err(err)?;
+    if !parent.starts_with(&root) {
+        return Err("O destino de exportação precisa permanecer dentro da pasta escolhida.".into());
+    }
+    let target = parent.join(file_name);
+    write(&target, content, true)?;
+    Ok(target)
+}
 fn move_file(source: &Path, target: &Path) -> Result<(), String> {
     let content = read(source)?;
     write(target, &content, false)?;
@@ -140,14 +181,18 @@ pub async fn files(app: tauri::AppHandle, access: tauri::State<'_, Access>, requ
             Some(file) => {
                 let p = resolved(file.path())?;
                 if r.action == "folderDialog" { inside(&root, &p)?; }
-                else { extension(&p)?; access.0.lock().map_err(err)?.insert(p.clone()); }
+                else { extension(&p)?; access.files.lock().map_err(err)?.insert(p.clone()); }
                 Ok(json!(p))
             }
         };
     }
     let raw = PathBuf::from(r.path.ok_or("Caminho ausente.")?);
+    if r.action == "exportSave" {
+        let content = r.content.ok_or("Documento ausente.")?;
+        return Ok(json!(save_export_cartaz(&access, &raw, &content)?));
+    }
     let p = resolved(&raw)?;
-    if !p.starts_with(&root) && !access.0.lock().map_err(err)?.contains(&p) { return Err("Escolha o arquivo no diálogo nativo para autorizar o acesso.".into()); }
+    if !p.starts_with(&root) && !access.files.lock().map_err(err)?.contains(&p) { return Err("Escolha o arquivo no diálogo nativo para autorizar o acesso.".into()); }
     match r.action.as_str() {
         "read" => Ok(json!(read(&p)?)),
         "save" => { write(&p, &r.content.ok_or("Documento ausente.")?, r.overwrite.unwrap_or(false))?; Ok(json!(p)) },
@@ -205,6 +250,22 @@ mod tests {
         assert!(!copy.exists()); assert!(p.exists());
         assert_eq!(document(&read(&moved).unwrap()).unwrap()["product"]["priceCents"],349);
         assert!(move_file(&p,&moved).is_err()); assert!(p.exists());
+    }
+    #[test] fn export_save_is_scoped_to_the_chosen_folder_and_creates_campaign_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let export_root = dir.path().join("exports");
+        fs::create_dir(&export_root).unwrap();
+        let access = Access::default();
+        let authorized_root = access.authorize_export_directory(&export_root).unwrap();
+        let target = authorized_root.join("ofertas_2026-11-17").join("001245-oferta.skcartaz");
+        let saved = save_export_cartaz(&access, &target, &sample()).unwrap();
+        assert_eq!(saved, target);
+        assert_eq!(document(&read(&saved).unwrap()).unwrap()["product"]["name"], "REPOLHO");
+
+        let outside = dir.path().join("fora").join("arquivo.skcartaz");
+        assert!(save_export_cartaz(&access, &outside, &sample()).is_err());
+        let traversal = authorized_root.join("..").join("fora").join("arquivo.skcartaz");
+        assert!(save_export_cartaz(&access, &traversal, &sample()).is_err());
     }
     #[test] fn unsafe_paths_and_invalid_documents() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path().canonicalize().unwrap();

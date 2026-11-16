@@ -282,7 +282,9 @@ pub async fn choose_scantech_psd_folder() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-pub async fn choose_scantech_export_folder() -> Result<Option<String>, String> {
+pub async fn choose_scantech_export_folder(
+    access: tauri::State<'_, storage::Access>,
+) -> Result<Option<String>, String> {
     let chosen = rfd::AsyncFileDialog::new()
         .set_title("Selecionar pasta de destino para exportar novos arquivos PSD")
         .pick_folder()
@@ -291,6 +293,7 @@ pub async fn choose_scantech_export_folder() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let path = clean_windows_path(folder.path());
+    let path = access.authorize_export_directory(&path)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 

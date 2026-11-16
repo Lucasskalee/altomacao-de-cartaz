@@ -8,7 +8,7 @@ import { priceToCents, fileName } from '../features/cartazes/validation';
 import * as storage from '../features/cartazes/storage';
 import { digitsOnly } from '../features/cartazes/f7';
 import { repairInvertedPsdArtwork } from '../components/editor/importedRenderer';
-import { selectPsd } from '../features/psd/service';
+import { readPsdByPath, selectPsd } from '../features/psd/service';
 import { analyzePsd, buildArtwork } from '../features/psd/importer';
 import { exportDerivedPsdDirect } from '../features/scantech/directExport';
 export function useCartaz() {
@@ -111,8 +111,12 @@ export function useCartaz() {
       if (!selected) return false;
       const d = await storage.openDocument(selected); load(d, selected); return true;
     },
+    stageDocument(d: Cartaz, expectedPath: string) {
+      if (path !== expectedPath) throw new Error('O cartaz aberto no editor mudou. Reabra-o pela pasta de ofertas antes de continuar.');
+      load(d, expectedPath, true);
+    },
     async save(as = false) {
-      const d = current();
+      const d = as && path ? duplicate(current()) : current();
       d.metadata = { ...d.metadata, updatedAt: new Date().toISOString() };
       const baseName = d.product.productCode
         ? `${d.product.productCode} - ${d.product.name}${d.product.complement ? ' ' + d.product.complement : ''}`
@@ -177,7 +181,14 @@ export function useCartaz() {
               },
             });
             if (exp.ok) {
-              d.layout.artwork.source.sourcePath = destPsdPath;
+              const derived = await readPsdByPath(destPsdPath);
+              const analysis = await analyzePsd(derived.buffer, derived.name, derived.path);
+              d.layout.artwork.source = {
+                ...d.layout.artwork.source,
+                fileName: analysis.fileName,
+                sha256: analysis.hash,
+                sourcePath: destPsdPath,
+              };
             }
           } catch {
             // Em caso de erro na gravação do PSD, o documento .skcartaz continua sendo salvo

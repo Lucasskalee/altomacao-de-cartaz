@@ -420,6 +420,72 @@ test('Pastas de Ofertas: mostra ação de criar variação para cartaz clássico
   assert.ok(html.includes('Criar variação'));
 });
 
+test('Pastas de Ofertas: mostra cartaz exato da biblioteca ainda não vinculado à oferta', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  const document = createDocument();
+  document.product.name = 'ACUCAR MASCAVO ZAELI';
+  document.product.complement = '500G';
+  document.product.productCode = '15864';
+  const cartazPath = 'C:\\Cartazes\\acucar-mascavo.skcartaz';
+  campaign.items.push({
+    id: 'item-acucar-mascavo',
+    rowNumber: 10,
+    f7: '15864',
+    description: 'ACUCAR MASCAVO ZAELI 500G',
+    scheduledPriceCents: 879,
+    conflicting: false,
+    issues: [],
+    posters: [],
+  });
+
+  const html = renderToStaticMarkup(
+    <OfferFolders
+      libraryData={{
+        root: 'C:\\Cartazes',
+        entries: [{ name: 'acucar-mascavo.skcartaz', path: cartazPath, folder: false, content: serialize(document) }],
+      }}
+      run={() => {}}
+      onPrintBatch={() => {}}
+      initialCampaigns={[campaign]}
+      initialActiveId={campaign.id}
+    />
+  );
+  assert.ok(html.includes('Encontrado na biblioteca: ACUCAR MASCAVO ZAELI 500G'));
+  assert.ok(html.includes('Vincular cartaz'));
+});
+
+test('Pastas de Ofertas: remove cartazes repetidos pelo mesmo caminho sem juntar arquivos distintos', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  const document = createDocument();
+  document.product.productCode = '30001';
+  const path = 'C:\\Cartazes\\30001.skcartaz';
+  campaign.items.push({
+    id: 'item-duplicado',
+    rowNumber: 8,
+    f7: '30001',
+    description: 'ACUCAR CRISTAL BARRALCOOL 2KG',
+    scheduledPriceCents: 629,
+    conflicting: false,
+    issues: [],
+    posters: [
+      { cartazId: document.id, cartazPath: path, selected: true, copies: 1, status: 'impresso' },
+      { cartazId: document.id, cartazPath: path.toLowerCase().replace(/\\/g, '/'), selected: true, copies: 1, status: 'preparado' },
+    ],
+  });
+  const library = indexCartazes([{
+    name: '30001.skcartaz',
+    path,
+    folder: false,
+    content: serialize(document),
+  }]);
+
+  const view = buildCampaignMatchViews(campaign, library)[0];
+  assert.equal(view.matchedPosters.length, 1);
+  const synced = syncCampaignWithLibrary(campaign, library);
+  assert.equal(synced.items[0].posters.length, 1);
+  assert.equal(synced.items[0].posters[0].status, 'impresso');
+});
+
 test('Pastas de Ofertas: criação, associação por F7 (múltiplos cartazes e sem cartaz), preço futuro isolado e impressão parcial', () => {
   // Biblioteca simulada com 2 cartazes para o mesmo F7 001245 (clássico + PSD) e 1 para 000089
   const docClassic = createDocument();

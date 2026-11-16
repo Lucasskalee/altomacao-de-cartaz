@@ -15,6 +15,7 @@ export async function findCartazesByF7(f7: string) {
 }
 export const openDocument = async (path: string) => deserialize(await files<string>({ action: 'read', path }));
 export const saveDocument = (path: string, document: Cartaz, overwrite = false) => files<string>({ action: 'save', path, content: serialize(document), overwrite });
+export const saveExportDocument = (path: string, document: Cartaz) => files<string>({ action: 'exportSave', path, content: serialize(document), overwrite: true });
 export const chooseOpen = () => files<string | null>({ action: 'openDialog' });
 export const chooseSave = (name: string) => files<string | null>({ action: 'saveDialog', name });
 export const chooseFolder = () => files<string | null>({ action: 'folderDialog' });

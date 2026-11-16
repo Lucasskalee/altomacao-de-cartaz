@@ -24,6 +24,18 @@ import type {
 
 const normalizedPath = (path: string) => path.replace(/\//g, '\\').toLocaleLowerCase('en-US');
 
+function uniquePosterStates(posters: CampaignPosterState[]): CampaignPosterState[] {
+  const seen = new Set<string>();
+  return posters.filter(poster => {
+    const key = poster.cartazPath.trim()
+      ? normalizedPath(poster.cartazPath)
+      : `id:${poster.cartazId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export function createCampaign(name: string, campaignDate: string): OfferCampaign {
   const cleanName = name.trim();
   const cleanDate = campaignDate.trim();
@@ -138,11 +150,14 @@ export function syncCampaignWithLibrary(campaign: OfferCampaign, library: Indexe
   let changed = false;
   const items = campaign.items.map(item => {
     const matches = findCartazesByF7(item.f7, library);
-    const nextPosters: CampaignPosterState[] = [...item.posters];
+    const nextPosters = uniquePosterStates(item.posters);
+    let itemChanged = nextPosters.length !== item.posters.length;
+    if (itemChanged) changed = true;
     for (const match of matches) {
       const exists = nextPosters.some(p => normalizedPath(p.cartazPath) === normalizedPath(match.path));
       if (!exists) {
         changed = true;
+        itemChanged = true;
         nextPosters.push({
           cartazId: match.document.id,
           cartazPath: match.path,
@@ -153,7 +168,7 @@ export function syncCampaignWithLibrary(campaign: OfferCampaign, library: Indexe
         });
       }
     }
-    return nextPosters.length === item.posters.length ? item : { ...item, posters: nextPosters };
+    return itemChanged ? { ...item, posters: nextPosters } : item;
   });
   return changed ? { ...campaign, items, updatedAt: new Date().toISOString() } : campaign;
 }
@@ -199,21 +214,22 @@ export function linkSavedPosterToCampaignItem(
     if (!isTargetItem && !isSameF7) return item;
     if (isTargetItem) foundItem = true;
 
-    const existingIdx = item.posters.findIndex(
+    const posters = uniquePosterStates(item.posters);
+    const existingIdx = posters.findIndex(
       p => normalizedPath(p.cartazPath) === targetNorm || p.cartazId === cartazDocument.id
     );
     const nextEntry: CampaignPosterState = {
       cartazId: cartazDocument.id,
       cartazPath,
       selected: true,
-      copies: existingIdx >= 0 ? item.posters[existingIdx].copies : 1,
+      copies: existingIdx >= 0 ? posters[existingIdx].copies : 1,
       status: 'preparado',
       printedAt: null,
     };
     const nextPosters =
       existingIdx >= 0
-        ? item.posters.map((p, idx) => (idx === existingIdx ? nextEntry : p))
-        : [...item.posters, nextEntry];
+        ? posters.map((p, idx) => (idx === existingIdx ? nextEntry : p))
+        : [...posters, nextEntry];
 
     return {
       ...item,
@@ -453,8 +469,9 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
   }
   return campaign.items.map(item => {
     const allF7Matches = findCartazesByF7(item.f7, library);
-    const linkedPaths = new Set(item.posters.map(p => normalizedPath(p.cartazPath)));
-    const matchedPosters = item.posters.map(state => {
+    const posters = uniquePosterStates(item.posters);
+    const linkedPaths = new Set(posters.map(p => normalizedPath(p.cartazPath)));
+    const matchedPosters = posters.map(state => {
       const lib = byPath.get(normalizedPath(state.cartazPath)) ?? allF7Matches.find(m => m.document.id === state.cartazId) ?? null;
       const inspection = lib ? inspectScheduledPriceApplication(lib.document, item.scheduledPriceCents) : null;
       return {
