@@ -2,8 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
 import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
-import { indexCartazes } from '../../features/cartazes/f7';
-import { saveDocument } from '../../features/cartazes/storage';
+import { digitsOnly, indexCartazes } from '../../features/cartazes/f7';
+import { chooseSave, saveDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
@@ -18,6 +18,7 @@ import {
 import {
   applyExcelToCampaign,
   archiveCampaign,
+  addCampaignPosterVariant,
   buildCampaignMatchViews,
   buildCampaignPsdSuggestions,
   buildOfferPsdCartazTargetPath,
@@ -55,7 +56,7 @@ import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
 import { splitCentsToParts } from '../../features/cartazes/presentation';
-import { priceToCents } from '../../features/cartazes/validation';
+import { fileName, priceToCents } from '../../features/cartazes/validation';
 import type { PaperFormat } from '../../features/cartazes/types';
 
 const PsdImport = lazy(() =>
@@ -69,10 +70,17 @@ type PsdPairingFilter =
   | 'selected-batch'
   | 'already-linked';
 
+type OfferVariantSource = {
+  offerItemId: string;
+  document: Cartaz;
+  scheduledPriceCents: number;
+};
+
 type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[]) => void;
+  onEditPoster?: (path: string) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
   initialCampaigns?: OfferCampaign[];
   initialActiveId?: string | null;
@@ -88,6 +96,12 @@ type Props = {
 const money = (cents: number | null) =>
   cents === null ? '—' : `R$ ${(cents / 100).toFixed(2).replace('.', ',')}`;
 
+const supportsEditableVariantName = (document: Cartaz) =>
+  document.layout.template === 'oferta-classica' ||
+  (document.layout.template === 'imported-psd' &&
+    document.layout.artwork.isReferenceTemplate === true &&
+    document.layout.artwork.templateParts?.some(part => part.role === 'title') === true);
+
 const tomorrowIso = () => {
   const d = new Date();
   d.setDate(d.getDate() + 1);
@@ -98,6 +112,7 @@ export function OfferFolders({
   libraryData,
   run,
   onPrintBatch,
+  onEditPoster,
   onRefreshLibrary,
   initialCampaigns = [],
   initialActiveId = null,
@@ -131,6 +146,11 @@ export function OfferFolders({
 
   // PSD import modal state from "Sem cartaz" row
   const [psdOfferContext, setPsdOfferContext] = useState<PsdImportOfferContext | null>(null);
+  const [variantSource, setVariantSource] = useState<OfferVariantSource | null>(null);
+  const [variantName, setVariantName] = useState('');
+  const [variantComplement, setVariantComplement] = useState('');
+  const [variantF7, setVariantF7] = useState('');
+  const [variantPrice, setVariantPrice] = useState('');
 
   // Filter & preview inside active campaign
   const [searchQuery, setSearchQuery] = useState('');
@@ -595,6 +615,62 @@ export function OfferFolders({
     await persistUpdate(linked);
     if (onRefreshLibrary) await onRefreshLibrary();
     setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
+  };
+
+  const handleOpenVariant = (
+    offerItemId: string,
+    document: Cartaz,
+    scheduledPriceCents: number
+  ) => {
+    if (!supportsEditableVariantName(document)) return;
+    setVariantSource({ offerItemId, document, scheduledPriceCents });
+    setVariantName(document.product.name);
+    setVariantComplement(document.product.complement);
+    setVariantF7('');
+    setVariantPrice((scheduledPriceCents / 100).toFixed(2).replace('.', ','));
+  };
+
+  const handleSaveVariant = async () => {
+    if (!activeCampaign || !variantSource) return;
+
+    const name = variantName.trim().toUpperCase();
+    const complement = variantComplement.trim().toUpperCase();
+    const f7 = digitsOnly(variantF7);
+    const scheduledPriceCents = priceToCents(variantPrice);
+    if (!name) throw new Error('Informe a marca ou o nome do novo produto.');
+    if (name.length > 32 || complement.length > 28) {
+      throw new Error('O nome deve ter até 32 caracteres e o complemento até 28.');
+    }
+
+    const document: Cartaz = structuredClone(variantSource.document);
+    const now = new Date().toISOString();
+    document.id = crypto.randomUUID();
+    document.product = {
+      ...document.product,
+      name,
+      complement,
+      productCode: f7,
+    };
+    document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
+
+    const path = await chooseSave(fileName(`${f7}-${name}-${complement}`));
+    if (!path) return;
+
+    const description = [name, complement, document.product.unit].filter(Boolean).join(' ');
+    const updated = addCampaignPosterVariant(
+      activeCampaign,
+      variantSource.offerItemId,
+      path,
+      document,
+      description,
+      scheduledPriceCents
+    );
+    await saveDocument(path, document);
+    const savedCampaign = await persistUpdate(updated);
+    if (onRefreshLibrary) await onRefreshLibrary();
+    const newItem = savedCampaign.items[savedCampaign.items.length - 1];
+    setPreviewKey(`${newItem.id}::${path}`);
+    setVariantSource(null);
   };
 
   const handleRepairInvertedPoster = async (cartazPath: string, doc: Cartaz) => {
@@ -1312,6 +1388,42 @@ export function OfferFolders({
                                             >
                                               Ver prévia futura
                                             </button>
+                                            {onEditPoster && m.libraryCartaz && (
+                                              <button
+                                                className="subtle"
+                                                style={{ padding: '5px 10px', fontSize: 12 }}
+                                                title={
+                                                  m.libraryCartaz.document.layout.template === 'imported-psd' &&
+                                                  !m.libraryCartaz.document.layout.artwork.isReferenceTemplate
+                                                    ? 'Arte PSD legada: o editor permite alterar preço e F7, mas não o conteúdo visual.'
+                                                    : 'Abrir este cartaz no editor.'
+                                                }
+                                                onClick={() => run(() => onEditPoster(m.state.cartazPath))}
+                                              >
+                                                Editar cartaz
+                                              </button>
+                                            )}
+                                            {m.libraryCartaz && (
+                                              <button
+                                                className="subtle"
+                                                style={{ padding: '5px 10px', fontSize: 12 }}
+                                                disabled={!supportsEditableVariantName(m.libraryCartaz.document)}
+                                                title={
+                                                  supportsEditableVariantName(m.libraryCartaz.document)
+                                                    ? 'Criar uma cópia desta arte com outro nome e F7.'
+                                                    : 'Esta arte PSD não tem camada de nome editável. Use um modelo PSD de referência.'
+                                                }
+                                                onClick={() =>
+                                                  handleOpenVariant(
+                                                    v.item.id,
+                                                    m.libraryCartaz!.document,
+                                                    v.item.scheduledPriceCents
+                                                  )
+                                                }
+                                              >
+                                                Criar variação
+                                              </button>
+                                            )}
                                           </div>
                                         </div>
                                       );
@@ -1353,6 +1465,85 @@ export function OfferFolders({
           )}
         </div>
       </div>
+
+      {variantSource && (
+        <div className="modal-backdrop psd-backdrop">
+          <section
+            className="panel psd-import"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Criar variação de cartaz na pasta de ofertas"
+          >
+            <div className="psd-title">
+              <div>
+                <h2>Criar variação nesta pasta de ofertas</h2>
+                <p>
+                  A arte será copiada para um novo cartaz. O original não será alterado; ao salvar, o novo F7 será
+                  adicionado como outro produto nesta campanha.
+                </p>
+              </div>
+              <button className="subtle" onClick={() => setVariantSource(null)}>
+                Cancelar
+              </button>
+            </div>
+            <div className="import-warning" role="note">
+              Produto de origem: <strong>{variantSource.document.product.name}</strong>{' '}
+              {variantSource.document.product.complement} · F7{' '}
+              {variantSource.document.product.productCode || '—'}
+            </div>
+            <form
+              className="psd-fields"
+              onSubmit={e => {
+                e.preventDefault();
+                run(handleSaveVariant);
+              }}
+            >
+              <label>
+                Marca / nome principal
+                <input
+                  autoFocus
+                  maxLength={32}
+                  required
+                  value={variantName}
+                  onChange={e => setVariantName(e.target.value)}
+                />
+              </label>
+              <label>
+                Complemento / descrição
+                <input
+                  maxLength={28}
+                  value={variantComplement}
+                  onChange={e => setVariantComplement(e.target.value)}
+                />
+              </label>
+              <label>
+                Novo F7
+                <input
+                  inputMode="numeric"
+                  required
+                  value={variantF7}
+                  onChange={e => setVariantF7(digitsOnly(e.target.value))}
+                />
+              </label>
+              <label>
+                Preço programado
+                <input
+                  inputMode="decimal"
+                  required
+                  value={variantPrice}
+                  onChange={e => setVariantPrice(e.target.value)}
+                />
+              </label>
+              <div className="toolbar" style={{ gridColumn: '1 / -1', justifyContent: 'flex-end' }}>
+                <button type="submit">Salvar cópia e adicionar à pasta</button>
+                <button type="button" className="subtle" onClick={() => setVariantSource(null)}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
 
       {workbook && activeSheet && extractionPreview && (
         <div className="modal-backdrop psd-backdrop">

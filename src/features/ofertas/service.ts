@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { findCartazesByF7, type IndexedCartaz } from '../cartazes/f7';
+import { findCartazesByF7, getF7, type IndexedCartaz } from '../cartazes/f7';
 import type { Cartaz, PaperFormat } from '../cartazes/types';
 import { formatCentsBr, posterFromDocument } from '../cartazes/presentation';
 import { priceToCents } from '../cartazes/validation';
@@ -228,6 +228,56 @@ export function linkSavedPosterToCampaignItem(
   return {
     ...campaign,
     items,
+    updatedAt: now,
+  };
+}
+
+export function addCampaignPosterVariant(
+  campaign: OfferCampaign,
+  sourceItemId: string,
+  cartazPath: string,
+  cartazDocument: Cartaz,
+  description: string,
+  scheduledPriceCents: number
+): OfferCampaign {
+  if (!campaign.items.some(item => item.id === sourceItemId)) {
+    throw new Error('Item de origem não encontrado nesta pasta de ofertas.');
+  }
+  if (!cartazPath.trim()) throw new Error('Caminho do novo cartaz inválido.');
+  const f7 = getF7(cartazDocument.product.productCode);
+  if (!f7) throw new Error('Informe um F7 numérico para o novo produto.');
+  if (campaign.items.some(item => item.f7 === f7)) {
+    throw new Error(`O F7 ${f7} já existe nesta pasta de ofertas.`);
+  }
+  const cleanDescription = description.trim();
+  if (!cleanDescription || cleanDescription.length > 120) {
+    throw new Error('Informe uma descrição com até 120 caracteres.');
+  }
+  if (!Number.isSafeInteger(scheduledPriceCents) || scheduledPriceCents <= 0 || scheduledPriceCents > 99_999_999) {
+    throw new Error('Preço programado inválido.');
+  }
+
+  const now = new Date().toISOString();
+  const variant: CampaignItem = {
+    id: crypto.randomUUID(),
+    rowNumber: Math.max(0, ...campaign.items.map(item => item.rowNumber)) + 1,
+    f7,
+    description: cleanDescription,
+    scheduledPriceCents,
+    conflicting: false,
+    issues: [],
+    posters: [{
+      cartazId: cartazDocument.id,
+      cartazPath,
+      selected: true,
+      copies: 1,
+      status: 'preparado',
+      printedAt: null,
+    }],
+  };
+  return {
+    ...campaign,
+    items: [...campaign.items, variant],
     updatedAt: now,
   };
 }

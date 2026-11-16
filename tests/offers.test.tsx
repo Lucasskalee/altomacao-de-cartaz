@@ -17,6 +17,7 @@ import {
 } from '../src/features/ofertas/excel';
 import {
   applyExcelToCampaign,
+  addCampaignPosterVariant,
   archiveCampaign,
   buildCampaignMatchViews,
   buildCampaignPsdSuggestions,
@@ -327,6 +328,96 @@ test('Planilhas .xls e relatórios de ofertas: suporte a OpenXML .xls, texto CSV
     () => parseXlsx(ole2Buffer, 'legado.xls'),
     /formato binário legado \(Excel 97-2003\)/
   );
+});
+
+test('Pastas de Ofertas: criar variação reutiliza cartaz em novo F7 sem alterar produto de origem', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  campaign.items.push({
+    id: 'item-origem',
+    rowNumber: 1,
+    f7: '00123',
+    description: 'MARCA ORIGINAL 1KG',
+    scheduledPriceCents: 899,
+    conflicting: false,
+    issues: [],
+    posters: [],
+  });
+
+  const variantDocument = createDocument();
+  variantDocument.product.name = 'MARCA NOVA';
+  variantDocument.product.complement = '1KG';
+  variantDocument.product.productCode = '00045';
+  const updated = addCampaignPosterVariant(
+    campaign,
+    'item-origem',
+    'C:\\Cartazes\\00045-marca-nova.skcartaz',
+    variantDocument,
+    'MARCA NOVA 1KG PCT',
+    799
+  );
+
+  assert.equal(campaign.items.length, 1);
+  assert.equal(updated.items.length, 2);
+  assert.equal(updated.items[1].f7, '00045');
+  assert.equal(updated.items[1].description, 'MARCA NOVA 1KG PCT');
+  assert.equal(updated.items[1].scheduledPriceCents, 799);
+  assert.deepEqual(updated.items[1].posters[0], {
+    cartazId: variantDocument.id,
+    cartazPath: 'C:\\Cartazes\\00045-marca-nova.skcartaz',
+    selected: true,
+    copies: 1,
+    status: 'preparado',
+    printedAt: null,
+  });
+  assert.throws(
+    () =>
+      addCampaignPosterVariant(
+        updated,
+        'item-origem',
+        'C:\\Cartazes\\duplicado.skcartaz',
+        variantDocument,
+        'MARCA REPETIDA',
+        799
+      ),
+    /já existe nesta pasta/
+  );
+});
+
+test('Pastas de Ofertas: mostra ação de criar variação para cartaz clássico vinculado', () => {
+  const campaign = createCampaign('Ofertas da semana', '2026-11-17');
+  const document = createDocument();
+  document.product.productCode = '00123';
+  const cartazPath = 'C:\\Cartazes\\origem.skcartaz';
+  campaign.items.push({
+    id: 'item-origem',
+    rowNumber: 1,
+    f7: '00123',
+    description: 'MARCA ORIGINAL',
+    scheduledPriceCents: 899,
+    conflicting: false,
+    issues: [],
+    posters: [{
+      cartazId: document.id,
+      cartazPath,
+      selected: true,
+      copies: 1,
+      status: 'preparado',
+    }],
+  });
+
+  const html = renderToStaticMarkup(
+    <OfferFolders
+      libraryData={{
+        root: 'C:\\Cartazes',
+        entries: [{ name: 'origem.skcartaz', path: cartazPath, folder: false, content: serialize(document) }],
+      }}
+      run={() => {}}
+      onPrintBatch={() => {}}
+      initialCampaigns={[campaign]}
+      initialActiveId={campaign.id}
+    />
+  );
+  assert.ok(html.includes('Criar variação'));
 });
 
 test('Pastas de Ofertas: criação, associação por F7 (múltiplos cartazes e sem cartaz), preço futuro isolado e impressão parcial', () => {
