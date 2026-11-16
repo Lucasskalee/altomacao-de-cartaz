@@ -20,14 +20,79 @@ import { F7Field } from '../src/components/editor/F7Field';
 import { Library } from '../src/components/library/Library';
 import type { Entry } from '../src/features/cartazes/types';
 import * as storage from '../src/features/cartazes/storage';
-import { importedPriceWarning } from '../src/components/editor/importedRenderer';
+import { drawImported, importedPriceWarning } from '../src/components/editor/importedRenderer';
 import { analyzePsd, buildArtwork, extractMetadata, extractPriceFromRoles } from '../src/features/psd/importer';
+import { prepareLinkedArtwork, saveLinkedArtwork } from '../src/features/psd/editLinkedArtwork';
 import { initializeCanvas } from 'ag-psd';
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { ImportedArtwork } from '../src/features/cartazes/types';
 
 const pixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+test('PSD vinculado: prepara camada de sabor sem alterar o arquivo, F7 ou preço', {
+  skip: !process.env.SKALEE_TEST_PSD,
+}, async () => {
+  const drawn: unknown[] = [];
+  const printedText: string[] = [];
+  const fakeCanvas = (w = 1179, h = 1770): any => ({
+    width: w, height: h,
+    getContext: () => ({
+      clearRect() {}, fillRect() {}, save() {}, restore() {}, putImageData() {},
+      translate() {}, scale() {}, transform() {}, strokeText() {},
+      fillText(text: string) { printedText.push(text); },
+      measureText(text: string) { return { width: text.length * 25 }; },
+      drawImage(source: unknown) { drawn.push(source); },
+      getImageData: (_x: number, _y: number, cw: number, ch: number) => ({
+        data: new Uint8ClampedArray(cw * ch * 4), width: cw, height: ch,
+      }),
+    }),
+    toDataURL: () => pixel,
+  });
+  initializeCanvas(fakeCanvas, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const imageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Image');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => fakeCanvas() } });
+  Object.defineProperty(globalThis, 'Image', {
+    configurable: true,
+    value: class {
+      onload?: () => void;
+      set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+    },
+  });
+  try {
+    const raw = readFileSync(process.env.SKALEE_TEST_PSD!);
+    const hash = createHash('sha256').update(raw).digest('hex');
+    const analysis = await analyzePsd(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength), 'farofa.psd');
+    const document = createDocument();
+    document.product = { name: 'FAROFA DONANA 400G CALABRESA', complement: '', unit: 'UN', productCode: '21707', priceCents: 699 };
+    document.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork: buildArtwork(analysis, analysis.suggested) };
+    const texts = { category: '', title: '', complement: 'CALABRESA', packaging: '' };
+    drawn.length = 0;
+    const updated = prepareLinkedArtwork(document, analysis, { complement: '4' }, texts);
+    assert.equal(updated.product.complement, 'CALABRESA');
+    assert.equal(updated.product.productCode, '21707');
+    assert.equal(updated.product.priceCents, 699);
+    assert.equal(document.product.complement, '');
+    assert.equal(updated.layout.template, 'imported-psd');
+    if (updated.layout.template !== 'imported-psd') throw new Error('Arte PSD esperada.');
+    assert.equal(updated.layout.artwork.templateParts?.[0].originalText, 'BACON');
+    assert.equal(drawn.includes(analysis.runtime.get('4')?.canvas), false);
+    assert.equal(drawn.includes(analysis.runtime.get('10')?.canvas), true);
+    await drawImported(fakeCanvas(), updated.layout.artwork, '6,99', 1179, 1770, undefined, { complement: updated.product.complement });
+    assert.ok(printedText.includes('CALABRESA'));
+    assert.ok(!printedText.includes('BACON'));
+    assert.throws(() => prepareLinkedArtwork(document, { ...analysis, hash: '0'.repeat(64) }, { complement: '4' }, texts), /não é o arquivo/);
+    assert.throws(() => prepareLinkedArtwork(document, analysis, { title: '4', complement: '4' }, texts), /camada diferente/);
+    assert.equal(createHash('sha256').update(readFileSync(process.env.SKALEE_TEST_PSD!)).digest('hex'), hash);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
+    else Reflect.deleteProperty(globalThis, 'document');
+    if (imageDescriptor) Object.defineProperty(globalThis, 'Image', imageDescriptor);
+    else Reflect.deleteProperty(globalThis, 'Image');
+  }
+});
+
 function importedArtwork():ImportedArtwork{return {kind:'imported-psd',compatibility:'ready',source:{fileName:'repolho verde kg.psd',sha256:'a'.repeat(64)},canvas:{width:886,height:1240,resolutionPpi:150,fit:'contain'},staticBackground:pixel,originalPreview:pixel,priceParts:[{role:'whole',layerId:'6',bounds:{left:121,top:606,right:422,bottom:1036},fontFamily:'Zullia',color:'#c74624'},{role:'fraction',layerId:'15',bounds:{left:422,top:602,right:719,bottom:847},fontFamily:'Zullia',color:'#c74624'},{role:'decimal',layerId:'14',bounds:{left:432,top:897,right:492,bottom:963},fontFamily:'Zullia',color:'#c74624'},{role:'fractionRule',layerId:'22',bounds:{left:437,top:865,right:696,bottom:883},color:'#c74624'}],layers:[{id:'6',name:'2',type:'text',visible:true,depth:0,text:'2',font:'Zullia',bounds:{left:121,top:606,right:422,bottom:1036}}],warnings:[]};}
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 test('Repolho Verde: serializar, reabrir, editar preço e manter identidade', () => {
@@ -249,6 +314,7 @@ test('serviços locais salvam/reabrem e consultam F7 sem rede (IPC simulado)', a
     if(r.action === 'list') return {root:'C:/Biblioteca',entries:[...disk].map(([path,content]) => ({path,content,name:path,folder:false}))};
     throw new Error('Operação inesperada');
   });
+
   try {
     const doc = createDocument(); doc.product.productCode='001245';
     await storage.saveDocument('C:/Biblioteca/Hortifruti/a.skcartaz',doc);
@@ -263,5 +329,52 @@ test('serviços locais salvam/reabrem e consultam F7 sem rede (IPC simulado)', a
   } finally {
     clearMocks();
     for(const [key,descriptor] of descriptors) { if(descriptor) Object.defineProperty(globalThis,key,descriptor); else Reflect.deleteProperty(globalThis,key); }
+  }
+});
+
+test('edição de arte vinculada cria backup e bloqueia arquivo alterado ou edição pendente', async () => {
+  const descriptors = ['window', 'isTauri'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { crypto: globalThis.crypto } });
+  Object.defineProperty(globalThis, 'isTauri', { configurable: true, value: true });
+  const original = createDocument();
+  const updated = structuredClone(original);
+  updated.product.complement = 'CALABRESA';
+  const path = 'C:/Biblioteca/cartaz.skcartaz';
+  const disk = new Map([[path, serialize(original)]]);
+  let failBackup = false;
+  mockIPC((cmd, args: any) => {
+    assert.equal(cmd, 'files');
+    const request = args.request;
+    if (request.action === 'read') return disk.get(request.path);
+    if (request.action === 'save') {
+      if (failBackup && request.path !== path) throw new Error('Falha ao criar backup');
+      if (!request.overwrite && disk.has(request.path)) throw new Error('Destino existente');
+      disk.set(request.path, request.content);
+      return request.path;
+    }
+    throw new Error('Operação inesperada');
+  });
+  try {
+    await assert.rejects(saveLinkedArtwork(path, original, updated, { path, dirty: true }), /não salvas/);
+    assert.equal(disk.size, 1);
+    disk.set(path, serialize(updated));
+    await assert.rejects(saveLinkedArtwork(path, original, updated), /foi alterado/);
+    assert.equal(disk.size, 1);
+    disk.set(path, serialize(original));
+    failBackup = true;
+    await assert.rejects(saveLinkedArtwork(path, original, updated), /Falha ao criar backup/);
+    assert.equal(disk.get(path), serialize(original));
+    failBackup = false;
+    await saveLinkedArtwork(path, original, updated);
+    assert.equal(deserialize(disk.get(path)!).product.complement, 'CALABRESA');
+    const backup = [...disk.entries()].find(([key]) => key !== path);
+    assert.ok(backup?.[0].includes('/.skalee-backup-'));
+    assert.deepEqual(deserialize(backup![1]), original);
+  } finally {
+    clearMocks();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
   }
 });

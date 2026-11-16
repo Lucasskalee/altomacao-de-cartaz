@@ -55,12 +55,16 @@ import {
 import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech/types';
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
+import { saveLinkedArtwork } from '../../features/psd/editLinkedArtwork';
 import { splitCentsToParts } from '../../features/cartazes/presentation';
 import { fileName, priceToCents } from '../../features/cartazes/validation';
 import type { PaperFormat } from '../../features/cartazes/types';
 
 const PsdImport = lazy(() =>
   import('../library/PsdImport').then(module => ({ default: module.PsdImport }))
+);
+const EditLinkedPsd = lazy(() =>
+  import('./EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
 );
 
 type PsdPairingFilter =
@@ -82,6 +86,8 @@ type Props = {
   onPrintBatch: (posters: Poster[]) => void;
   onEditPoster?: (path: string) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
+  getEditorGuard?: () => { path: string | null; dirty: boolean };
+  onArtworkSaved?: (path: string) => Promise<void>;
   initialCampaigns?: OfferCampaign[];
   initialActiveId?: string | null;
   initialPsdFolder?: string | null;
@@ -114,6 +120,8 @@ export function OfferFolders({
   onPrintBatch,
   onEditPoster,
   onRefreshLibrary,
+  getEditorGuard,
+  onArtworkSaved,
   initialCampaigns = [],
   initialActiveId = null,
   initialPsdFolder = null,
@@ -146,6 +154,11 @@ export function OfferFolders({
 
   // PSD import modal state from "Sem cartaz" row
   const [psdOfferContext, setPsdOfferContext] = useState<PsdImportOfferContext | null>(null);
+  const [editingArtwork, setEditingArtwork] = useState<{
+    path: string;
+    document: Cartaz;
+    scheduledPriceCents: number;
+  } | null>(null);
   const [variantSource, setVariantSource] = useState<OfferVariantSource | null>(null);
   const [variantName, setVariantName] = useState('');
   const [variantComplement, setVariantComplement] = useState('');
@@ -615,6 +628,18 @@ export function OfferFolders({
     await persistUpdate(linked);
     if (onRefreshLibrary) await onRefreshLibrary();
     setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
+  };
+
+  const handleSaveArtwork = async (updated: Cartaz) => {
+    if (!editingArtwork) throw new Error('Cartaz selecionado não está mais disponível.');
+    const { path, document } = editingArtwork;
+    await saveLinkedArtwork(path, document, updated, getEditorGuard?.());
+    try {
+      if (onArtworkSaved) await onArtworkSaved(path);
+      else if (onRefreshLibrary) await onRefreshLibrary();
+    } catch (ex) {
+      throw new Error(`O cartaz foi salvo, mas a biblioteca não pôde ser atualizada. Atualize-a antes de continuar. ${String(ex)}`);
+    }
   };
 
   const handleOpenVariant = (
@@ -1403,6 +1428,19 @@ export function OfferFolders({
                                                 Editar cartaz
                                               </button>
                                             )}
+                                            {m.libraryCartaz?.document.layout.template === 'imported-psd' && (
+                                              <button
+                                                className="subtle"
+                                                style={{ padding: '5px 10px', fontSize: 12 }}
+                                                onClick={() => setEditingArtwork({
+                                                  path: m.libraryCartaz!.path,
+                                                  document: m.libraryCartaz!.document,
+                                                  scheduledPriceCents: v.item.scheduledPriceCents,
+                                                })}
+                                              >
+                                                Editar textos da arte
+                                              </button>
+                                            )}
                                             {m.libraryCartaz && (
                                               <button
                                                 className="subtle"
@@ -1465,6 +1503,17 @@ export function OfferFolders({
           )}
         </div>
       </div>
+
+      {editingArtwork && (
+        <Suspense fallback={<div className="modal-backdrop" role="status">Carregando editor PSD…</div>}>
+          <EditLinkedPsd
+            document={editingArtwork.document}
+            scheduledPriceCents={editingArtwork.scheduledPriceCents}
+            close={() => setEditingArtwork(null)}
+            save={handleSaveArtwork}
+          />
+        </Suspense>
+      )}
 
       {variantSource && (
         <div className="modal-backdrop psd-backdrop">

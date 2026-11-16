@@ -135,6 +135,8 @@ export default function App() {
   }, [showFormatMenu]);
   const poster: Poster = { ...posterFromDocument(editor.document), price: editor.price };
   const imported=editor.document.layout.template==='imported-psd';
+  const hasTextRole = (role: 'category' | 'title' | 'complement' | 'packaging') =>
+    Boolean(poster.artwork?.templateParts?.some(part => part.role === role));
   const invertedLayers=poster.artwork?hasInvertedPsdPriceParts(poster.artwork):false;
   const priceWarning=poster.artwork?(invertedLayers?'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.':importedPriceWarning(poster.artwork,poster.price)):'';
   const resolutionCheck = poster.artwork?.canvas?.width && poster.artwork?.canvas?.height
@@ -621,7 +623,7 @@ export default function App() {
                   fontWeight: 600,
                 }}
               >
-                Modelo PSD ativo: Categoria, Nome (Brush Hand New), Complemento, Embalagem, Preço e Validade editáveis.
+                Modelo PSD ativo: somente os campos de texto mapeados são editáveis.
               </div>
             )}
 
@@ -631,7 +633,7 @@ export default function App() {
                 <span>1. Identificação do Produto</span>
               </div>
 
-              {poster.artwork?.isReferenceTemplate && (
+              {hasTextRole('category') && (
                 <div className="editor-field">
                   <label>Categoria</label>
                   <input
@@ -648,7 +650,7 @@ export default function App() {
                 <input
                   className="editor-input"
                   style={{ fontWeight: 700 }}
-                  disabled={imported && !poster.artwork?.isReferenceTemplate}
+                  disabled={imported && !hasTextRole('title')}
                   value={poster.name}
                   maxLength={32}
                   onChange={e => editor.change('name', e.target.value.toUpperCase())}
@@ -659,7 +661,7 @@ export default function App() {
                 <label>Complemento / Detalhe</label>
                 <input
                   className="editor-input"
-                  disabled={imported && !poster.artwork?.isReferenceTemplate}
+                  disabled={imported && !hasTextRole('complement')}
                   value={poster.detail}
                   maxLength={28}
                   onChange={e => editor.change('complement', e.target.value.toUpperCase())}
@@ -686,7 +688,7 @@ export default function App() {
 
                 <div className="editor-field">
                   <label>Unidade / Embalagem</label>
-                  {poster.artwork?.isReferenceTemplate ? (
+                  {hasTextRole('packaging') ? (
                     <input
                       className="editor-input"
                       value={poster.unit}
@@ -710,7 +712,7 @@ export default function App() {
                 </div>
               </div>
 
-              {poster.artwork?.isReferenceTemplate && (
+              {poster.artwork?.priceParts.some(part => part.role === 'validity') && (
                 <div className="editor-field" style={{ marginTop: 10 }}>
                   <label>Validade da Oferta</label>
                   <input
@@ -955,7 +957,7 @@ export default function App() {
       </div>
     ) : null}
     <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
-    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={open} onRefreshLibrary={refresh}/></div>
+    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={open} onRefreshLibrary={refresh} getEditorGuard={() => guardRef.current} onArtworkSaved={async path => { await refresh(); await editor.refreshSaved([path]); }}/></div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
