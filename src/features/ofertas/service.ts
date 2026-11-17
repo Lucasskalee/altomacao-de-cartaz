@@ -278,6 +278,63 @@ export function linkSavedPosterToCampaignItem(
   };
 }
 
+export function unlinkPosterFromCampaignItem(
+  campaign: OfferCampaign,
+  offerItemId: string,
+  cartazPath?: string
+): OfferCampaign {
+  const now = new Date().toISOString();
+  return {
+    ...campaign,
+    updatedAt: now,
+    items: campaign.items.map(item => {
+      if (item.id !== offerItemId) return item;
+      const targetNorm = cartazPath ? normalizedPath(cartazPath) : null;
+      const nextPosters = targetNorm
+        ? item.posters.filter(p => normalizedPath(p.cartazPath) !== targetNorm)
+        : [];
+      return {
+        ...item,
+        posters: nextPosters,
+      };
+    }),
+  };
+}
+
+export function removeCampaignItem(
+  campaign: OfferCampaign,
+  itemId: string
+): OfferCampaign {
+  const now = new Date().toISOString();
+  return {
+    ...campaign,
+    updatedAt: now,
+    items: campaign.items.filter(item => item.id !== itemId),
+  };
+}
+
+export function updateCampaignItemDescription(
+  campaign: OfferCampaign,
+  itemId: string,
+  newDescription: string
+): OfferCampaign {
+  const trimmed = newDescription.trim();
+  if (!trimmed) throw new Error('A descrição do produto não pode ficar vazia.');
+  const now = new Date().toISOString();
+  return {
+    ...campaign,
+    updatedAt: now,
+    items: campaign.items.map(item =>
+      item.id !== itemId
+        ? item
+        : {
+            ...item,
+            description: trimmed,
+          }
+    ),
+  };
+}
+
 export function updateScheduledPrice(campaign: OfferCampaign, itemId: string, newPriceCents: number): OfferCampaign {
   if (!Number.isSafeInteger(newPriceCents) || newPriceCents <= 0 || newPriceCents > 99_999_999) {
     throw new Error('Preço programado inválido.');

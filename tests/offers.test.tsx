@@ -34,10 +34,13 @@ import {
   linkSavedPosterToCampaignItem,
   listCampaigns,
   matchesExactF7InFilename,
+  removeCampaignItem,
   renameCampaign,
   saveCampaign,
   suggestFromExcelDescription,
   syncCampaignWithLibrary,
+  unlinkPosterFromCampaignItem,
+  updateCampaignItemDescription,
   updatePosterSelection,
   updateScheduledPrice,
 } from '../src/features/ofertas/service';
@@ -694,6 +697,11 @@ test('Persistência IPC de Pastas de Ofertas e renderização da aba Pastas de O
     );
     assert.ok(html.includes('Pastas de Ofertas'));
     assert.ok(html.includes('Criar Pasta de Ofertas'));
+
+    const htmlWithCampaign = renderToStaticMarkup(
+      <OfferFolders libraryData={null} run={() => {}} onPrintBatch={() => {}} initialCampaigns={[c1]} initialActiveId={c1.id} />
+    );
+    assert.ok(htmlWithCampaign.includes('Excluir pasta'));
   } finally {
     clearMocks();
     for (const [key, descriptor] of descriptors) {
@@ -809,6 +817,68 @@ test('Sprint 06.1: Importação PSD diretamente na Pasta de Ofertas (exemplo F7 
   const zeroAfter = buildCampaignMatchViews(campaign, indexCartazes(libraryEntries)).find(v => v.item.f7 === '0025037')!;
   assert.equal(zeroAfter.missingPoster, false);
   assert.equal(zeroAfter.matchedPosters[0].libraryCartaz?.document.product.productCode, '0025037');
+});
+
+test('Pastas de Ofertas: desvinculação de cartaz, remoção de linhas redundantes e renomeação de sabores', () => {
+  let campaign = createCampaign('Campanha Fim de Semana', '2026-11-20');
+  campaign.items = [
+    {
+      id: 'item-sukita-laranja',
+      rowNumber: 1,
+      f7: '12345',
+      description: 'REFRIGERANTE SUKITA LARANJA 2L',
+      scheduledPriceCents: 699,
+      conflicting: false,
+      issues: [],
+      posters: [],
+    },
+    {
+      id: 'item-sukita-uva',
+      rowNumber: 2,
+      f7: '12346',
+      description: 'REFRIGERANTE SUKITA UVA 2L',
+      scheduledPriceCents: 699,
+      conflicting: false,
+      issues: [],
+      posters: [],
+    },
+    {
+      id: 'item-sukita-limao',
+      rowNumber: 3,
+      f7: '12347',
+      description: 'REFRIGERANTE SUKITA LIMAO 2L',
+      scheduledPriceCents: 699,
+      conflicting: false,
+      issues: [],
+      posters: [],
+    },
+  ];
+
+  // 1. Simula vincular um cartaz por engano no item de sukita laranja
+  const dummyDoc = createDocument();
+  dummyDoc.id = 'cartaz-sukita-doc';
+  dummyDoc.product.name = 'SUKITA';
+  dummyDoc.product.complement = 'SABORES';
+  dummyDoc.product.productCode = '12345';
+  const dummyPath = 'C:\\Skalee\\Cartazes\\Bebidas\\sukita.skcartaz';
+
+  campaign = linkSavedPosterToCampaignItem(campaign, 'item-sukita-laranja', dummyPath, dummyDoc);
+  assert.equal(campaign.items[0].posters.length, 1);
+  assert.equal(campaign.items[0].posters[0].cartazPath, dummyPath);
+
+  // 2. Desvincula o cartaz vinculado por engano
+  campaign = unlinkPosterFromCampaignItem(campaign, 'item-sukita-laranja', dummyPath);
+  assert.equal(campaign.items[0].posters.length, 0);
+
+  // 3. O usuário remove as linhas redundantes de uva e limão para imprimir apenas um cartaz de SABORES
+  campaign = removeCampaignItem(campaign, 'item-sukita-uva');
+  campaign = removeCampaignItem(campaign, 'item-sukita-limao');
+  assert.equal(campaign.items.length, 1);
+  assert.equal(campaign.items[0].f7, '12345');
+
+  // 4. Renomeia o produto restante para consolidar como SABORES
+  campaign = updateCampaignItemDescription(campaign, 'item-sukita-laranja', 'REFRIGERANTE SUKITA 2L SABORES');
+  assert.equal(campaign.items[0].description, 'REFRIGERANTE SUKITA 2L SABORES');
 });
 
 test('Correção de preços decimais e camadas PSD: R$ 19,89 vs R$ 89,19 (F7 38340 — ARROZ RAMPINELLI 5KG), R$ 8,99, R$ 10,90 e R$ 0,99', () => {

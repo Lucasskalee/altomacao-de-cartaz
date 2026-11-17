@@ -24,15 +24,19 @@ import {
   buildPsdBatchConfirmationSummary,
   confirmBatchPrinted,
   createCampaign,
+  deleteCampaign,
   duplicateCampaign,
   executePsdBatchLinking,
   getDefaultSelectionForSuggestion,
   linkSavedPosterToCampaignItem,
   listCampaigns,
+  removeCampaignItem,
   renameCampaign,
   saveCampaign,
   selectExcel,
   syncCampaignWithLibrary,
+  unlinkPosterFromCampaignItem,
+  updateCampaignItemDescription,
   updatePosterSelection,
   updateScheduledPrice,
 } from '../../features/ofertas/service';
@@ -138,6 +142,8 @@ export function OfferFolders({
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState('');
+  const [editingDescriptionId, setEditingDescriptionId] = useState<string | null>(null);
+  const [editingDescriptionValue, setEditingDescriptionValue] = useState('');
 
   // Batch print tracking
   const [batchSize, setBatchSize] = useState(10);
@@ -247,6 +253,26 @@ export function OfferFolders({
     if (!activeCampaign) return;
     const updated = archiveCampaign(activeCampaign, !activeCampaign.archived);
     await persistUpdate(updated);
+  };
+
+  const handleDeleteCampaign = async () => {
+    if (!activeCampaign) return;
+    const confirmMessage =
+      `Tem certeza que deseja excluir a pasta de ofertas "${activeCampaign.name}"?\n\n` +
+      `• Esta ação apaga apenas o registro desta pasta de ofertas.\n` +
+      `• Seus cartazes da biblioteca, preços normais vigentes e arquivos PSD NÃO serão alterados nem apagados.`;
+
+    if (!window.confirm(confirmMessage)) return;
+
+    await deleteCampaign(activeCampaign.id);
+    setCampaigns(prev => {
+      const remaining = prev.filter(c => c.id !== activeCampaign.id);
+      const nextActive = remaining.find(c => !c.archived) ?? remaining[0] ?? null;
+      setActiveId(nextActive ? nextActive.id : null);
+      return remaining;
+    });
+    setRenaming(false);
+    setAwaitingPrintConfirm(null);
   };
 
   const handleOpenExcel = async () => {
@@ -958,6 +984,13 @@ export function OfferFolders({
                   <button className="subtle" onClick={() => run(handleArchiveToggle)}>
                     {activeCampaign.archived ? 'Desarquivar' : 'Arquivar'}
                   </button>
+                  <button
+                    className="subtle danger"
+                    title="Excluir esta pasta de ofertas"
+                    onClick={() => run(handleDeleteCampaign)}
+                  >
+                    Excluir pasta
+                  </button>
                 </div>
               </div>
 
@@ -1107,8 +1140,91 @@ export function OfferFolders({
                             <tr key={v.item.id}>
                               <td className="code-cell">{v.item.f7}</td>
                               <td>
-                                <strong>{v.item.description}</strong>
-                                <small>Linha Excel: {v.item.rowNumber}</small>
+                                {editingDescriptionId === v.item.id ? (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+                                    <input
+                                      value={editingDescriptionValue}
+                                      onChange={e => setEditingDescriptionValue(e.target.value)}
+                                      placeholder="Ex: REFRIGERANTE SUKITA 2L SABORES"
+                                      style={{ width: '100%', padding: '6px 8px', fontSize: 13, fontWeight: 700 }}
+                                      autoFocus
+                                    />
+                                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                                      <button
+                                        type="button"
+                                        className="subtle"
+                                        style={{ padding: '4px 8px', fontSize: 11, background: '#0284c7', color: '#fff' }}
+                                        onClick={() =>
+                                          run(async () => {
+                                            await persistUpdate(
+                                              updateCampaignItemDescription(activeCampaign, v.item.id, editingDescriptionValue)
+                                            );
+                                            setEditingDescriptionId(null);
+                                          })
+                                        }
+                                      >
+                                        Salvar
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="subtle"
+                                        style={{ padding: '4px 8px', fontSize: 11 }}
+                                        title="Adiciona 'SABORES' no final da descrição"
+                                        onClick={() => {
+                                          if (!editingDescriptionValue.toUpperCase().includes('SABORES')) {
+                                            setEditingDescriptionValue(prev => `${prev.trim()} SABORES`);
+                                          }
+                                        }}
+                                      >
+                                        + Sabores
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="subtle"
+                                        style={{ padding: '4px 8px', fontSize: 11 }}
+                                        onClick={() => setEditingDescriptionId(null)}
+                                      >
+                                        Cancelar
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      <strong>{v.item.description}</strong>
+                                      <button
+                                        type="button"
+                                        className="subtle"
+                                        style={{ padding: '2px 6px', fontSize: 10 }}
+                                        title="Editar descrição ou marcar como SABORES"
+                                        onClick={() => {
+                                          setEditingDescriptionId(v.item.id);
+                                          setEditingDescriptionValue(v.item.description);
+                                        }}
+                                      >
+                                        ✏️ Editar / Sabores
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="subtle"
+                                        style={{ padding: '2px 6px', fontSize: 10, color: '#ef4444' }}
+                                        title="Remover esta linha/produto da pasta de ofertas"
+                                        onClick={() => {
+                                          if (window.confirm(`Remover "${v.item.description}" (F7 ${v.item.f7}) da pasta de ofertas?`)) {
+                                            run(async () => {
+                                              await persistUpdate(removeCampaignItem(activeCampaign, v.item.id));
+                                            });
+                                          }
+                                        }}
+                                      >
+                                        🗑️ Remover
+                                      </button>
+                                    </div>
+                                    <small style={{ display: 'block', marginTop: 4 }}>
+                                      Linha Excel: {v.item.rowNumber}
+                                    </small>
+                                  </div>
+                                )}
                               </td>
                               <td>
                                 {editingPriceId === v.item.id ? (
@@ -1338,6 +1454,27 @@ export function OfferFolders({
                                                 Editar cartaz
                                               </button>
                                             )}
+                                            <button
+                                              type="button"
+                                              className="subtle"
+                                              style={{ padding: '5px 10px', fontSize: 12, color: '#ef4444' }}
+                                              title="Desvincular este cartaz deste produto na pasta de ofertas"
+                                              onClick={() => {
+                                                if (window.confirm(`Desvincular o cartaz de "${v.item.description}"?`)) {
+                                                  run(async () => {
+                                                    await persistUpdate(
+                                                      unlinkPosterFromCampaignItem(
+                                                        activeCampaign,
+                                                        v.item.id,
+                                                        m.state.cartazPath
+                                                      )
+                                                    );
+                                                  });
+                                                }
+                                              }}
+                                            >
+                                              ❌ Desvincular
+                                            </button>
                                           </div>
                                         </div>
                                       );

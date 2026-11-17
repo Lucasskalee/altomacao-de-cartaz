@@ -109,6 +109,43 @@ export default function App() {
     return true; // Padrão: folha física A4 com arte centralizada no topo
   });
 
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('skalee_theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        return 'dark';
+      }
+    }
+    return 'dark'; // Padrão: Modo Escuro idêntico ao Controle de Validade
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('skalee_sidebar_collapsed') === 'true';
+    }
+    return false;
+  });
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('skalee_sidebar_collapsed', String(next));
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', theme);
+      try {
+        localStorage.setItem('skalee_theme', theme);
+      } catch {}
+    }
+  }, [theme]);
+
   const activeFormat: PosterFormatConfig = {
     paper: editor.document.layout.paper || 'A5',
     orientation: editor.document.layout.orientation || 'portrait',
@@ -472,6 +509,18 @@ export default function App() {
           <span>Histórico</span>
         </button>
 
+        {/* Alternador de Modo Escuro / Claro */}
+        <button
+          type="button"
+          className="sk-theme-btn"
+          onClick={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
+          title={theme === 'dark' ? 'Alternar para Modo Claro' : 'Alternar para Modo Escuro'}
+          aria-label={theme === 'dark' ? 'Alternar para Modo Claro' : 'Alternar para Modo Escuro'}
+        >
+          <span>{theme === 'dark' ? '☀️' : '🌙'}</span>
+          <span>{theme === 'dark' ? 'Modo Claro' : 'Modo Escuro'}</span>
+        </button>
+
         {/* Indicador de Operação Local */}
         <div
           className="sk-offline-pill"
@@ -483,84 +532,128 @@ export default function App() {
       </div>
     </header>
 
-    <nav className="sk-navigation navigation" aria-label="Navegação principal">
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'editor' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => setSection('editor')}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-        </svg>
-        <span>Editor de Cartazes</span>
-      </button>
+    <div className="sk-body-layout">
+      {/* Barra de Navegação Lateral Estilo Controle de Validade */}
+      <aside className={`sk-sidebar ${sidebarCollapsed ? 'collapsed' : ''}`} aria-label="Menu Lateral">
+        <div className="sk-sidebar-header">
+          {!sidebarCollapsed && <span className="sk-sidebar-title">NAVEGAÇÃO</span>}
+          <button
+            type="button"
+            className="sk-sidebar-toggle"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+            aria-label={sidebarCollapsed ? 'Expandir menu lateral' : 'Recolher menu lateral'}
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
+              <path fillRule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
+            </svg>
+          </button>
+        </div>
 
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'library' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => { setSection('library'); run(refresh); }}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
-        </svg>
-        <span>Meus Cartazes</span>
-      </button>
+        <nav className="sk-sidebar-nav" aria-label="Navegação lateral">
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'editor' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => setSection('editor')}
+            title="Editor de Cartazes"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Editor de Cartazes</span>}
+          </button>
 
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'import' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => setSection('import')}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-        </svg>
-        <span>Importação de Preços</span>
-      </button>
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'library' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => { setSection('library'); run(refresh); }}
+            title="Meus Cartazes"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Meus Cartazes</span>}
+          </button>
 
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'offers' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => { setSection('offers'); run(refresh); }}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path fillRule="evenodd" d="M17.707 9.293a1 1 0 010 1.414l-7 7a1 1 0 01-1.414 0l-7-7A.997.997 0 012 10V5a3 3 0 013-3h5c.266 0 .52.105.707.293l7 7zM5 6a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-        </svg>
-        <span>Pastas de Ofertas</span>
-      </button>
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'import' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => setSection('import')}
+            title="Importação de Preços"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Importação de Preços</span>}
+          </button>
 
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'scantech' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => { setSection('scantech'); run(refresh); }}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-        </svg>
-        <span>Criar Cartaz Scantech</span>
-      </button>
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'offers' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => { setSection('offers'); run(refresh); }}
+            title="Pastas de Ofertas"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path fillRule="evenodd" d="M17.707 9.293a1 1 0 010 1.414l-7 7a1 1 0 01-1.414 0l-7-7A.997.997 0 012 10V5a3 3 0 013-3h5c.266 0 .52.105.707.293l7 7zM5 6a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Pastas de Ofertas</span>}
+          </button>
 
-      <button
-        type="button"
-        className={`sk-nav-tab ${section === 'conductor' ? 'active' : ''}`}
-        disabled={busy}
-        onClick={() => { setSection('conductor'); run(refresh); }}
-      >
-        <svg viewBox="0 0 20 20" fill="currentColor">
-          <path fillRule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clipRule="evenodd" />
-        </svg>
-        <span>Condutor de Impressão</span>
-        {conductorQueue.length > 0 && (
-          <span className="sk-nav-counter">{conductorQueue.length}</span>
-        )}
-      </button>
-    </nav>
-    <div className="notifications" aria-live="polite">{busy && <p role="status">Aguarde…</p>}{message && <p className="success" role="status">{message}</p>}{error && <p className="error-text" role="alert">{error}</p>}</div>
-    <fieldset className="workspace" disabled={busy} aria-busy={busy}>
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'scantech' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => { setSection('scantech'); run(refresh); }}
+            title="Criar Cartaz Scantech"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Criar Cartaz Scantech</span>}
+          </button>
+
+          <button
+            type="button"
+            className={`sk-sidebar-item ${section === 'conductor' ? 'active' : ''}`}
+            disabled={busy}
+            onClick={() => { setSection('conductor'); run(refresh); }}
+            title="Condutor de Impressão"
+          >
+            <div className="sk-sidebar-icon">
+              <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
+                <path fillRule="evenodd" d="M5 4v3H4a2 2 0 00-2 2v3a2 2 0 002 2h1v2a2 2 0 002 2h6a2 2 0 002-2v-2h1a2 2 0 002-2V9a2 2 0 00-2-2h-1V4a2 2 0 00-2-2H7a2 2 0 00-2 2zm8 0H7v3h6V4zm0 8H7v4h6v-4z" clipRule="evenodd" />
+              </svg>
+            </div>
+            {!sidebarCollapsed && <span className="sk-sidebar-label">Condutor de Impressão</span>}
+            {conductorQueue.length > 0 && (
+              <span className="sk-sidebar-badge">{conductorQueue.length}</span>
+            )}
+          </button>
+        </nav>
+      </aside>
+
+      <main className="sk-main-content">
+        <div className="notifications" aria-live="polite">
+          {busy && <p role="status">Aguarde…</p>}
+          {message && <p className="success" role="status">{message}</p>}
+          {error && <p className="error-text" role="alert">{error}</p>}
+        </div>
+
+        <fieldset className="workspace" disabled={busy} aria-busy={busy}>
     {section === 'editor' ? (
       <div className="editor-workspace-wrap">
         {/* Barra de Ações do Documento */}
@@ -989,6 +1082,8 @@ export default function App() {
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
+    </main>
+    </div>
 
     {linkedArtworkEdit && (
       <Suspense fallback={<div className="modal-backdrop" role="status">Carregando ferramentas para editar o PSD…</div>}>
