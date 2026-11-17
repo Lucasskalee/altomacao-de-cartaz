@@ -646,7 +646,7 @@ export default function App() {
         </nav>
       </aside>
 
-      <main className="sk-main-content">
+      <div className="sk-main-content" role="main">
         <div className="notifications" aria-live="polite">
           {busy && <p role="status">Aguarde…</p>}
           {message && <p className="success" role="status">{message}</p>}
@@ -1082,7 +1082,7 @@ export default function App() {
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
-    </main>
+    </div>
     </div>
 
     {linkedArtworkEdit && (
