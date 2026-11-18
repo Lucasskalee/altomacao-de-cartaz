@@ -384,9 +384,10 @@ test('9. Troca de referência PSD substitui o vínculo usando o novo nome do arq
 });
 
 test('10. Exportação direta de PSD atualiza preços e invalida cache de pixels da camada para exibição imediata no Photoshop CS6', async () => {
-  const { executeScantechDirectExportJob, invalidateTextLayerPixelCache } = await import('../src/features/scantech/directExport');
-  const { readPsd, writePsd, initializeCanvas } = await import('ag-psd');
+  const { executeScantechDirectExportJob } = await import('../src/features/scantech/directExport');
+  const { readPsd, initializeCanvas } = await import('ag-psd');
   const fs = await import('fs');
+  const path = await import('path');
 
   const makeImageData = (w: number, h: number) => ({
     data: new Uint8ClampedArray(w * h * 4),
@@ -401,12 +402,16 @@ test('10. Exportação direta de PSD atualiza preços e invalida cache de pixels
         getImageData: (_x: number, _y: number, cw: number, ch: number) => makeImageData(cw, ch),
         createImageData: (cw: number, ch: number) => makeImageData(cw, ch),
         putImageData: () => {},
+        clearRect: () => {},
+        fillText: () => {},
+        save: () => {},
+        restore: () => {},
       }),
     })) as any,
     makeImageData as any
   );
 
-  const psdPath = '/home/codespace/.gemini/antigravity/brain/6666fe94-0830-405b-8bb5-1dced151e58d/.user_uploaded/media_1795026349761_52c85967.psd';
+  const psdPath = path.resolve(process.cwd(), 'public/templates/modelo_oferta.psd');
   const rawPsdBuffer = fs.readFileSync(psdPath);
 
   // PSD original possui '10' nos reais e '97' nos centavos com imageData gravado (cache legado)
