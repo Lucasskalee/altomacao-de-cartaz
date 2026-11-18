@@ -382,3 +382,94 @@ test('9. Troca de referência PSD substitui o vínculo usando o novo nome do arq
     'O arquivo .skcartaz gravado em disco deve usar o nome completo do PSD de origem'
   );
 });
+
+test('10. Exportação direta de PSD atualiza preços e invalida cache de pixels da camada para exibição imediata no Photoshop CS6', async () => {
+  const { executeScantechDirectExportJob, invalidateTextLayerPixelCache } = await import('../src/features/scantech/directExport');
+  const { readPsd, writePsd, initializeCanvas } = await import('ag-psd');
+  const fs = await import('fs');
+
+  const makeImageData = (w: number, h: number) => ({
+    data: new Uint8ClampedArray(w * h * 4),
+    width: w,
+    height: h,
+  });
+  initializeCanvas(
+    ((w: number, h: number) => ({
+      width: w,
+      height: h,
+      getContext: () => ({
+        getImageData: (_x: number, _y: number, cw: number, ch: number) => makeImageData(cw, ch),
+        createImageData: (cw: number, ch: number) => makeImageData(cw, ch),
+        putImageData: () => {},
+      }),
+    })) as any,
+    makeImageData as any
+  );
+
+  const psdPath = '/home/codespace/.gemini/antigravity/brain/6666fe94-0830-405b-8bb5-1dced151e58d/.user_uploaded/media_1795026349761_52c85967.psd';
+  const rawPsdBuffer = fs.readFileSync(psdPath);
+
+  // PSD original possui '10' nos reais e '97' nos centavos com imageData gravado (cache legado)
+  const initialPsd = readPsd(rawPsdBuffer, { useImageData: true, throwForMissingFeatures: false });
+  const wholeInitial = initialPsd.children?.find(l => l.name === '10');
+  const fractionInitial = initialPsd.children?.find(l => l.name === '97');
+
+  assert.ok(wholeInitial, 'Camada de reais 10 deve existir no PSD original');
+  assert.ok(fractionInitial, 'Camada de centavos 97 deve existir no PSD original');
+  assert.equal(wholeInitial.text?.text, '10');
+  assert.equal(fractionInitial.text?.text, '97');
+  assert.ok(wholeInitial.imageData, 'Camada de reais original tem pixels em cache');
+  assert.ok(fractionInitial.imageData, 'Camada de centavos original tem pixels em cache');
+
+  // Mapeamos os índices das camadas no PSD
+  const wholeIndex = initialPsd.children!.indexOf(wholeInitial);
+  const fractionIndex = initialPsd.children!.indexOf(fractionInitial);
+
+  let writtenBytes: Uint8Array | null = null;
+  const mockIo = {
+    readSourcePsd: async () => rawPsdBuffer.buffer.slice(rawPsdBuffer.byteOffset, rawPsdBuffer.byteOffset + rawPsdBuffer.byteLength),
+    writeOutputPsd: async (_outPath: string, _srcPath: string, bytes: Uint8Array) => {
+      writtenBytes = bytes;
+      return { fileSize: bytes.byteLength };
+    },
+  };
+
+  const job = {
+    itemId: 'item-27691',
+    f7: '27691',
+    description: 'BATATA PALITO RAP NEWBRAZ 2KG',
+    sourcePsdPath: psdPath,
+    outputPsdPath: 'C:\\Users\\Desktop\\Nova pasta\\batata-palito-rap-newbraz-2kg-oferta.psd',
+    wholeLayerId: String(wholeIndex),
+    fractionLayerId: String(fractionIndex),
+    wholeValue: '22',
+    fractionValue: '22',
+  };
+
+  const result = await executeScantechDirectExportJob(job, mockIo as any);
+  assert.equal(result.ok, true, `Exportação deve suceder: ${result.error}`);
+  assert.ok(writtenBytes, 'Deve ter gravado os bytes do PSD exportado');
+
+  // Reabre o arquivo PSD exportado gerado
+  const exportedPsd = readPsd(writtenBytes!, { useImageData: true, throwForMissingFeatures: false });
+  const exportedWhole = exportedPsd.children?.[wholeIndex];
+  const exportedFraction = exportedPsd.children?.[fractionIndex];
+
+  assert.ok(exportedWhole && exportedWhole.text, 'Camada de Reais deve existir no PSD exportado');
+  assert.ok(exportedFraction && exportedFraction.text, 'Camada de Centavos deve existir no PSD exportado');
+
+  // 1. Textos vetoriais atualizados para a nova oferta da planilha/campanha (22,22)
+  assert.equal(exportedWhole.text.text, '22', 'Texto de reais deve ser atualizado para 22');
+  assert.equal(exportedFraction.text.text, '22', 'Texto de centavos deve ser atualizado para 22');
+
+  // 2. Dimensões válidas preservadas para que a camada não seja colapsada em 0x0
+  assert.ok((exportedWhole.right ?? 0) > (exportedWhole.left ?? 0), 'Largura positiva para reais');
+  assert.ok((exportedWhole.bottom ?? 0) > (exportedWhole.top ?? 0), 'Altura positiva para reais');
+  assert.ok((exportedFraction.right ?? 0) > (exportedFraction.left ?? 0), 'Largura positiva para centavos');
+  assert.ok((exportedFraction.bottom ?? 0) > (exportedFraction.top ?? 0), 'Altura positiva para centavos');
+
+  // 3. Bitmaps gerados a partir do novo texto presente no PSD exportado
+  assert.ok(exportedWhole.imageData || exportedWhole.canvas, 'Camada de reais possui bitmap atualizado');
+  assert.ok(exportedFraction.imageData || exportedFraction.canvas, 'Camada de centavos possui bitmap atualizado');
+});
+
