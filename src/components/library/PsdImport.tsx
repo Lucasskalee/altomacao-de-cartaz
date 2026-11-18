@@ -9,7 +9,7 @@ import { PosterView } from '../editor/PosterView';
 import { importedPriceWarning } from '../editor/importedRenderer';
 import type { Cartaz, ImportedPriceRole } from '../../features/cartazes/types';
 import type { PsdImportOfferContext } from '../../features/ofertas/types';
-import { suggestFromExcelDescription } from '../../features/ofertas/service';
+import { suggestFromExcelDescription, psdFileNameToCartazFileName } from '../../features/ofertas/service';
 
 type Props = {
   close: () => void;
@@ -150,7 +150,10 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
       document.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
       document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
 
-      const path = await chooseSave(fileName(`${name}-${complement}`));
+      const suggestedName = analysis?.fileName
+        ? psdFileNameToCartazFileName(analysis.fileName)
+        : fileName(`${name}-${complement}`);
+      const path = await chooseSave(suggestedName);
       if (!path) return;
       await saveDocument(path, document);
       await saved(path, document);

@@ -20,6 +20,7 @@ import {
   archiveCampaign,
   buildCampaignMatchViews,
   buildCampaignPsdSuggestions,
+  buildCartazPathFromPsd,
   buildOfferPsdCartazTargetPath,
   buildPsdBatchConfirmationSummary,
   confirmBatchPrinted,
@@ -31,6 +32,7 @@ import {
   getDefaultSelectionForSuggestion,
   linkSavedPosterToCampaignItem,
   listCampaigns,
+  psdFileNameToCartazFileName,
   removeCampaignItem,
   renameCampaign,
   saveCampaign,
@@ -489,6 +491,22 @@ export function OfferFolders({
       throw new Error('Produto da campanha não encontrado para vincular a arte PSD.');
     }
 
+    const targetPath = buildCartazPathFromPsd(
+      libraryData?.root || '',
+      psdEntry.path || psdEntry.name,
+      paperSize
+    );
+
+    const alreadyExists = libraryData?.entries.some(
+      e => !e.folder && e.path.toLowerCase() === targetPath.toLowerCase()
+    );
+    if (alreadyExists && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      const fileName = targetPath.split(/[\\/]/).pop();
+      if (!window.confirm(`O cartaz "${fileName}" já existe na biblioteca.\n\nDeseja substituir o arquivo existente pela nova referência PSD?`)) {
+        return;
+      }
+    }
+
     setBatchLinking(true);
     setBatchLinkResult(null);
     try {
@@ -507,12 +525,6 @@ export function OfferFolders({
       );
       setBatchLinkResult(res);
       if (res.success) {
-        const targetPath = buildOfferPsdCartazTargetPath(
-          libraryData?.root || '',
-          item.f7,
-          item.description,
-          paperSize
-        );
         setPreviewKey(`${item.id}::${targetPath}`);
       }
     } finally {
@@ -524,6 +536,22 @@ export function OfferFolders({
     itemsToLink: { item: CampaignItem; psd: ScannedPsdEntry }[]
   ) => {
     if (!activeCampaign || itemsToLink.length === 0) return;
+
+    const existingCount = itemsToLink.filter(entry => {
+      const tPath = buildCartazPathFromPsd(
+        libraryData?.root || '',
+        entry.psd.path || entry.psd.name,
+        psdPaperSize
+      );
+      return libraryData?.entries.some(e => !e.folder && e.path.toLowerCase() === tPath.toLowerCase());
+    }).length;
+
+    if (existingCount > 0 && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      if (!window.confirm(`Atenção: ${existingCount} arquivo(s) .skcartaz já existem na biblioteca e serão atualizados.\n\nDeseja prosseguir com a substituição?`)) {
+        return;
+      }
+    }
+
     setBatchLinking(true);
     setBatchLinkResult(null);
     try {
@@ -624,7 +652,12 @@ export function OfferFolders({
         // 1. Exporta .skcartaz
         if (exportFormatSk) {
           try {
-            const skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
+            let skFileName: string;
+            if (doc.layout.template === 'imported-psd' && doc.layout.artwork?.source?.fileName) {
+              skFileName = psdFileNameToCartazFileName(doc.layout.artwork.source.fileName, doc.layout.paper);
+            } else {
+              skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
+            }
             const skPath = `${targetFolder}\\${skFileName}`;
             await saveExportDocument(skPath, doc);
             skCount++;
@@ -643,7 +676,9 @@ export function OfferFolders({
 
             if (wholePart && fractionPart && artwork.source.sourcePath) {
               const parts = splitCentsToParts(item.scheduledPriceCents);
-              const psdFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
+              const psdFileName = artwork.source.fileName
+                ? (artwork.source.fileName.endsWith('.psd') ? artwork.source.fileName : `${artwork.source.fileName}.psd`)
+                : `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
               const outputPsdPath = `${targetFolder}\\${psdFileName}`;
 
               const campaignValidity = formatCampaignDateToValidity(

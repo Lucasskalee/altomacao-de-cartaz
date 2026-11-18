@@ -236,3 +236,149 @@ test('7. Extração fiel das camadas do modelo PSD oficial: FRIMESA e 300G sem s
   assert.ok(wholePart.shadow, 'Preço deve conter a sombra projetada original');
   assert.equal(wholePart.stroke, undefined, 'Preço whole não deve conter stroke ativo');
 });
+
+test('8. Preservação estrita do nome original do PSD ao gerar arquivo .skcartaz', async () => {
+  const { psdFileNameToCartazFileName, buildCartazPathFromPsd } = await import('../src/features/ofertas/service');
+
+  // Caso principal especificado:
+  assert.equal(
+    psdFileNameToCartazFileName('biscoito-gude-recheado-112g-chocolate.psd'),
+    'biscoito-gude-recheado-112g-chocolate.skcartaz'
+  );
+
+  // Nomes com prefixo alfabético
+  assert.equal(
+    psdFileNameToCartazFileName('A_Biscoito Recheado Passatempo 130g.psd'),
+    'A_Biscoito Recheado Passatempo 130g.skcartaz'
+  );
+
+  // Nomes com números e unidades de medida
+  assert.equal(
+    psdFileNameToCartazFileName('refrigerante-coca-cola-2l-pet.psd'),
+    'refrigerante-coca-cola-2l-pet.skcartaz'
+  );
+  assert.equal(
+    psdFileNameToCartazFileName('amaciante downy concentrado 500ml.psd'),
+    'amaciante downy concentrado 500ml.skcartaz'
+  );
+
+  // Espaços, acentos e hífens
+  assert.equal(
+    psdFileNameToCartazFileName('Açúcar Cristal União 1kg - Pacote.psd'),
+    'Açúcar Cristal União 1kg - Pacote.skcartaz'
+  );
+  assert.equal(
+    psdFileNameToCartazFileName('Feijão Carioca Camil Tipo 1 - 1kg.psd'),
+    'Feijão Carioca Camil Tipo 1 - 1kg.skcartaz'
+  );
+
+  // Arquivo PSD já contendo indicação do formato (evita duplicar)
+  assert.equal(
+    psdFileNameToCartazFileName('cerveja brahma chopp 350ml [A6].psd', 'A6'),
+    'cerveja brahma chopp 350ml [A6].skcartaz'
+  );
+  assert.equal(
+    psdFileNameToCartazFileName('sabao em po omo 800g (A5).psd', 'A5'),
+    'sabao em po omo 800g (A5).skcartaz'
+  );
+  assert.equal(
+    psdFileNameToCartazFileName('repolho verde kg A5.psd', 'A5'),
+    'repolho verde kg A5.skcartaz'
+  );
+
+  // Caminho completo no diretório da biblioteca
+  assert.equal(
+    buildCartazPathFromPsd('C:\\Skalee\\Cartazes', 'biscoito-gude-recheado-112g-chocolate.psd'),
+    'C:\\Skalee\\Cartazes\\biscoito-gude-recheado-112g-chocolate.skcartaz'
+  );
+  assert.equal(
+    buildCartazPathFromPsd('C:\\Skalee\\Cartazes\\', 'D:\\Artes\\cerveja corona extra 350ml.psd'),
+    'C:\\Skalee\\Cartazes\\cerveja corona extra 350ml.skcartaz'
+  );
+});
+
+test('9. Troca de referência PSD substitui o vínculo usando o novo nome do arquivo PSD', async () => {
+  const { executePsdBatchLinking, psdFileNameToCartazFileName } = await import('../src/features/ofertas/service');
+
+  const campaign: OfferCampaign = {
+    schemaVersion: 1,
+    id: 'camp-1',
+    name: 'Campanha de Ofertas',
+    campaignDate: '2026-11-19',
+    archived: false,
+    sourceExcel: null,
+    items: [
+      {
+        id: 'item-1',
+        f7: '38340',
+        description: 'ARROZ RAMPINELLI 5KG',
+        scheduledPriceCents: 1989,
+        rowNumber: 2,
+        posters: [
+          {
+            cartazId: 'cartaz-antigo',
+            cartazPath: 'C:\\Skalee\\Cartazes\\arroz-antigo-generico.skcartaz',
+            selected: true,
+            copies: 1,
+            status: 'preparado',
+            printedAt: null,
+          },
+        ],
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const savedFiles: Record<string, any> = {};
+
+  const mockIo = {
+    readPsd: async (p: string) => ({ name: p.split(/[\\/]/).pop() || p, path: p, buffer: new ArrayBuffer(8) }),
+    buildCartazFromPsd: async (psdData: any, item: any) => ({
+      schemaVersion: 1,
+      id: 'novo-cartaz-id',
+      product: { name: item.description, complement: '', unit: 'UN', priceCents: item.scheduledPriceCents, productCode: item.f7 },
+      layout: {
+        template: 'imported-psd',
+        paper: 'A5',
+        orientation: 'portrait',
+        artwork: { source: { fileName: psdData.name } },
+      },
+      metadata: { createdAt: '', updatedAt: '' },
+    }),
+    saveCartazDocument: async (targetPath: string, doc: any) => {
+      savedFiles[targetPath] = doc;
+    },
+    persistCampaign: async (camp: any) => camp,
+  };
+
+  // Troca a referência para um novo arquivo PSD com nome descritivo próprio
+  const newPsd = {
+    name: 'arroz-rampinelli-tipo-1-5kg-pacote.psd',
+    path: 'C:\\Artes\\arroz-rampinelli-tipo-1-5kg-pacote.psd',
+    size: 1024,
+  };
+
+  const res = await executePsdBatchLinking(
+    campaign,
+    [{ item: campaign.items[0], psd: newPsd }],
+    'A5',
+    'C:\\Skalee\\Cartazes',
+    mockIo as any
+  );
+
+  assert.equal(res.success, true);
+  assert.equal(res.linkedCount, 1);
+
+  const updatedItem = res.campaign.items[0];
+  assert.equal(updatedItem.posters.length, 1, 'Deve conter apenas 1 vínculo substituído');
+  assert.equal(
+    updatedItem.posters[0].cartazPath,
+    'C:\\Skalee\\Cartazes\\arroz-rampinelli-tipo-1-5kg-pacote.skcartaz',
+    'O novo vínculo deve usar o nome exato do novo PSD sem prefixos artificiais ou F7'
+  );
+  assert.ok(
+    savedFiles['C:\\Skalee\\Cartazes\\arroz-rampinelli-tipo-1-5kg-pacote.skcartaz'],
+    'O arquivo .skcartaz gravado em disco deve usar o nome completo do PSD de origem'
+  );
+});

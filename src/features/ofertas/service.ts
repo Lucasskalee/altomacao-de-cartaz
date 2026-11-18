@@ -1028,12 +1028,58 @@ export function buildPsdBatchConfirmationSummary(
   };
 }
 
+/**
+ * Converte o nome de um arquivo PSD para o nome do arquivo .skcartaz correspondente.
+ * Regras estritas:
+ * 1. Usa o nome completo do PSD de origem, trocando somente a extensão final (.psd -> .skcartaz).
+ *    Exemplo: "biscoito-gude-recheado-112g-chocolate.psd" -> "biscoito-gude-recheado-112g-chocolate.skcartaz"
+ * 2. Preserva letras maiúsculas/minúsculas, acentos, números, espaços, hífens, sublinhados, parênteses e colchetes.
+ * 3. Não gera o nome a partir da descrição do Excel.
+ * 4. Não adiciona automaticamente o F7 antes do nome.
+ * 5. Não remove o início alfabético.
+ * 6. Se o nome já possuir indicação do formato (ex.: [A6], [A5], A6), evita duplicar essa informação.
+ */
+export function psdFileNameToCartazFileName(psdFileNameOrPath: string, paperSize?: string): string {
+  const rawBase = psdFileNameOrPath.split(/[\\/]/).pop() || psdFileNameOrPath;
+  const withoutExt = rawBase.replace(/\.psd$/i, '').trim();
+  // Sanitiza apenas caracteres estritamente proibidos em caminhos do Windows / sistemas de arquivos
+  const sanitized = withoutExt.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim();
+  const safeName = sanitized || 'cartaz';
+
+  if (paperSize && paperSize.trim()) {
+    const cleanPaper = paperSize.trim();
+    const formatRegex = new RegExp(`(?:\\[|\\(|\\b)${cleanPaper}(?:\\]|\\)|\\b)`, 'i');
+    if (!formatRegex.test(safeName)) {
+      // O nome original não contém o formato: preserva exatamente o nome do PSD puro sem inventar tags
+    }
+  }
+
+  return `${safeName}.skcartaz`;
+}
+
+/**
+ * Constrói o caminho completo de destino para o arquivo .skcartaz a partir do PSD de origem.
+ */
+export function buildCartazPathFromPsd(
+  libraryRoot: string,
+  psdFileNameOrPath: string,
+  paperSize?: string
+): string {
+  const rootDir = libraryRoot.trim().replace(/[\\/]+$/, '');
+  const fileName = psdFileNameToCartazFileName(psdFileNameOrPath, paperSize);
+  return rootDir ? `${rootDir}\\${fileName}` : fileName;
+}
+
 export function buildOfferPsdCartazTargetPath(
   libraryRoot: string,
   f7: string,
   description: string,
-  paperSize: PaperFormat
+  paperSize: PaperFormat,
+  psdFileNameOrPath?: string
 ): string {
+  if (psdFileNameOrPath && psdFileNameOrPath.trim()) {
+    return buildCartazPathFromPsd(libraryRoot, psdFileNameOrPath, paperSize);
+  }
   const rootDir = libraryRoot.trim().replace(/[\\/]+$/, '');
   const baseSlug = (description || 'cartaz')
     .normalize('NFD')
@@ -1084,10 +1130,9 @@ export async function executePsdBatchLinking(
     try {
       const psdData = await io.readPsd(psd.path);
       const cartazDoc = await io.buildCartazFromPsd(psdData, item, paperSize);
-      const targetPath = buildOfferPsdCartazTargetPath(
+      const targetPath = buildCartazPathFromPsd(
         libraryRoot,
-        item.f7,
-        item.description,
+        psd.path || psd.name,
         paperSize
       );
       await io.saveCartazDocument(targetPath, cartazDoc);
