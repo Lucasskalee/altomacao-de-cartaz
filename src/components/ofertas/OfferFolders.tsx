@@ -27,6 +27,7 @@ import {
   deleteCampaign,
   duplicateCampaign,
   executePsdBatchLinking,
+  formatCampaignDateToValidity,
   getDefaultSelectionForSuggestion,
   linkSavedPosterToCampaignItem,
   listCampaigns,
@@ -581,6 +582,15 @@ export function OfferFolders({
               const psdFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
               const outputPsdPath = `${targetFolder}\\${psdFileName}`;
 
+              const campaignValidity = formatCampaignDateToValidity(
+                activeCampaign.campaignDate,
+                artwork.posterModel
+              );
+              const targetValidity =
+                typeof doc.product.validityText === 'string' && doc.product.validityText.trim()
+                  ? doc.product.validityText.trim()
+                  : campaignValidity;
+
               const job: ScantechExportJob = {
                 itemId: item.id,
                 f7: item.f7,
@@ -592,7 +602,7 @@ export function OfferFolders({
                 validityLayerId: validityPart?.layerId,
                 wholeValue: parts.whole,
                 fractionValue: parts.fraction,
-                validityText: typeof doc.product.validityText === 'string' ? doc.product.validityText : undefined,
+                validityText: targetValidity || undefined,
               };
 
               try {

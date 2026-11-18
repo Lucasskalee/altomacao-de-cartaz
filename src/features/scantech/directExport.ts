@@ -239,7 +239,10 @@ export async function executeScantechDirectExportJob(
   if (job.validityText) {
     let validityLayer = resolveLayerByPath(psd, job.validityLayerId);
     if (!validityLayer || !validityLayer.text) {
-      validityLayer = findFirstTextLayerMatching(psd, /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i);
+      validityLayer = findFirstTextLayerMatching(
+        psd,
+        /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b|promo[cç][aã]o|vencimento|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b)/i
+      );
     }
     if (validityLayer && validityLayer.text) {
       validityLayer.text.text = job.validityText.trim();
@@ -505,7 +508,10 @@ export async function exportDerivedPsdDirect(
   if (payload.validityText) {
     let valLayer = resolveLayerByPath(psd, payload.roles.validityLayerId);
     if (!valLayer || !valLayer.text) {
-      valLayer = findFirstTextLayerMatching(psd, /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b)/i);
+      valLayer = findFirstTextLayerMatching(
+        psd,
+        /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b|promo[cç][aã]o|vencimento|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b)/i
+      );
     }
     if (valLayer && valLayer.text) {
       valLayer.text.text = payload.validityText.trim();

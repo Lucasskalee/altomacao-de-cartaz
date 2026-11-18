@@ -325,28 +325,32 @@ function drawPart(
   if (part.role === 'category') {
     const text = (dynamicTexts?.category ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true, artwork);
+    context.fillStyle = '#000000';
+    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', true, artwork);
     context.restore();
     return;
   }
   if (part.role === 'title') {
     const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
+    context.fillStyle = '#000000';
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', true, artwork);
     context.restore();
     return;
   }
   if (part.role === 'complement') {
     const text = (dynamicTexts?.complement ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', true, artwork);
+    context.fillStyle = '#000000';
+    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', true, artwork);
     context.restore();
     return;
   }
   if (part.role === 'packaging') {
     const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
+    context.fillStyle = '#000000';
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', true, artwork);
     context.restore();
     return;
   }
@@ -506,11 +510,13 @@ function drawTextLayer(
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
   const fontName = part.fontFamily ? `${quoteFont(part.fontFamily)}, ${fallbackFont}` : fallbackFont;
+  const isBrush = /brush/i.test(fontName);
+  const fontWeight = isBrush ? '400' : '900';
 
   // Medidor de largura contextualizado
   const measureTextWidth = (txt: string, fontPx: number): number => {
     context.save();
-    context.font = `400 ${fontPx}px ${fontName}`;
+    context.font = `${fontWeight} ${fontPx}px ${fontName}`;
     const m = context.measureText(txt);
     context.restore();
     return Math.max(1, m.width);
@@ -527,7 +533,7 @@ function drawTextLayer(
     context.save();
     context.transform(a, bm, c, d, e, f);
     context.scale(hScale, 1);
-    context.font = `400 ${finalFontSize}px ${fontName}`;
+    context.font = `${fontWeight} ${finalFontSize}px ${fontName}`;
     context.textAlign = 'center';
     context.textBaseline = 'alphabetic';
 

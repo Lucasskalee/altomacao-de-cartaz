@@ -284,7 +284,7 @@ function composeStatic(analysis: PsdAnalysis, excluded: Set<string>): string {
 }
 
 function drawLayers(context: CanvasRenderingContext2D, layers: Layer[], prefix: string, excluded: Set<string>, parentVisible: boolean) {
-  for (let index = layers.length - 1; index >= 0; index--) {
+  for (let index = 0; index < layers.length; index++) {
     const layer = layers[index], id = prefix ? `${prefix}.${index}` : String(index), visible = parentVisible && !layer.hidden;
     if (!visible || excluded.has(id)) continue;
     if (layer.children) { drawLayers(context, layer.children, id, excluded, visible); continue; }
@@ -309,18 +309,28 @@ function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): I
   const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
   const stroke = layer.effects?.stroke?.find(item => item.enabled !== false);
   const distance = shadow?.distance?.value ?? 0, angle = (shadow?.angle ?? 120) * Math.PI / 180;
+  const isTextRole = role === 'title' || role === 'category' || role === 'complement' || role === 'packaging' || role === 'validity';
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
     color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined, role),
     shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
-    stroke: stroke ? { size: stroke.size?.value ?? 0, color: '#000000' } : undefined,
+    stroke: stroke ? { size: stroke.size?.value ?? (isTextRole ? 2 : 0), color: '#000000' } : (isTextRole ? { size: 2, color: '#000000' } : undefined),
   };
 }
 
 function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedRole): string {
-  if (!color) return (role === 'validity' || role === 'category' || role === 'complement' || role === 'title') ? '#000000' : '#c74624';
-  const raw = 'fr' in color ? [color.fr,color.fg,color.fb] : [color.r,color.g,color.b];
-  const values = raw.map(value => Math.round(Math.max(0,Math.min(255, value <= 1 ? value * 255 : value))));
-  return `#${values.map(value => value.toString(16).padStart(2,'0')).join('')}`;
+  if (role === 'validity' || role === 'category' || role === 'complement' || role === 'title' || role === 'packaging') {
+    return '#000000';
+  }
+  if (!color) return '#c74624';
+  if ('fr' in color) {
+    const values = [color.fr, color.fg, color.fb].map(v => Math.round(Math.max(0, Math.min(255, v * 255))));
+    return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  }
+  const values = [color.r, color.g, color.b].map(v => Math.round(Math.max(0, Math.min(255, v))));
+  if (values.every(v => v <= 18)) {
+    return '#000000';
+  }
+  return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;
 }

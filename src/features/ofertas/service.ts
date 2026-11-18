@@ -416,30 +416,55 @@ export function confirmBatchPrinted(campaign: OfferCampaign, printedKeys: Set<st
   };
 }
 
+export function formatCampaignDateToValidity(campaignDate: string, posterModel?: string): string {
+  if (!campaignDate) return '';
+  const parts = campaignDate.split('-');
+  if (parts.length === 3) {
+    const day = parts[2];
+    const month = parts[1];
+    const year = parts[0];
+    if (posterModel === 'vencimento') {
+      return `${day}/${month}`;
+    }
+    return `OFERTA VÁLIDA ATÉ ${day}/${month}/${year}`;
+  }
+  return campaignDate;
+}
+
 /** Projects the library Cartaz with the scheduled price WITHOUT mutating the library document. */
-export function buildScheduledDocument(libraryDocument: Cartaz, scheduledPriceCents: number): Cartaz {
+export function buildScheduledDocument(
+  libraryDocument: Cartaz,
+  scheduledPriceCents: number,
+  scheduledValidityText?: string
+): Cartaz {
   const clone = structuredClone(libraryDocument);
   clone.product = {
     ...clone.product,
     priceCents: scheduledPriceCents,
+    ...(scheduledValidityText ? { validityText: scheduledValidityText } : {}),
   };
   return clone;
 }
 
-export function buildScheduledPoster(libraryDocument: Cartaz, scheduledPriceCents: number): Poster {
-  return posterFromDocument(buildScheduledDocument(libraryDocument, scheduledPriceCents));
+export function buildScheduledPoster(
+  libraryDocument: Cartaz,
+  scheduledPriceCents: number,
+  scheduledValidityText?: string
+): Poster {
+  return posterFromDocument(buildScheduledDocument(libraryDocument, scheduledPriceCents, scheduledValidityText));
 }
 
 export function inspectScheduledPriceApplication(
   libraryDocument: Cartaz,
-  scheduledPriceCents: number
+  scheduledPriceCents: number,
+  scheduledValidityText?: string
 ): {
   scheduledDocument: Cartaz;
   appliedPriceCents: number | null;
   hasInvertedLayers: boolean;
   priceMismatchReason: string | null;
 } {
-  const scheduledDocument = buildScheduledDocument(libraryDocument, scheduledPriceCents);
+  const scheduledDocument = buildScheduledDocument(libraryDocument, scheduledPriceCents, scheduledValidityText);
   if (!Number.isSafeInteger(scheduledPriceCents) || scheduledPriceCents <= 0 || scheduledPriceCents > 99_999_999) {
     return {
       scheduledDocument,
@@ -523,7 +548,9 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
         if (linkedContent.has(key)) return [];
         linkedContent.add(key);
       }
-      const inspection = lib ? inspectScheduledPriceApplication(lib.document, item.scheduledPriceCents) : null;
+      const posterModel = lib?.document.layout.template === 'imported-psd' ? lib.document.layout.artwork.posterModel : undefined;
+      const campaignValidity = formatCampaignDateToValidity(campaign.campaignDate, posterModel);
+      const inspection = lib ? inspectScheduledPriceApplication(lib.document, item.scheduledPriceCents, campaignValidity) : null;
       return [{
         state,
         libraryCartaz: lib,
