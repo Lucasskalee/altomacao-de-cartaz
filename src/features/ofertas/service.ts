@@ -229,7 +229,8 @@ export function linkSavedPosterToCampaignItem(
   campaign: OfferCampaign,
   offerItemId: string,
   cartazPath: string,
-  cartazDocument: Cartaz
+  cartazDocument: Cartaz,
+  replaceExisting = false
 ): OfferCampaign {
   if (!cartazPath.trim()) throw new Error('Caminho do cartaz salvo inválido.');
   const targetNorm = normalizedPath(cartazPath);
@@ -256,8 +257,9 @@ export function linkSavedPosterToCampaignItem(
       status: 'preparado',
       printedAt: null,
     };
-    const nextPosters =
-      existingIdx >= 0
+    const nextPosters = replaceExisting
+      ? [nextEntry]
+      : existingIdx >= 0
         ? posters.map((p, idx) => (idx === existingIdx ? nextEntry : p))
         : [...posters, nextEntry];
 
@@ -389,6 +391,36 @@ export function updatePosterSelection(
             copies,
             status,
             printedAt: status === 'impresso' ? (p.printedAt ?? now) : null,
+          };
+        }),
+      };
+    }),
+  };
+}
+
+export function updateAllPostersSelection(
+  campaign: OfferCampaign,
+  selected: boolean,
+  targetItemIds?: Set<string>
+): OfferCampaign {
+  const now = new Date().toISOString();
+  return {
+    ...campaign,
+    updatedAt: now,
+    items: campaign.items.map(item => {
+      if (targetItemIds && !targetItemIds.has(item.id)) return item;
+      return {
+        ...item,
+        posters: item.posters.map(p => {
+          let status: PrintStatus = p.status;
+          if (p.selected !== selected) {
+            if (!selected && status !== 'impresso') status = 'pendente';
+            else if (selected && status === 'pendente') status = 'preparado';
+          }
+          return {
+            ...p,
+            selected,
+            status,
           };
         }),
       };
@@ -1063,7 +1095,8 @@ export async function executePsdBatchLinking(
         currentCampaign,
         item.id,
         targetPath,
-        cartazDoc
+        cartazDoc,
+        true
       );
       linkedCount++;
     } catch (err) {

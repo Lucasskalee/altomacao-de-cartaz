@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { PosterView, type Poster } from '../editor/PosterView';
 import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
@@ -37,6 +37,7 @@ import {
   selectExcel,
   syncCampaignWithLibrary,
   unlinkPosterFromCampaignItem,
+  updateAllPostersSelection,
   updateCampaignItemDescription,
   updatePosterSelection,
   updateScheduledPrice,
@@ -216,6 +217,69 @@ export function OfferFolders({
     () => campaigns.find(c => c.id === activeId) ?? null,
     [campaigns, activeId]
   );
+
+  const pendingSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pendingSaveTimeoutRef.current) {
+        clearTimeout(pendingSaveTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const scheduleCampaignSave = (updated: OfferCampaign) => {
+    if (pendingSaveTimeoutRef.current) {
+      clearTimeout(pendingSaveTimeoutRef.current);
+    }
+    pendingSaveTimeoutRef.current = setTimeout(() => {
+      saveCampaign(updated).catch(err => {
+        console.error('Falha ao salvar campanha em segundo plano:', err);
+      });
+    }, 350);
+  };
+
+  const handleTogglePosterSelection = (
+    itemId: string,
+    cartazPath: string,
+    selected: boolean
+  ) => {
+    if (!activeCampaign) return;
+    const updated = updatePosterSelection(activeCampaign, itemId, cartazPath, { selected });
+    // Atualização otimista imediata na memória do React (0ms de latência)
+    setCampaigns(prev => prev.map(c => (c.id === updated.id ? updated : c)));
+    scheduleCampaignSave(updated);
+  };
+
+  const handleCopiesChange = (
+    itemId: string,
+    cartazPath: string,
+    copies: number
+  ) => {
+    if (!activeCampaign) return;
+    const updated = updatePosterSelection(activeCampaign, itemId, cartazPath, { copies });
+    setCampaigns(prev => prev.map(c => (c.id === updated.id ? updated : c)));
+    scheduleCampaignSave(updated);
+  };
+
+  const handleStatusChange = (
+    itemId: string,
+    cartazPath: string,
+    status: PrintStatus
+  ) => {
+    if (!activeCampaign) return;
+    const updated = updatePosterSelection(activeCampaign, itemId, cartazPath, { status });
+    setCampaigns(prev => prev.map(c => (c.id === updated.id ? updated : c)));
+    scheduleCampaignSave(updated);
+  };
+
+  const handleSelectAllFiltered = (selected: boolean) => {
+    if (!activeCampaign) return;
+    const filteredItemIds = new Set(filteredViews.map(v => v.item.id));
+    const updated = updateAllPostersSelection(activeCampaign, selected, filteredItemIds);
+    setCampaigns(prev => prev.map(c => (c.id === updated.id ? updated : c)));
+    scheduleCampaignSave(updated);
+  };
 
   const persistUpdate = async (updated: OfferCampaign) => {
     const saved = await saveCampaign(updated);
@@ -635,7 +699,8 @@ export function OfferFolders({
       activeCampaign,
       psdOfferContext.offerItemId,
       path,
-      savedDocument
+      savedDocument,
+      true // replaceExisting = true: substitui qualquer arte de referência anterior desse produto
     );
     await persistUpdate(linked);
     if (onRefreshLibrary) await onRefreshLibrary();
@@ -644,7 +709,7 @@ export function OfferFolders({
 
   const handleLinkLibraryPoster = async (offerItemId: string, poster: IndexedCartaz) => {
     if (!activeCampaign) return;
-    const linked = linkSavedPosterToCampaignItem(activeCampaign, offerItemId, poster.path, poster.document);
+    const linked = linkSavedPosterToCampaignItem(activeCampaign, offerItemId, poster.path, poster.document, true);
     await persistUpdate(linked);
     setPreviewKey(`${offerItemId}::${poster.path}`);
   };
@@ -1158,7 +1223,31 @@ export function OfferFolders({
                             <th>F7</th>
                             <th>Produto (Excel)</th>
                             <th>Preço Programado</th>
-                            <th>Cartazes da Biblioteca e Impressão</th>
+                            <th>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                <span>Cartazes da Biblioteca e Impressão</span>
+                                <div style={{ display: 'inline-flex', gap: 6, fontWeight: 'normal' }}>
+                                  <button
+                                    type="button"
+                                    className="subtle"
+                                    style={{ padding: '2px 8px', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}
+                                    title="Marcar todos os cartazes filtrados para impressão"
+                                    onClick={() => handleSelectAllFiltered(true)}
+                                  >
+                                    ☑ Todos
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="subtle"
+                                    style={{ padding: '2px 8px', fontSize: 11, cursor: 'pointer', borderRadius: 4 }}
+                                    title="Desmarcar todos os cartazes filtrados"
+                                    onClick={() => handleSelectAllFiltered(false)}
+                                  >
+                                    ☐ Nenhum
+                                  </button>
+                                </div>
+                              </div>
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1381,18 +1470,7 @@ export function OfferFolders({
                                               type="checkbox"
                                               checked={m.state.selected}
                                               disabled={!m.libraryCartaz}
-                                              onChange={e =>
-                                                run(async () => {
-                                                  await persistUpdate(
-                                                    updatePosterSelection(
-                                                      activeCampaign,
-                                                      v.item.id,
-                                                      m.state.cartazPath,
-                                                      { selected: e.target.checked }
-                                                    )
-                                                  );
-                                                })
-                                              }
+                                              onChange={e => handleTogglePosterSelection(v.item.id, m.state.cartazPath, e.target.checked)}
                                             />
                                             <span>
                                               <strong>
@@ -1410,8 +1488,13 @@ export function OfferFolders({
                                                   </span>
                                                 )}
                                               </div>
-                                              <small style={{ color: '#64748b', display: 'block', marginTop: 2 }}>
-                                                {m.state.cartazPath}
+                                              <small style={{ color: '#64748b', display: 'block', marginTop: 3 }}>
+                                                📄 Cartaz: <strong>{m.state.cartazPath.split(/[\\/]/).pop()}</strong>
+                                                {m.libraryCartaz?.document.layout.template === 'imported-psd' && m.libraryCartaz.document.layout.artwork.source.sourcePath && (
+                                                  <span style={{ color: '#2563eb', fontWeight: 600, marginLeft: 8 }}>
+                                                    · 🎨 PSD: {m.libraryCartaz.document.layout.artwork.source.sourcePath.split(/[\\/]/).pop()}
+                                                  </span>
+                                                )}
                                               </small>
                                             </span>
                                           </label>
@@ -1450,36 +1533,14 @@ export function OfferFolders({
                                                 min={1}
                                                 max={999}
                                                 value={m.state.copies}
-                                                onChange={e =>
-                                                  run(async () => {
-                                                    await persistUpdate(
-                                                      updatePosterSelection(
-                                                        activeCampaign,
-                                                        v.item.id,
-                                                        m.state.cartazPath,
-                                                        { copies: parseInt(e.target.value, 10) || 1 }
-                                                      )
-                                                    );
-                                                  })
-                                                }
+                                                onChange={e => handleCopiesChange(v.item.id, m.state.cartazPath, parseInt(e.target.value, 10) || 1)}
                                                 style={{ width: 60, padding: '4px 6px' }}
                                               />
                                             </label>
                                             <select
                                               aria-label="Status de impressão"
                                               value={m.state.status}
-                                              onChange={e =>
-                                                run(async () => {
-                                                  await persistUpdate(
-                                                    updatePosterSelection(
-                                                      activeCampaign,
-                                                      v.item.id,
-                                                      m.state.cartazPath,
-                                                      { status: e.target.value as PrintStatus }
-                                                    )
-                                                  );
-                                                })
-                                              }
+                                              onChange={e => handleStatusChange(v.item.id, m.state.cartazPath, e.target.value as PrintStatus)}
                                               style={{ padding: '4px 8px', fontSize: 12 }}
                                             >
                                               <option value="pendente">Pendente</option>
@@ -1492,6 +1553,23 @@ export function OfferFolders({
                                               onClick={() => setPreviewKey(key)}
                                             >
                                               Ver prévia futura
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="subtle"
+                                              style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600 }}
+                                              title="Trocar a imagem / arte de referência deste produto por outro PSD"
+                                              onClick={() =>
+                                                setPsdOfferContext({
+                                                  folderId: activeCampaign.id,
+                                                  offerItemId: v.item.id,
+                                                  productCode: v.item.f7,
+                                                  description: v.item.description,
+                                                  futurePriceCents: v.item.scheduledPriceCents,
+                                                })
+                                              }
+                                            >
+                                              🔄 Trocar referência PSD
                                             </button>
                                             {onEditPoster && m.libraryCartaz && (
                                               <button
