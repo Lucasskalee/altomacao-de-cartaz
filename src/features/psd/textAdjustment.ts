@@ -83,7 +83,14 @@ export function computeTextLayoutAdjustment(
   const text = (rawText || '').trim();
   const b = part.bounds;
   const originalFontSize = part.fontSize || Math.max(16, (b.bottom - b.top) * 0.85);
-  const safeWidth = Math.max(120, b.right - b.left);
+  const boundsWidth = Math.max(120, b.right - b.left);
+  const sx = part.transform ? Math.hypot(part.transform[0], part.transform[1]) : 1;
+  const canvasW = artwork?.canvas?.width ?? 1178;
+  const pageLimitLocal = (canvasW - 140) / Math.max(0.1, sx);
+  // Se a camada original tinha bounds muito estreitos (ex: NATA ou palavras curtas), permite expandir até a página
+  const safeWidth = boundsWidth < 500 && (part.role === 'category' || part.role === 'title' || part.role === 'complement')
+    ? Math.max(boundsWidth, pageLimitLocal)
+    : boundsWidth;
   const safeBottomLimit = computeSafeBottomLimit(part, artwork);
   const safeAvailableHeight = Math.max(originalFontSize, safeBottomLimit - b.top);
 
@@ -187,15 +194,21 @@ export function computeTextLayoutAdjustment(
   }
 
   // Após definir a fonte verticalmente, confere a largura máxima entre as linhas
-  let maxLineWidth = 0;
-  for (const line of lines) {
-    const w = measureTextWidth(line, targetFontSize);
-    if (w > maxLineWidth) maxLineWidth = w;
+  let maxLineWidth = Math.max(1, ...lines.map(line => measureTextWidth(line, targetFontSize)));
+
+  // Se a largura necessária exceder a largura segura mesmo com a compressão horizontal padrão,
+  // reduz o tamanho da fonte proporcionalmente para garantir que o texto não corte nas laterais
+  if (maxLineWidth * MIN_TITLE_HORIZONTAL_SCALE > safeWidth) {
+    const widthScaleFactor = safeWidth / (maxLineWidth * MIN_TITLE_HORIZONTAL_SCALE);
+    targetFontSize = Math.max(14, Math.round(targetFontSize * widthScaleFactor));
+    calculatedLineHeight = targetFontSize * 1.05;
+    calculatedTotalHeight = numLines * calculatedLineHeight;
+    maxLineWidth = Math.max(1, ...lines.map(line => measureTextWidth(line, targetFontSize)));
   }
 
   let finalHScale = 1;
   if (maxLineWidth > safeWidth) {
-    finalHScale = Math.max(MIN_TITLE_HORIZONTAL_SCALE, safeWidth / maxLineWidth);
+    finalHScale = Math.max(0.40, Math.min(1, safeWidth / maxLineWidth));
   }
 
   // Se mesmo com compressão e redução o texto ultrapassar a barreira de segurança

@@ -663,8 +663,11 @@ export default function App() {
         {/* Barra de Ações do Documento */}
         <div className="editor-document-bar">
           <div className="editor-toolbar">
-            <button type="button" className="editor-btn subtle" onClick={() => run(newDocument)}>
-              + Novo Cartaz
+            <button type="button" className="editor-btn subtle" onClick={() => run(async () => { await editor.newOfficial('oferta'); })}>
+              + Novo (Oferta)
+            </button>
+            <button type="button" className="editor-btn subtle" style={{ color: '#b45309', borderColor: '#fde68a', background: '#fffbeb' }} onClick={() => run(async () => { await editor.newOfficial('vencimento'); })}>
+              + Novo (Vencimento)
             </button>
             <button
               type="button"
@@ -716,6 +719,85 @@ export default function App() {
             <div style={{ marginBottom: 16 }}>
               <h2 style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', margin: '0 0 4px 0' }}>Editar Oferta</h2>
               <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>Preencha os campos abaixo para atualizar instantaneamente o cartaz.</p>
+            </div>
+
+            {/* SELETOR DE MODELO DE LAYOUT */}
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: 10,
+                padding: '10px 12px',
+                marginBottom: 16,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Modelo de Layout</span>
+                <span
+                  style={{
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: 12,
+                    background: editor.posterModel === 'vencimento' ? '#fef3c7' : '#e0e7ff',
+                    color: editor.posterModel === 'vencimento' ? '#92400e' : '#3730a3',
+                  }}
+                >
+                  {editor.posterModel === 'vencimento' ? '⏳ Vencimento' : '🏷️ Oferta Normal'}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <button
+                  type="button"
+                  style={{
+                    padding: '7px 10px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    borderRadius: 7,
+                    border: editor.posterModel === 'oferta' ? '2px solid #2563eb' : '1px solid #cbd5e1',
+                    background: editor.posterModel === 'oferta' ? '#eff6ff' : '#ffffff',
+                    color: editor.posterModel === 'oferta' ? '#1d4ed8' : '#475569',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                  }}
+                  onClick={() => run(async () => {
+                    if (editor.posterModel !== 'oferta') {
+                      await editor.switchModel('oferta');
+                      setMessage('Modelo alterado para Oferta Normal.');
+                    }
+                  })}
+                >
+                  🏷️ Oferta Normal
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: '7px 10px',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    borderRadius: 7,
+                    border: editor.posterModel === 'vencimento' ? '2px solid #d97706' : '1px solid #cbd5e1',
+                    background: editor.posterModel === 'vencimento' ? '#fffbeb' : '#ffffff',
+                    color: editor.posterModel === 'vencimento' ? '#b45309' : '#475569',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                  }}
+                  onClick={() => run(async () => {
+                    if (editor.posterModel !== 'vencimento') {
+                      await editor.switchModel('vencimento');
+                      setMessage('Modelo alterado para Próximo ao Vencimento.');
+                    }
+                  })}
+                >
+                  ⏳ Vencimento
+                </button>
+              </div>
             </div>
 
             {imported && !poster.artwork?.isReferenceTemplate && (
@@ -837,7 +919,23 @@ export default function App() {
                 </div>
               </div>
 
-              {poster.artwork?.priceParts.some(part => part.role === 'validity') && (
+              {editor.posterModel === 'vencimento' ? (
+                <div className="editor-field" style={{ marginTop: 10 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#b45309', fontWeight: 700 }}>
+                    ⏳ Data de Vencimento do Produto
+                  </label>
+                  <input
+                    className="editor-input"
+                    style={{ borderColor: '#f59e0b', background: '#fffbeb', fontWeight: 700 }}
+                    value={((editor.document.product as any).validityText as string) || poster.validityText || ''}
+                    placeholder="Ex: 02/12 ou 28/10"
+                    onChange={e => editor.change('validityText', e.target.value)}
+                  />
+                  <small style={{ color: '#92400e', fontSize: 11, marginTop: 4, display: 'block' }}>
+                    O rodapé oficial ("ITEM PRÓXIMO AO VENCIMENTO" / "NÃO EFETUAMOS A TROCA") será aplicado automaticamente.
+                  </small>
+                </div>
+              ) : (poster.artwork?.priceParts.some(part => part.role === 'validity') || ((editor.document.product as any).validityText)) && (
                 <div className="editor-field" style={{ marginTop: 10 }}>
                   <label>Validade da Oferta</label>
                   <input

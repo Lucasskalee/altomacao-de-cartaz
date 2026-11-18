@@ -356,3 +356,34 @@ test('serviços locais salvam/reabrem e consultam F7 sem rede (IPC simulado)', a
     for(const [key,descriptor] of descriptors) { if(descriptor) Object.defineProperty(globalThis,key,descriptor); else Reflect.deleteProperty(globalThis,key); }
   }
 });
+
+test('Modelos de Layout: criação de Oferta e Vencimento, alternância dinâmica e preservação de dados', async () => {
+  const { createOfficialDocument, switchPosterModel, getPosterModel } = await import('../src/features/psd/templateService');
+
+  const docOferta = await createOfficialDocument('oferta', {
+    name: 'MACARRÃO INSTANTÂNEO',
+    complement: 'GALINHA CAIPIRA',
+    priceCents: 249,
+    unit: '85G',
+  });
+
+  assert.equal(getPosterModel(docOferta), 'oferta');
+  assert.equal(docOferta.product.name, 'MACARRÃO INSTANTÂNEO');
+  assert.equal(docOferta.product.priceCents, 249);
+  assert.equal(docOferta.layout.template, 'imported-psd');
+
+  // Alterna dinamicamente para o modelo Vencimento
+  const docVenc = await switchPosterModel(docOferta, 'vencimento');
+  assert.equal(getPosterModel(docVenc), 'vencimento');
+  assert.equal(docVenc.product.name, 'MACARRÃO INSTANTÂNEO');
+  assert.equal(docVenc.product.priceCents, 249);
+  assert.equal(docVenc.product.unit, '85G');
+  assert.equal((docVenc.layout as any).artwork.posterModel, 'vencimento');
+  assert.ok(docVenc.product.validityText, 'Vencimento deve inicializar com data sugerida');
+
+  // Alterna de volta para Oferta
+  const docRetornado = await switchPosterModel(docVenc, 'oferta');
+  assert.equal(getPosterModel(docRetornado), 'oferta');
+  assert.equal(docRetornado.product.name, 'MACARRÃO INSTANTÂNEO');
+  assert.equal(docRetornado.product.priceCents, 249);
+});

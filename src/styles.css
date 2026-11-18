@@ -1,5 +1,11 @@
 @font-face{font-family:'Zullia';src:url('/fonts/Zullia.otf') format('opentype'),url('/fonts/Zullia.ttf') format('truetype');font-weight:400 900;font-style:normal;font-display:block}
-@font-face{font-family:'Brush Hand New';src:local('Brush Hand New'),local('BrushHandNew'),local('Brush Hand New Regular');font-weight:400 900;font-style:normal;font-display:block}
+@font-face{font-family:'Brush Hand New';src:url('/fonts/BrushHandNew.otf') format('opentype'),url('/fonts/BrushHandNew.ttf') format('truetype'),local('Brush Hand New'),local('BrushHandNew');font-weight:400 900;font-style:normal;font-display:block}
+@font-face{font-family:'BrushHandNew';src:url('/fonts/BrushHandNew.otf') format('opentype'),url('/fonts/BrushHandNew.ttf') format('truetype'),local('Brush Hand New'),local('BrushHandNew');font-weight:400 900;font-style:normal;font-display:block}
+@font-face{font-family:'Arial';src:url('/fonts/ARIAL.TTF') format('truetype'),local('Arial');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'Arial';src:url('/fonts/ARIALBD.TTF') format('truetype'),local('Arial Bold');font-weight:700;font-style:normal;font-display:block}
+@font-face{font-family:'ArialMT';src:url('/fonts/ARIAL.TTF') format('truetype'),local('Arial'),local('ArialMT');font-weight:400;font-style:normal;font-display:block}
+@font-face{font-family:'ArialMT';src:url('/fonts/ARIALBD.TTF') format('truetype'),local('Arial Bold'),local('ArialMT Bold');font-weight:700;font-style:normal;font-display:block}
+@font-face{font-family:'Arial Black';src:url('/fonts/ARIBLK.TTF') format('truetype'),local('Arial Black');font-weight:900;font-style:normal;font-display:block}
 :root{
   --sk-bg:#f8fafc;
   --sk-surface:#ffffff;

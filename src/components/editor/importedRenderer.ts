@@ -279,6 +279,9 @@ export async function drawImported(
     await Promise.all([
       document.fonts.load(`${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
       document.fonts.load(`${Math.max(12, 200 * scale)}px "Brush Hand New"`).catch(() => []),
+      document.fonts.load(`${Math.max(12, 200 * scale)}px BrushHandNew`).catch(() => []),
+      document.fonts.load(`${Math.max(12, 100 * scale)}px Arial`).catch(() => []),
+      document.fonts.load(`${Math.max(12, 100 * scale)}px ArialMT`).catch(() => []),
     ]);
   }
   const { whole, fraction } = sanitizePrice(price);
@@ -310,7 +313,7 @@ function drawPart(
 ) {
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
-  const font = part.fontFamily || (part.role === 'validity' ? 'Impact' : 'Zullia');
+  const font = part.fontFamily || (part.role === 'validity' ? 'ArialMT, Arial, sans-serif' : 'Zullia');
   context.save();
   context.fillStyle = part.color;
   if (part.shadow) {
@@ -329,7 +332,7 @@ function drawPart(
   if (part.role === 'title') {
     const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false, artwork);
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
@@ -343,7 +346,7 @@ function drawPart(
   if (part.role === 'packaging') {
     const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', false, artwork);
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
@@ -358,20 +361,36 @@ function drawPart(
       context.restore();
       return;
     }
+    const valFont = part.fontFamily ? `${quoteFont(part.fontFamily)}, ArialMT, Arial, sans-serif` : 'ArialMT, Arial, sans-serif';
+    const strokeSize = part.stroke?.size ?? 2;
     if (part.transform && part.fontSize) {
       const [a, bm, c, d, e, f] = part.transform;
       context.transform(a, bm, c, d, e, f);
-      context.font = `400 ${part.fontSize}px ${quoteFont(font)}, Impact, Arial, sans-serif`;
+      context.font = `bold ${part.fontSize}px ${valFont}`;
       context.textAlign = 'center';
       context.textBaseline = 'alphabetic';
+      if (strokeSize > 0) {
+        context.save();
+        context.lineWidth = strokeSize * 2;
+        context.strokeStyle = part.stroke?.color ?? '#000000';
+        context.strokeText(val, 0, 0);
+        context.restore();
+      }
       context.fillText(val, 0, 0);
       context.restore();
       return;
     }
     const vFontSize = height * 0.96;
-    context.font = `400 ${vFontSize}px ${quoteFont(font)}, Impact, Arial, sans-serif`;
+    context.font = `bold ${vFontSize}px ${valFont}`;
     context.textAlign = 'center';
     context.textBaseline = 'alphabetic';
+    if (strokeSize > 0) {
+      context.save();
+      context.lineWidth = strokeSize * 2;
+      context.strokeStyle = part.stroke?.color ?? '#000000';
+      context.strokeText(val, (b.left + b.right) / 2, b.bottom);
+      context.restore();
+    }
     context.fillText(val, (b.left + b.right) / 2, b.bottom);
     context.restore();
     return;
@@ -393,6 +412,13 @@ function drawPart(
 
       if (isUnchangedSingle) {
         context.transform(a, bm, c, d, e, f);
+        if (part.stroke && part.stroke.size > 0) {
+          context.save();
+          context.lineWidth = part.stroke.size * 2;
+          context.strokeStyle = part.stroke.color || '#000000';
+          context.strokeText(value, 0, 0);
+          context.restore();
+        }
         context.fillText(value, 0, 0);
         context.restore();
         return;
@@ -421,6 +447,13 @@ function drawPart(
 
       context.transform(a, bm, c, d, txFinal, f);
       context.scale(hScale, 1);
+      if (part.stroke && part.stroke.size > 0) {
+        context.save();
+        context.lineWidth = part.stroke.size * 2;
+        context.strokeStyle = part.stroke.color || '#000000';
+        context.strokeText(value, 0, 0);
+        context.restore();
+      }
       context.fillText(value, 0, 0);
       context.restore();
       return;
@@ -431,6 +464,13 @@ function drawPart(
     context.font = `400 ${part.fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
     context.textAlign = 'center';
     context.textBaseline = 'alphabetic';
+    if (part.stroke && part.stroke.size > 0) {
+      context.save();
+      context.lineWidth = part.stroke.size * 2;
+      context.strokeStyle = part.stroke.color || '#000000';
+      context.strokeText(value, 0, 0);
+      context.restore();
+    }
     context.fillText(value, 0, 0);
     context.restore();
     return;

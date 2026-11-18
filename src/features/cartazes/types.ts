@@ -13,6 +13,8 @@ export type ImportedPricePart = {
   color: string; shadow?: { dx: number; dy: number; blur: number; color: string };
   stroke?: { size: number; color: string };
 };
+export type PosterTemplateModel = 'oferta' | 'vencimento';
+
 export type ImportedArtwork = {
   kind: 'imported-psd'; compatibility: 'ready' | 'requires-preparation';
   source: { fileName: string; sha256: string; sourcePath?: string | null };
@@ -21,6 +23,7 @@ export type ImportedArtwork = {
   priceParts: ImportedPricePart[]; layers: ImportedLayerInfo[]; warnings: string[];
   templateParts?: ImportedPricePart[];
   isReferenceTemplate?: boolean;
+  posterModel?: PosterTemplateModel;
 };
 export type PaperFormat = 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2' | 'custom';
 export type LayoutOrientation = 'portrait' | 'landscape';

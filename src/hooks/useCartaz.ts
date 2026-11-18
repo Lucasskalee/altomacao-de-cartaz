@@ -12,6 +12,8 @@ import { readPsdByPath, selectPsd } from '../features/psd/service';
 import { analyzePsd, buildArtwork } from '../features/psd/importer';
 import { prepareLinkedArtworkAutomatically } from '../features/psd/editLinkedArtwork';
 import { exportDerivedPsdDirect } from '../features/scantech/directExport';
+import { createOfficialDocument, getPosterModel, switchPosterModel } from '../features/psd/templateService';
+import type { PosterTemplateModel } from '../features/cartazes/types';
 export function useCartaz() {
   const [document, setDocument] = useState(createDocument);
   const [price, setPrice] = useState('2,89');
@@ -38,8 +40,30 @@ export function useCartaz() {
     setDocument(d); setPrice(formatCentsBr(d.product.priceCents)); setPath(p); setDirty(changed);
   };
   const current = (): Cartaz => ({ ...document, product: { ...document.product, priceCents: priceToCents(price) } });
+  const posterModel: PosterTemplateModel = getPosterModel(document);
   return {
-    document, price, path, dirty, current,
+    document, price, path, dirty, current, posterModel,
+    async switchModel(targetModel: PosterTemplateModel) {
+      try {
+        const updated = await switchPosterModel(current(), targetModel);
+        load(updated, path, true);
+        return true;
+      } catch (err) {
+        console.error('Erro ao alternar modelo do cartaz:', err);
+        return false;
+      }
+    },
+    async newOfficial(targetModel: PosterTemplateModel) {
+      if (!await confirmDiscard()) return false;
+      try {
+        const doc = await createOfficialDocument(targetModel);
+        load(doc, null, true);
+        return true;
+      } catch (err) {
+        console.error('Erro ao criar cartaz com modelo oficial:', err);
+        return false;
+      }
+    },
     fixInvertedPsdLayers() {
       if (document.layout.template !== 'imported-psd') return;
       const { artwork, correctedPriceCents } = repairInvertedPsdArtwork(document.layout.artwork);

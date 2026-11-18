@@ -1,5 +1,5 @@
 import { readPsd, type Layer, type Psd, type RGB, type RGBA, type FRGB } from 'ag-psd';
-import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole } from '../cartazes/types';
+import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole, PosterTemplateModel } from '../cartazes/types';
 
 export const PSD_MAX_BYTES = 80 * 1024 * 1024;
 export type PsdRoleMap = Partial<Record<ImportedPriceRole, string>>;
@@ -10,7 +10,15 @@ export type PsdAnalysis = {
   originalPreview: string; layers: ImportedLayerInfo[]; suggested: PsdRoleMap; metadata: PsdProductMetadata; warnings: string[];
   psd: Psd; runtime: Map<string, Layer>;
   templateSuggested?: PsdTemplateRoleMap;
+  detectedModel?: PosterTemplateModel;
 };
+
+export function detectPosterModel(layers: ImportedLayerInfo[]): PosterTemplateModel {
+  const hasVencimento = layers.some(l =>
+    l.visible && /vencimento|pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca/i.test(l.text ?? l.name)
+  );
+  return hasVencimento ? 'vencimento' : 'oferta';
+}
 
 function canvasWithWhiteBackground(sourceCanvas: HTMLCanvasElement): string {
   if (typeof document === 'undefined') return sourceCanvas.toDataURL('image/png');
@@ -56,7 +64,8 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   const resolutionPpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? 72;
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2,'0')).join('');
   const templateSuggested = suggestTemplateLayers(layers, suggested);
-  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: canvasWithWhiteBackground(psd.canvas), layers, suggested, metadata, warnings, psd, runtime, templateSuggested };
+  const detectedModel = detectPosterModel(layers);
+  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: canvasWithWhiteBackground(psd.canvas), layers, suggested, metadata, warnings, psd, runtime, templateSuggested, detectedModel };
 }
 
 function flatten(source: Layer[], depth: number, prefix: string, parentVisible: boolean, runtime: Map<string, Layer>, result: ImportedLayerInfo[]) {
@@ -259,6 +268,7 @@ export function buildArtwork(
     canvas: { width: analysis.width, height: analysis.height, resolutionPpi: analysis.resolutionPpi, fit: 'contain' },
     staticBackground, originalPreview: analysis.originalPreview, priceParts, layers: analysis.layers, warnings,
     templateParts, isReferenceTemplate: Boolean(templateParts && templateParts.length > 0),
+    posterModel: analysis.detectedModel ?? detectPosterModel(analysis.layers),
   };
 }
 
