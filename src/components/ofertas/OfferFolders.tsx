@@ -76,7 +76,7 @@ type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[]) => void;
-  onEditPoster?: (path: string) => Promise<void>;
+  onEditPoster?: (path: string, scheduledPriceCents?: number) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
   initialCampaigns?: OfferCampaign[];
   initialActiveId?: string | null;
@@ -662,6 +662,22 @@ export function OfferFolders({
     if (onRefreshLibrary) await onRefreshLibrary();
   };
 
+  const handleApplyPriceToLibrary = async (cartazPath: string, doc: Cartaz, newPriceCents: number) => {
+    const updatedDoc: Cartaz = {
+      ...doc,
+      product: {
+        ...doc.product,
+        priceCents: newPriceCents,
+      },
+      metadata: {
+        ...doc.metadata,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    await saveDocument(cartazPath, updatedDoc, true);
+    if (onRefreshLibrary) await onRefreshLibrary();
+  };
+
   const matchViews = useMemo(() => {
     if (!activeCampaign) return [];
     return buildCampaignMatchViews(activeCampaign, libraryIndex);
@@ -1233,6 +1249,20 @@ export function OfferFolders({
                                       inputMode="decimal"
                                       value={editingPriceValue}
                                       onChange={e => setEditingPriceValue(e.target.value)}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter') {
+                                          run(async () => {
+                                            const cents = parseExcelPriceToCents(editingPriceValue);
+                                            await persistUpdate(
+                                              updateScheduledPrice(activeCampaign, v.item.id, cents)
+                                            );
+                                            setEditingPriceId(null);
+                                          });
+                                        } else if (e.key === 'Escape') {
+                                          setEditingPriceId(null);
+                                        }
+                                      }}
+                                      autoFocus
                                       style={{ width: 90, padding: 6 }}
                                     />
                                     <button
@@ -1359,9 +1389,18 @@ export function OfferFolders({
                                                 {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
                                                 {m.libraryCartaz?.document.product.complement ?? ''}
                                               </strong>
-                                              <small>
-                                                Preço atual na biblioteca:{' '}
-                                                <strong>{money(m.currentPriceCents)}</strong> (intacto) ·{' '}
+                                              <div style={{ fontSize: 13, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                                <span>
+                                                  Preço no cartaz:{' '}
+                                                  <strong style={{ color: '#10b981', fontSize: 14 }}>{money(v.item.scheduledPriceCents)}</strong>
+                                                </span>
+                                                {m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
+                                                  <span style={{ color: '#94a3b8', fontSize: 11 }}>
+                                                    (Preço base na biblioteca: {money(m.currentPriceCents)})
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <small style={{ color: '#64748b', display: 'block', marginTop: 2 }}>
                                                 {m.state.cartazPath}
                                               </small>
                                             </span>
@@ -1448,10 +1487,27 @@ export function OfferFolders({
                                               <button
                                                 className="subtle"
                                                 style={{ padding: '5px 10px', fontSize: 12 }}
-                                                title="Abrir este arquivo no editor. Use Salvar Como para manter o original."
-                                                onClick={() => run(() => onEditPoster(m.libraryCartaz!.path))}
+                                                title="Abrir este cartaz no editor com o preço desta oferta"
+                                                onClick={() => run(() => onEditPoster(m.libraryCartaz!.path, v.item.scheduledPriceCents))}
                                               >
                                                 Editar cartaz
+                                              </button>
+                                            )}
+                                            {m.libraryCartaz && m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
+                                              <button
+                                                type="button"
+                                                className="subtle"
+                                                style={{ padding: '5px 10px', fontSize: 12 }}
+                                                title="Atualizar o arquivo original da biblioteca para este novo preço"
+                                                onClick={() => {
+                                                  if (window.confirm(`Deseja atualizar o preço original na biblioteca de "${m.libraryCartaz!.document.product.name}" de ${money(m.currentPriceCents)} para ${money(v.item.scheduledPriceCents)}?`)) {
+                                                    run(async () => {
+                                                      await handleApplyPriceToLibrary(m.libraryCartaz!.path, m.libraryCartaz!.document, v.item.scheduledPriceCents);
+                                                    });
+                                                  }
+                                                }}
+                                              >
+                                                Aplicar na biblioteca
                                               </button>
                                             )}
                                             <button

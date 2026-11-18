@@ -7,7 +7,7 @@ import { listFiles } from './features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from './features/cartazes/types';
 import { F7Field } from './components/editor/F7Field';
 import { useF7Matches } from './hooks/useF7Matches';
-import { posterFromDocument } from './features/cartazes/presentation';
+import { formatCentsBr, posterFromDocument } from './features/cartazes/presentation';
 import { PriceImport } from './components/importacao/PriceImport';
 import { OfferFolders } from './components/ofertas/OfferFolders';
 import { ScantechCreator } from './components/scantech/ScantechCreator';
@@ -305,9 +305,12 @@ export default function App() {
   };
   const newDocument = async () => { if (await editor.newDocument()) setSection('editor'); };
   const open = async (path?: string) => { if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); } };
-  const openOfferPoster = async (path: string) => {
+  const openOfferPoster = async (path: string, scheduledPriceCents?: number) => {
     const result = await editor.open(path, true);
     if (!result) return;
+    if (typeof scheduledPriceCents === 'number' && scheduledPriceCents > 0) {
+      editor.change('price', formatCentsBr(scheduledPriceCents));
+    }
     setSection('editor');
     if (result.preparationError) {
       setError(`Cartaz aberto, mas não foi possível preparar os textos automaticamente: ${result.preparationError} Use "Preparar textos do PSD para edição" para revisar ou selecionar o PSD original.`);
