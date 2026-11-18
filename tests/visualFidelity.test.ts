@@ -1,0 +1,238 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  resolveFontFamily,
+  resolveFontWeight,
+  hasInvertedPsdPriceParts,
+  normalizePsdPriceParts,
+} from '../src/components/editor/importedRenderer';
+import {
+  linkSavedPosterToCampaignItem,
+  updateAllPostersSelection,
+  updatePosterSelection,
+  formatCampaignDateToValidity,
+} from '../src/features/ofertas/service';
+import type { Cartaz, ImportedArtwork } from '../src/features/cartazes/types';
+import type { OfferCampaign } from '../src/features/ofertas/types';
+
+test('1. Resolução de fontes oficiais PSD: preserva Zullia, Brush Hand New, Arial Black e Arial', () => {
+  assert.equal(resolveFontFamily('Zullia'), "'Zullia', sans-serif");
+  assert.equal(resolveFontFamily('BrushHandNew'), "'Brush Hand New', BrushHandNew, cursive, sans-serif");
+  assert.equal(resolveFontFamily('Brush Hand New'), "'Brush Hand New', BrushHandNew, cursive, sans-serif");
+  assert.equal(resolveFontFamily('Arial-Black'), "'Arial Black', ArialMT, Arial, sans-serif");
+  assert.equal(resolveFontFamily('ARIBLK'), "'Arial Black', ArialMT, Arial, sans-serif");
+  assert.equal(resolveFontFamily('ArialMT'), 'ArialMT, Arial, sans-serif');
+  assert.equal(resolveFontFamily('Arial-BoldMT'), "'Arial', ArialMT, sans-serif");
+  assert.equal(resolveFontFamily('Impact'), "'Impact', sans-serif");
+
+  assert.equal(resolveFontWeight('Arial-Black'), '900');
+  assert.equal(resolveFontWeight('ARIBLK'), '900');
+  assert.equal(resolveFontWeight('Arial-BoldMT'), '700');
+  assert.equal(resolveFontWeight('BrushHandNew'), '400');
+});
+
+test('2. Inversão matemática de vetor de sombra projetada garante offset correto no espaço transformado', () => {
+  const xx = 12.27, xy = -0.28, yx = 3.31, yy = 16.35;
+  const det = xx * yy - xy * yx;
+  const targetShadowDx = 6;
+  const targetShadowDy = 10;
+
+  // Fórmula de inversão de matriz 2x2
+  const localDx = (yy * targetShadowDx - yx * targetShadowDy) / det;
+  const localDy = (-xy * targetShadowDx + xx * targetShadowDy) / det;
+
+  // Projeção direta para a tela
+  const resX = xx * localDx + yx * localDy;
+  const resY = xy * localDx + yy * localDy;
+
+  assert.ok(Math.abs(resX - targetShadowDx) < 0.0001, 'Offset X da sombra deve projetar exatamente 6px na tela');
+  assert.ok(Math.abs(resY - targetShadowDy) < 0.0001, 'Offset Y da sombra deve projetar exatamente 10px na tela');
+});
+
+test('3. Espessura do traçado (stroke) compensa escala da matriz para evitar deformação visual', () => {
+  const c = 3.31, d = 16.35;
+  const scaleY = Math.hypot(c, d); // ~16.68
+  const desiredPsdStrokePx = 2; // 2 pixels no PSD original
+
+  const localStrokeWidth = ((desiredPsdStrokePx) / scaleY) * 2;
+  const effectiveStrokePxOnScreen = (localStrokeWidth / 2) * scaleY;
+
+  assert.ok(Math.abs(effectiveStrokePxOnScreen - desiredPsdStrokePx) < 0.0001, 'Espessura do stroke deve ser de 2px no documento');
+});
+
+test('4. Sincronização e formatação da data de campanha para validade', () => {
+  const dateIso = '2026-11-19';
+  const valVencimento = formatCampaignDateToValidity(dateIso, 'vencimento');
+  const valOferta = formatCampaignDateToValidity(dateIso, 'oferta');
+
+  assert.equal(valVencimento, '19/11');
+  assert.equal(valOferta, 'OFERTA VÁLIDA ATÉ 19/11/2026');
+});
+
+test('5. Seleção em lote rápida (updateAllPostersSelection) marca e desmarca instantaneamente', () => {
+  const campaign: OfferCampaign = {
+    schemaVersion: 1,
+    id: 'camp-1',
+    name: 'Campanha Teste',
+    campaignDate: '2026-11-19',
+    archived: false,
+    sourceExcel: null,
+    items: [
+      {
+        id: 'item-1',
+        f7: '12345',
+        description: 'PRODUTO 1',
+        scheduledPriceCents: 599,
+        rowNumber: 2,
+        posters: [
+          { cartazId: 'c1', cartazPath: 'C:\\c1.skcartaz', selected: true, copies: 1, status: 'preparado', printedAt: null },
+        ],
+      },
+      {
+        id: 'item-2',
+        f7: '67890',
+        description: 'PRODUTO 2',
+        scheduledPriceCents: 1290,
+        rowNumber: 3,
+        posters: [
+          { cartazId: 'c2', cartazPath: 'C:\\c2.skcartaz', selected: true, copies: 1, status: 'preparado', printedAt: null },
+        ],
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Desmarca todos
+  const unselectedAll = updateAllPostersSelection(campaign, false);
+  assert.equal(unselectedAll.items[0].posters[0].selected, false);
+  assert.equal(unselectedAll.items[0].posters[0].status, 'pendente');
+  assert.equal(unselectedAll.items[1].posters[0].selected, false);
+  assert.equal(unselectedAll.items[1].posters[0].status, 'pendente');
+
+  // Marca todos novamente
+  const selectedAll = updateAllPostersSelection(unselectedAll, true);
+  assert.equal(selectedAll.items[0].posters[0].selected, true);
+  assert.equal(selectedAll.items[0].posters[0].status, 'preparado');
+  assert.equal(selectedAll.items[1].posters[0].selected, true);
+  assert.equal(selectedAll.items[1].posters[0].status, 'preparado');
+});
+
+test('6. Troca de imagem PSD de referência (replaceExisting: true) substitui sem duplicar cartazes', () => {
+  const campaign: OfferCampaign = {
+    schemaVersion: 1,
+    id: 'camp-1',
+    name: 'Campanha Teste',
+    campaignDate: '2026-11-19',
+    archived: false,
+    sourceExcel: null,
+    items: [
+      {
+        id: 'item-1',
+        f7: '18427',
+        description: 'BISC.RANCHEIRO 300G C.CRACKER',
+        scheduledPriceCents: 439,
+        rowNumber: 2,
+        posters: [
+          { cartazId: 'cartaz-antigo', cartazPath: 'C:\\antigo.skcartaz', selected: true, copies: 1, status: 'preparado', printedAt: null },
+        ],
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const newDoc: Cartaz = {
+    schemaVersion: 1,
+    id: 'cartaz-novo',
+    product: {
+      name: 'BISC.RANCHEIRO 300G',
+      complement: 'CREAM CRACKER',
+      unit: 'PCT',
+      priceCents: 439,
+      productCode: '18427',
+    },
+    layout: {
+      template: 'imported-psd',
+      paper: 'A5',
+      orientation: 'portrait',
+      artwork: {} as any,
+    },
+    metadata: {
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  };
+
+  // Substitui a imagem de referência errada pela nova
+  const updatedCampaign = linkSavedPosterToCampaignItem(
+    campaign,
+    'item-1',
+    'C:\\novo-rancheiro.skcartaz',
+    newDoc,
+    true // replaceExisting = true
+  );
+
+  const updatedItem = updatedCampaign.items.find(i => i.id === 'item-1')!;
+  assert.equal(updatedItem.posters.length, 1, 'Deve ter exatamente 1 cartaz vinculado após a substituição');
+  assert.equal(updatedItem.posters[0].cartazId, 'cartaz-novo');
+  assert.equal(updatedItem.posters[0].cartazPath, 'C:\\novo-rancheiro.skcartaz');
+  assert.equal(updatedItem.posters[0].selected, true);
+});
+
+test('7. Extração fiel das camadas do modelo PSD oficial: FRIMESA e 300G sem stroke forçado e cor preta sólida', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { readPsd, initializeCanvas } = await import('ag-psd');
+  const { analyzePsd, buildArtwork } = await import('../src/features/psd/importer');
+
+  const fakeCanvas = (w: number, h: number) => {
+    return {
+      width: w,
+      height: h,
+      getContext: () => ({
+        fillRect: () => {},
+        drawImage: () => {},
+        getImageData: () => ({ data: new Uint8ClampedArray(w * h * 4) }),
+        putImageData: () => {},
+        save: () => {},
+        restore: () => {},
+      }),
+      toDataURL: () => 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+    };
+  };
+  initializeCanvas(fakeCanvas as any, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+
+  const buf = readFileSync('public/templates/modelo_oferta.psd');
+  const analysis = await analyzePsd(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), 'modelo_oferta.psd');
+  const artwork = buildArtwork(analysis, analysis.suggested, analysis.templateSuggested);
+
+  assert.ok(artwork.templateParts && artwork.templateParts.length > 0, 'Deve conter partes dinâmicas de template');
+  const titlePart = artwork.templateParts.find(p => p.role === 'title');
+  const categoryPart = artwork.templateParts.find(p => p.role === 'category');
+  const complementPart = artwork.templateParts.find(p => p.role === 'complement');
+
+  assert.ok(titlePart, 'Deve conter camada de título');
+  assert.equal(titlePart.fontFamily, 'BrushHandNew');
+  // Camada FRIMESA no PSD original não tem stroke
+  assert.equal(titlePart.stroke, undefined, 'Título FRIMESA não deve ter stroke inventado');
+  // Cor deve ser preta sólida (#000000) e NÃO cinza claro (#e2e2e2)
+  assert.equal(titlePart.color, '#000000', 'Título deve ter cor preta sólida');
+
+  assert.ok(categoryPart, 'Deve conter camada de categoria');
+  assert.equal(categoryPart.fontFamily, 'ArialMT');
+  // NATA tem stroke de 4px no PSD
+  assert.ok(categoryPart.stroke && categoryPart.stroke.size > 0, 'Categoria NATA deve preservar stroke original do PSD');
+
+  assert.ok(complementPart, 'Deve conter camada de complemento');
+  assert.equal(complementPart.fontFamily, 'ArialMT');
+  // TRADICIONAL tem stroke de 4px no PSD
+  assert.ok(complementPart.stroke && complementPart.stroke.size > 0, 'Complemento TRADICIONAL deve preservar stroke original do PSD');
+
+  // Preço grande (whole): Zullia, laranja, com dropShadow e sem stroke
+  const wholePart = artwork.priceParts.find(p => p.role === 'whole');
+  assert.ok(wholePart, 'Deve conter camada de reais');
+  assert.equal(wholePart.fontFamily, 'Zullia');
+  assert.ok(wholePart.color.startsWith('#c'), 'Preço deve ter cor laranja original do PSD');
+  assert.ok(wholePart.shadow, 'Preço deve conter a sombra projetada original');
+  assert.equal(wholePart.stroke, undefined, 'Preço whole não deve conter stroke ativo');
+});

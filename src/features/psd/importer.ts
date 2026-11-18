@@ -309,21 +309,21 @@ function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): I
   const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
   const stroke = layer.effects?.stroke?.find(item => item.enabled !== false);
   const distance = shadow?.distance?.value ?? 0, angle = (shadow?.angle ?? 120) * Math.PI / 180;
-  const isTextRole = role === 'title' || role === 'category' || role === 'complement' || role === 'packaging' || role === 'validity';
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
     color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined, role),
     shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
-    stroke: stroke ? { size: stroke.size?.value ?? (isTextRole ? 2 : 0), color: '#000000' } : (isTextRole ? { size: 2, color: '#000000' } : undefined),
+    stroke: stroke ? { size: stroke.size?.value ?? 0, color: '#000000' } : undefined,
   };
 }
 
 function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedRole): string {
-  if (role === 'validity' || role === 'category' || role === 'complement' || role === 'title' || role === 'packaging') {
-    return '#000000';
+  if (!color) {
+    return (role === 'validity' || role === 'category' || role === 'complement' || role === 'title' || role === 'packaging')
+      ? '#000000'
+      : '#c74624';
   }
-  if (!color) return '#c74624';
   if ('fr' in color) {
     const values = [color.fr, color.fg, color.fb].map(v => Math.round(Math.max(0, Math.min(255, v * 255))));
     return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;

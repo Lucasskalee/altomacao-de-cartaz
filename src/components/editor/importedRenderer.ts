@@ -3,6 +3,90 @@ import { computeTextLayoutAdjustment, type TextLayoutAdjustment } from '../../fe
 
 export const MIN_SAFE_HORIZONTAL_SCALE = 0.48;
 
+export function resolveFontFamily(psdFont?: string, fallback = 'sans-serif'): string {
+  if (!psdFont) return fallback;
+  const clean = psdFont.trim();
+  if (/zullia/i.test(clean)) return `'Zullia', sans-serif`;
+  if (/brush\s*hand/i.test(clean) || /brushhand/i.test(clean)) {
+    return `'Brush Hand New', BrushHandNew, cursive, sans-serif`;
+  }
+  if (/ariblk|arial[\s-_]*black/i.test(clean)) {
+    return `'Arial Black', ArialMT, Arial, sans-serif`;
+  }
+  if (/arialbd|arial[\s-_]*bold/i.test(clean)) {
+    return `'Arial', ArialMT, sans-serif`;
+  }
+  if (/arial/i.test(clean)) {
+    return `ArialMT, Arial, sans-serif`;
+  }
+  return `'${clean}', ${fallback}`;
+}
+
+export function resolveFontWeight(psdFont?: string, defaultWeight = '400'): string {
+  if (!psdFont) return defaultWeight;
+  if (/black|ariblk/i.test(psdFont)) return '900';
+  if (/bold|arialbd/i.test(psdFont)) return '700';
+  if (/brush/i.test(psdFont)) return '400';
+  return defaultWeight;
+}
+
+function renderTransformedGlyphs(
+  context: CanvasRenderingContext2D,
+  text: string,
+  transform: [number, number, number, number, number, number],
+  fontStr: string,
+  fillColor: string,
+  stroke?: { size: number; color: string },
+  shadow?: { dx: number; dy: number; blur: number; color: string }
+) {
+  const [a, bm, c, d, tx, ty] = transform;
+  const det = a * d - bm * c;
+  const scaleY = Math.hypot(c, d);
+
+  const localShadowDx = (shadow && det !== 0) ? (d * shadow.dx - c * shadow.dy) / det : (shadow?.dx ?? 0);
+  const localShadowDy = (shadow && det !== 0) ? (-bm * shadow.dx + a * shadow.dy) / det : (shadow?.dy ?? 0);
+  const localShadowBlur = (shadow?.blur ?? 0) / Math.max(1, scaleY);
+  const localLineWidth = ((stroke?.size ?? 0) / Math.max(1, scaleY)) * 2;
+
+  context.save();
+  context.transform(a, bm, c, d, tx, ty);
+  context.font = fontStr;
+  context.textAlign = 'center';
+  context.textBaseline = 'alphabetic';
+
+  if (stroke && stroke.size > 0) {
+    context.save();
+    context.lineWidth = localLineWidth;
+    context.strokeStyle = stroke.color || '#000000';
+    if (shadow) {
+      context.shadowOffsetX = localShadowDx;
+      context.shadowOffsetY = localShadowDy;
+      context.shadowBlur = localShadowBlur;
+      context.shadowColor = shadow.color || '#000000';
+    }
+    context.strokeText(text, 0, 0);
+    context.restore();
+
+    // Preenchimento com miolo limpo (sem sombra duplicada interna)
+    context.save();
+    context.shadowColor = 'transparent';
+    context.fillStyle = fillColor;
+    context.fillText(text, 0, 0);
+    context.restore();
+  } else {
+    if (shadow) {
+      context.shadowOffsetX = localShadowDx;
+      context.shadowOffsetY = localShadowDy;
+      context.shadowBlur = localShadowBlur;
+      context.shadowColor = shadow.color || '#000000';
+    }
+    context.fillStyle = fillColor;
+    context.fillText(text, 0, 0);
+  }
+
+  context.restore();
+}
+
 const sanitizePrice = (value: string) => {
   const normalized = value.replace(/[^\d,.]/g, '').replace('.', ',');
   const [whole = '0', fraction = ''] = normalized.split(',');
@@ -325,32 +409,32 @@ function drawPart(
   if (part.role === 'category') {
     const text = (dynamicTexts?.category ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    context.fillStyle = '#000000';
-    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', true, artwork);
+    context.fillStyle = part.color || '#000000';
+    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
   if (part.role === 'title') {
     const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    context.fillStyle = '#000000';
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', true, artwork);
+    context.fillStyle = part.color || '#000000';
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
   if (part.role === 'complement') {
     const text = (dynamicTexts?.complement ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    context.fillStyle = '#000000';
-    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', true, artwork);
+    context.fillStyle = part.color || '#000000';
+    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
   if (part.role === 'packaging') {
     const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
     if (!text) { context.restore(); return; }
-    context.fillStyle = '#000000';
-    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', true, artwork);
+    context.fillStyle = part.color || '#000000';
+    drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
@@ -369,13 +453,15 @@ function drawPart(
     const strokeSize = part.stroke?.size ?? 2;
     if (part.transform && part.fontSize) {
       const [a, bm, c, d, e, f] = part.transform;
+      const scaleY = Math.hypot(c, d);
+      const localStrokeWidth = Math.max(1, (strokeSize / Math.max(1, scaleY)) * 2);
       context.transform(a, bm, c, d, e, f);
       context.font = `bold ${part.fontSize}px ${valFont}`;
       context.textAlign = 'center';
       context.textBaseline = 'alphabetic';
       if (strokeSize > 0) {
         context.save();
-        context.lineWidth = strokeSize * 2;
+        context.lineWidth = localStrokeWidth;
         context.strokeStyle = part.stroke?.color ?? '#000000';
         context.strokeText(val, 0, 0);
         context.restore();
@@ -401,81 +487,54 @@ function drawPart(
   }
 
   const value = part.role === 'whole' ? whole : part.role === 'fraction' ? fraction : ',';
+  const resolvedFont = resolveFontFamily(part.fontFamily, 'Zullia, sans-serif');
+  const fontStr = `400 ${part.fontSize || height * 1.14}px ${resolvedFont}`;
+
   if (part.transform && part.fontSize) {
     if (part.role === 'whole') {
-      const matrix = wholeAdjustment.normalizedTransform ?? part.transform;
-      const [a, bm, c, d, e, f] = matrix;
-      context.font = `400 ${part.fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
-      context.textAlign = 'center';
-      context.textBaseline = 'alphabetic';
+      const [a, bm, c, d, e, f] = part.transform;
+      context.font = fontStr;
 
-      const isUnchangedSingle =
-        value === (part.originalText ?? '').trim() &&
-        !wholeAdjustment.normalized &&
-        wholeAdjustment.horizontalScale >= 0.999;
-
-      if (isUnchangedSingle) {
-        context.transform(a, bm, c, d, e, f);
-        if (part.stroke && part.stroke.size > 0) {
-          context.save();
-          context.lineWidth = part.stroke.size * 2;
-          context.strokeStyle = part.stroke.color || '#000000';
-          context.strokeText(value, 0, 0);
-          context.restore();
-        }
-        context.fillText(value, 0, 0);
+      const isUnchanged = value === (part.originalText ?? '').trim();
+      if (isUnchanged) {
+        renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, part.shadow);
         context.restore();
         return;
       }
 
-      const normXx = Math.hypot(a, bm);
+      // Medição precisa no espaço do transform
       const measuredLocal = Math.max(1, context.measureText(value).width);
-      const unscaledPxWidth = Math.max(
-        measuredLocal * normXx,
-        wholeAdjustment.estimatedUnscaledWidth
-      );
-      const hScale = Math.max(
-        MIN_SAFE_HORIZONTAL_SCALE,
-        Math.min(1, wholeAdjustment.availableWidth / unscaledPxWidth, wholeAdjustment.horizontalScale)
-      );
-      const renderedWidthPx = unscaledPxWidth * hScale;
-      const targetRight = Math.min(
-        wholeAdjustment.safeRightLimit,
-        Math.max(b.right, b.left + renderedWidthPx)
-      );
-      const targetVisualCenterX = Math.max(
-        wholeAdjustment.safeLeftLimit + renderedWidthPx / 2,
-        targetRight - renderedWidthPx / 2
-      );
-      const txFinal = targetVisualCenterX + 0.38 * part.fontSize * c;
+      const origLocal = Math.max(1, context.measureText(part.originalText || '0').width);
+      const scaleX = Math.hypot(a, bm);
+      const unscaledPxWidth = measuredLocal * scaleX;
 
-      context.transform(a, bm, c, d, txFinal, f);
-      context.scale(hScale, 1);
-      if (part.stroke && part.stroke.size > 0) {
-        context.save();
-        context.lineWidth = part.stroke.size * 2;
-        context.strokeStyle = part.stroke.color || '#000000';
-        context.strokeText(value, 0, 0);
-        context.restore();
-      }
-      context.fillText(value, 0, 0);
+      // Mantém a escala natural 1.0; só comprime se exceder o limite seguro da página
+      const available = wholeAdjustment.availableWidth;
+      const hScale = unscaledPxWidth > available
+        ? Math.max(MIN_SAFE_HORIZONTAL_SCALE, available / unscaledPxWidth)
+        : 1.0;
+
+      // Alinhamento à direita preservando a proximidade da vírgula
+      const deltaU = (origLocal - measuredLocal * hScale) / 2;
+      const targetTx = e + deltaU * a;
+      const targetTy = f + deltaU * bm;
+
+      const finalTransform: [number, number, number, number, number, number] = [
+        a * hScale,
+        bm * hScale,
+        c,
+        d,
+        targetTx,
+        targetTy,
+      ];
+
+      renderTransformedGlyphs(context, value, finalTransform, fontStr, part.color, part.stroke, part.shadow);
       context.restore();
       return;
     }
 
-    const [a, bm, c, d, e, f] = part.transform;
-    context.transform(a, bm, c, d, e, f);
-    context.font = `400 ${part.fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
-    context.textAlign = 'center';
-    context.textBaseline = 'alphabetic';
-    if (part.stroke && part.stroke.size > 0) {
-      context.save();
-      context.lineWidth = part.stroke.size * 2;
-      context.strokeStyle = part.stroke.color || '#000000';
-      context.strokeText(value, 0, 0);
-      context.restore();
-    }
-    context.fillText(value, 0, 0);
+    // Centavos e vírgula usam o transform original do PSD com renderização precisa de sombra e stroke
+    renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, part.shadow);
     context.restore();
     return;
   }
@@ -509,9 +568,9 @@ function drawTextLayer(
 ) {
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
-  const fontName = part.fontFamily ? `${quoteFont(part.fontFamily)}, ${fallbackFont}` : fallbackFont;
-  const isBrush = /brush/i.test(fontName);
-  const fontWeight = isBrush ? '400' : '900';
+  const resolvedFamily = resolveFontFamily(part.fontFamily, fallbackFont);
+  const fontWeight = resolveFontWeight(part.fontFamily, /brush/i.test(resolvedFamily) ? '400' : '900');
+  const fontName = resolvedFamily;
 
   // Medidor de largura contextualizado
   const measureTextWidth = (txt: string, fontPx: number): number => {
@@ -528,8 +587,14 @@ function drawTextLayer(
   const hScale = adj.horizontalScale;
   const lineHeight = adj.lineHeight;
 
+  const hasStroke = strokeOutline && Boolean(part.stroke && part.stroke.size > 0);
+  const strokeSize = part.stroke?.size ?? 0;
+
   if (part.transform && part.fontSize) {
     const [a, bm, c, d, e, f] = part.transform;
+    const scaleY = Math.hypot(c, d);
+    const localStrokeWidth = Math.max(1, (strokeSize / Math.max(1, scaleY)) * 2);
+
     context.save();
     context.transform(a, bm, c, d, e, f);
     context.scale(hScale, 1);
@@ -543,9 +608,9 @@ function drawTextLayer(
 
     lines.forEach((lineText, idx) => {
       const lineY = startY + idx * lineHeight;
-      if (strokeOutline) {
+      if (hasStroke) {
         context.save();
-        context.lineWidth = (part.stroke?.size ?? 4) * 2;
+        context.lineWidth = localStrokeWidth;
         context.strokeStyle = part.stroke?.color ?? '#000000';
         context.strokeText(lineText, 0, lineY);
         context.restore();
@@ -565,16 +630,16 @@ function drawTextLayer(
   context.save();
   context.translate(cx, startY);
   context.scale(hScale, 1);
-  context.font = `bold ${finalFontSize}px ${fontName}`;
+  context.font = `${fontWeight} ${finalFontSize}px ${fontName}`;
   context.textAlign = 'center';
   context.textBaseline = 'middle';
 
   lines.forEach((lineText, idx) => {
     const lineY = idx * lineHeight;
-    if (strokeOutline) {
+    if (hasStroke) {
       context.save();
-      context.lineWidth = 4;
-      context.strokeStyle = '#000000';
+      context.lineWidth = Math.max(1, strokeSize * 2);
+      context.strokeStyle = part.stroke?.color ?? '#000000';
       context.strokeText(lineText, 0, lineY);
       context.restore();
     }
