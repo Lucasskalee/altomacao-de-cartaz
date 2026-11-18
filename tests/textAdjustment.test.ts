@@ -316,3 +316,86 @@ test('10. Integridade estrita de dados: preços, centavos e códigos F7 nunca s�
   assert.equal(artwork.compatibility, 'ready');
 });
 
+test('11. Exportação PSD direta: preserva camadas de imagem e dimensões das camadas de preço sem sumir no Photoshop', async () => {
+  const { executeScantechDirectExportJob } = await import('../src/features/scantech/directExport');
+
+  const rawPsd = {
+    width: 1179,
+    height: 1770,
+    channels: 3,
+    bitsPerChannel: 8,
+    colorMode: 3,
+    canvas: fakeCanvas(1179, 1770),
+    children: [
+      {
+        name: 'Reais',
+        left: 100,
+        top: 500,
+        right: 400,
+        bottom: 900,
+        canvas: fakeCanvas(300, 400),
+        text: {
+          text: '5',
+          style: { fontSize: 450 },
+        },
+      },
+      {
+        name: 'Centavos',
+        left: 450,
+        top: 500,
+        right: 650,
+        bottom: 700,
+        canvas: fakeCanvas(200, 200),
+        text: {
+          text: '59',
+          style: { fontSize: 180 },
+        },
+      },
+    ],
+  };
+
+  const buffer = writePsd(rawPsd as any);
+  let writtenBytes: Uint8Array | null = null;
+
+  const mockIo = {
+    readSourcePsd: async () => buffer,
+    writeOutputPsd: async (_outPath: string, _srcPath: string, bytes: Uint8Array) => {
+      writtenBytes = bytes;
+      return { fileSize: bytes.byteLength };
+    },
+  };
+
+  const job = {
+    itemId: 'item-1',
+    f7: '16067',
+    description: 'ACHOCOLATADO EM PO TODDY 370G',
+    sourcePsdPath: 'C:/fake/toddy.psd',
+    outputPsdPath: 'C:/fake/toddy-oferta.psd',
+    wholeLayerId: '0',
+    fractionLayerId: '1',
+    wholeValue: '12',
+    fractionValue: '99',
+  };
+
+  const res = await executeScantechDirectExportJob(job as any, mockIo as any);
+  assert.equal(res.ok, true);
+  assert.ok(writtenBytes);
+
+  const reloaded = readPsd(writtenBytes!.buffer as any, { useImageData: true });
+  const wholeLayer = reloaded.children![0];
+  const fractionLayer = reloaded.children![1];
+
+  // Verifica que os novos textos foram aplicados
+  assert.equal(wholeLayer.text!.text, '12');
+  assert.equal(fractionLayer.text!.text, '99');
+
+  // Garante que as camadas NÃO foram esvaziadas (dimensões maiores que 0, não colapsadas em 0x0)
+  assert.ok((wholeLayer.right ?? 0) > (wholeLayer.left ?? 0), 'Camada de Reais deve manter largura positiva');
+  assert.ok((wholeLayer.bottom ?? 0) > (wholeLayer.top ?? 0), 'Camada de Reais deve manter altura positiva');
+  assert.ok(wholeLayer.imageData || wholeLayer.canvas, 'Camada de Reais deve preservar bitmap no PSD');
+
+  assert.ok((fractionLayer.right ?? 0) > (fractionLayer.left ?? 0), 'Camada de Centavos deve manter largura positiva');
+  assert.ok((fractionLayer.bottom ?? 0) > (fractionLayer.top ?? 0), 'Camada de Centavos deve manter altura positiva');
+  assert.ok(fractionLayer.imageData || fractionLayer.canvas, 'Camada de Centavos deve preservar bitmap no PSD');
+});
+

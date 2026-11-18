@@ -27,6 +27,7 @@ import {
 import { addPrintHistoryEntries, updatePrintHistoryStatus } from './features/history/service';
 import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
+import { isTauri } from '@tauri-apps/api/core';
 
 const EditLinkedPsd = lazy(() =>
   import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
@@ -77,7 +78,7 @@ export default function App() {
   guardRef.current = editorGuard;
   const f7Matches = useF7Matches(editor.document.product.productCode, editor.path);
   const queryParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-  const isDemoMode = queryParams?.get('demo') === '1';
+  const isDemoMode = queryParams?.get('demo') === '1' || !isTauri();
   const [section, setSection] = useState(() => queryParams?.get('tab') || 'editor');
   const [data, setData] = useState<LibraryData | null>(() => (isDemoMode ? getDemoLibrary() : null));
   const [message, setMessage] = useState('');

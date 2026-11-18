@@ -233,12 +233,7 @@ export async function executeScantechDirectExportJob(
 
   // Altera os textos usando os valores da planilha
   wholeLayer.text.text = job.wholeValue.trim();
-  delete (wholeLayer as any).canvas;
-  delete (wholeLayer as any).imageData;
-
   fractionLayer.text.text = job.fractionValue.trim();
-  delete (fractionLayer as any).canvas;
-  delete (fractionLayer as any).imageData;
 
   let validityApplied = '';
   if (job.validityText) {
@@ -248,15 +243,9 @@ export async function executeScantechDirectExportJob(
     }
     if (validityLayer && validityLayer.text) {
       validityLayer.text.text = job.validityText.trim();
-      delete (validityLayer as any).canvas;
-      delete (validityLayer as any).imageData;
       validityApplied = validityLayer.text.text;
     }
   }
-
-  // Remove bitmap composto desatualizado para não manter em cache o preço antigo
-  delete (psd as any).canvas;
-  delete (psd as any).imageData;
 
   let normalizedTransformApplied = false;
   let appliedHScale = 1.0;
@@ -446,8 +435,6 @@ export async function exportDerivedPsdDirect(
     const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
     if (wholeLayer && wholeLayer.text) {
       wholeLayer.text.text = payload.whole.trim();
-      delete (wholeLayer as any).canvas;
-      delete (wholeLayer as any).imageData;
     }
   }
 
@@ -455,8 +442,6 @@ export async function exportDerivedPsdDirect(
     const fractionLayer = resolveLayerByPath(psd, payload.roles.fractionLayerId);
     if (fractionLayer && fractionLayer.text) {
       fractionLayer.text.text = payload.fraction.trim();
-      delete (fractionLayer as any).canvas;
-      delete (fractionLayer as any).imageData;
     }
   }
 
@@ -464,8 +449,6 @@ export async function exportDerivedPsdDirect(
     const catLayer = resolveLayerByPath(psd, payload.roles.categoryLayerId);
     if (catLayer && catLayer.text) {
       catLayer.text.text = payload.category.trim();
-      delete (catLayer as any).canvas;
-      delete (catLayer as any).imageData;
     }
   }
 
@@ -474,8 +457,6 @@ export async function exportDerivedPsdDirect(
     if (titleLayer && titleLayer.text) {
       const trimmedTitle = payload.title.trim();
       titleLayer.text.text = trimmedTitle;
-      delete (titleLayer as any).canvas;
-      delete (titleLayer as any).imageData;
 
       // Se o título for extenso (ex.: mais de 20 caracteres ou com quebra de linha),
       // reduz proporcionalmente o tamanho da fonte no PSD derivado para evitar que o
@@ -511,8 +492,6 @@ export async function exportDerivedPsdDirect(
     const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
     if (compLayer && compLayer.text) {
       compLayer.text.text = payload.complement.trim();
-      delete (compLayer as any).canvas;
-      delete (compLayer as any).imageData;
     }
   }
 
@@ -520,8 +499,6 @@ export async function exportDerivedPsdDirect(
     const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
     if (packLayer && packLayer.text) {
       packLayer.text.text = payload.packaging.trim();
-      delete (packLayer as any).canvas;
-      delete (packLayer as any).imageData;
     }
   }
 
@@ -532,13 +509,8 @@ export async function exportDerivedPsdDirect(
     }
     if (valLayer && valLayer.text) {
       valLayer.text.text = payload.validityText.trim();
-      delete (valLayer as any).canvas;
-      delete (valLayer as any).imageData;
     }
   }
-
-  delete (psd as any).canvas;
-  delete (psd as any).imageData;
 
   let outBytes: ArrayBuffer;
   try {
