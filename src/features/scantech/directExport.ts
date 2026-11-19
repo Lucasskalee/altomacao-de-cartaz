@@ -77,10 +77,12 @@ function createLayerCanvas(w: number, h: number): any {
 }
 
 /**
- * Atualiza o bitmap da camada de texto re-desenhando o texto atualizado.
- * Remove os pixels legados antigos (layer.imageData) e desenha o novo texto no layer.canvas.
- * Isso garante que o Photoshop CS6 abra o PSD exibindo imediatamente os preços novos,
- * sem reter bitmaps velhos em cache e sem precisar que o usuário clique na camada com a ferramenta T.
+ * Atualiza o bitmap da camada de texto re-desenhando o texto atualizado com a escala real da camada.
+ * No Photoshop, o fontSize interno no style (ex.: 50pt) é frequentemente multiplicado por matrizes
+ * afins de transformação (transform com escala de 10x a 16x). Se desenhássemos usando apenas style.fontSize,
+ * as letras ficavam minúsculas no Photoshop CS6.
+ * Esta função calcula o tamanho real efetivo com base na altura delimitadora e na matriz de transformação,
+ * descartando pixels antigos legados (layer.imageData) e gerando um bitmap em escala completa.
  */
 export function updateTextLayerBitmap(layer: Layer, newText: string): void {
   const width = Math.max(1, (layer.right ?? 0) - (layer.left ?? 0));
@@ -100,7 +102,26 @@ export function updateTextLayerBitmap(layer: Layer, newText: string): void {
       ctx.clearRect?.(0, 0, width, height);
 
       const style = layer.text?.style;
-      const fontSize = Math.max(12, Math.round(style?.fontSize ?? (height * 0.8)));
+      const transform = layer.text?.transform;
+      let scaleY = 1;
+      if (Array.isArray(transform) && transform.length === 6) {
+        scaleY = Math.hypot(transform[2], transform[3]) || Math.hypot(transform[0], transform[1]) || 1;
+      }
+
+      // Calcula o tamanho real efetivo da fonte no espaço visual da camada
+      const baseFontSize = typeof style?.fontSize === 'number' && style.fontSize > 0 ? style.fontSize : height * 0.85;
+      const effectiveFontSize = Math.round(baseFontSize * scaleY);
+      let fontSize = Math.min(height, Math.max(Math.round(height * 0.8), effectiveFontSize));
+
+      // Se o texto for mais largo que a largura da camada (ex.: 2 ou 3 dígitos), ajusta proporcionalmente
+      const trimmed = newText.trim();
+      const estimatedCharWidth = fontSize * 0.55;
+      const totalEstimatedWidth = estimatedCharWidth * Math.max(1, trimmed.length);
+      if (totalEstimatedWidth > width) {
+        const scaleFactor = width / totalEstimatedWidth;
+        fontSize = Math.max(16, Math.round(fontSize * scaleFactor));
+      }
+
       const fontName = style?.font?.name ?? 'sans-serif';
       const color: any = style?.fillColor;
       let fillStyle = '#000000';
@@ -135,7 +156,7 @@ export function updateTextLayerBitmap(layer: Layer, newText: string): void {
         ctx.textBaseline = 'middle';
       }
 
-      ctx.fillText?.(newText, width / 2, height / 2);
+      ctx.fillText?.(trimmed, width / 2, height / 2);
       ctx.restore?.();
     } catch {
       // Ignora silenciosamente se o contexto do mock não implementar métodos adicionais
