@@ -467,11 +467,12 @@ test('10. Exportação direta de PSD atualiza preços e invalida cache de pixels
   assert.equal(exportedWhole.text.text, '22', 'Texto de reais deve ser atualizado para 22');
   assert.equal(exportedFraction.text.text, '22', 'Texto de centavos deve ser atualizado para 22');
 
-  // 2. Garante que as camadas de texto NÃO contêm canais de bitmap de cache no arquivo
-  // No Photoshop CS6, qualquer canal de imagem pré-renderizado faz o texto aparecer cortado
-  // ou sem os efeitos de sombra/traçado originais até que o usuário clique com a ferramenta T.
-  // Sem bitmap de cache, o Photoshop CS6 renderiza o vetor nativo perfeitamente logo na abertura.
-  assert.equal(exportedWhole.imageData, undefined, 'Camada de reais não deve reter bitmap de cache');
-  assert.equal(exportedFraction.imageData, undefined, 'Camada de centavos não deve reter bitmap de cache');
+  // 2. Garante que as camadas de texto contêm canal de imagem com bounds expandidos
+  // No Photoshop CS6, camadas sem canal de imagem têm bounds 0x0 e ficam invisíveis até o clique da ferramenta T.
+  // Com bounds expandidos e matriz afim desenhada no bitmap, o texto aparece imediatamente visível e sem cortes.
+  assert.ok(exportedWhole.imageData, 'Camada de reais deve conter bitmap renderizado para Photoshop CS6');
+  assert.ok(exportedFraction.imageData, 'Camada de centavos deve conter bitmap renderizado para Photoshop CS6');
+  assert.ok((exportedWhole.right ?? 0) > (exportedWhole.left ?? 0), 'Camada de reais deve ter largura positiva');
+  assert.ok((exportedWhole.bottom ?? 0) > (exportedWhole.top ?? 0), 'Camada de reais deve ter altura positiva');
 });
 

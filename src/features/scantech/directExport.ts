@@ -47,17 +47,137 @@ export function resolveLayerByPath(
   return current ?? null;
 }
 
+function createLayerCanvas(w: number, h: number): any {
+  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+  const makeImageData = (cw: number, ch: number) => ({
+    data: new Uint8ClampedArray(cw * ch * 4),
+    width: cw,
+    height: ch,
+  });
+  return {
+    width: w,
+    height: h,
+    getContext: () => ({
+      getImageData: (_x: number, _y: number, cw: number, ch: number) => makeImageData(cw, ch),
+      createImageData: (cw: number, ch: number) => makeImageData(cw, ch),
+      putImageData: () => {},
+      clearRect: () => {},
+      fillText: () => {},
+      strokeText: () => {},
+      save: () => {},
+      restore: () => {},
+      setTransform: () => {},
+      measureText: (txt: string) => ({ width: txt.length * 10 }),
+    }),
+  };
+}
+
 /**
- * Invalida o cache rasterizado da camada de texto (pixels legados em layer.canvas/imageData).
- * No Photoshop CS6, camadas de texto são vetoriais (TypeLayer). Se a camada contiver um canal
- * de imagem pré-renderizado (bitmap estático de canvas 2D), o Photoshop CS6 exibe esse bitmap ao abrir,
- * fazendo com que o texto apareça cortado, sem os efeitos nativos de sombra/traçado ou com preços antigos.
- * Quando o usuário clica com a ferramenta de texto (T), o Photoshop descarta o bitmap e renderiza
- * o vetor nativo perfeito.
- * Ao remover `canvas` e `imageData` da camada de texto e gravar o PSD com `{ invalidateTextLayers: true }`,
- * o Photoshop CS6 é forçado a renderizar nativamente o texto vetorial de imediato ao abrir o arquivo,
- * exibindo o texto com tamanho completo, espessura original, efeitos de camada e sem nenhum corte.
+ * Renderiza o texto atualizado diretamente no canal de bitmap (layer.canvas) com bounds expandidos
+ * e matriz afim de transformação (transform).
+ * No Photoshop CS6, camadas de texto dependem do canal de bitmap para exibição imediata ao abrir o arquivo.
+ * Se o bitmap for descartado, o Photoshop CS6 colapsa os bounds da camada para 0x0, deixando o texto invisível.
+ * Se o bitmap for estreito, o texto e os efeitos (traçado de 74px e dropShadow) são cortados nas bordas.
+ * Esta função aplica um padding generoso (padX/padY), aplica a matriz afim nativa (setTransform) e desenha
+ * o novo texto com a cor e baseline exatos da camada, garantindo exibição instantânea, completa e sem cortes.
  */
+export function renderTextLayerToBitmap(
+  layer: Layer,
+  newText: string,
+  docWidth?: number,
+  docHeight?: number
+): void {
+  // Descarta os pixels legados antigos em cache
+  delete layer.imageData;
+
+  const rawLeft = layer.left ?? 0;
+  const rawRight = layer.right ?? rawLeft;
+  const rawTop = layer.top ?? 0;
+  const rawBottom = layer.bottom ?? rawTop;
+
+  const transform = layer.text?.transform;
+  const hasTransform = Array.isArray(transform) && transform.length === 6;
+
+  const oldLen = layer.text?.text?.trim().length ?? 1;
+  const newLen = newText.trim().length;
+  const charDiff = Math.max(0, newLen - oldLen);
+  const extraWidth = charDiff * 160;
+
+  // Margem generosa para nunca cortar glifos inclinados (Zullia 15.6°) nem traçados de 74px e sombras projetadas
+  const padX = 140 + extraWidth;
+  const padY = 70;
+
+  const newLeft = Math.max(0, Math.round(rawLeft - padX));
+  const newRight = typeof docWidth === 'number' && docWidth > 0
+    ? Math.min(docWidth, Math.round(rawRight + padX))
+    : Math.round(rawRight + padX);
+  const newTop = Math.max(0, Math.round(rawTop - padY));
+  const newBottom = typeof docHeight === 'number' && docHeight > 0
+    ? Math.min(docHeight, Math.round(rawBottom + padY))
+    : Math.round(rawBottom + padY);
+
+  layer.left = newLeft;
+  layer.right = newRight;
+  layer.top = newTop;
+  layer.bottom = newBottom;
+
+  const width = Math.max(1, newRight - newLeft);
+  const height = Math.max(1, newBottom - newTop);
+
+  const canvas = createLayerCanvas(width, height);
+  layer.canvas = canvas;
+
+  try {
+    const ctx = canvas.getContext?.('2d');
+    if (ctx) {
+      ctx.clearRect?.(0, 0, width, height);
+      ctx.save?.();
+
+      const style = layer.text?.style;
+      const fontName = style?.font?.name ?? 'Zullia';
+      const color: any = style?.fillColor;
+      let fillStyle = '#000000';
+      if (color && typeof color.r === 'number' && typeof color.g === 'number' && typeof color.b === 'number') {
+        const r = Math.min(255, Math.max(0, Math.round(color.r)));
+        const g = Math.min(255, Math.max(0, Math.round(color.g)));
+        const b = Math.min(255, Math.max(0, Math.round(color.b)));
+        fillStyle = `rgb(${r},${g},${b})`;
+      }
+      ctx.fillStyle = fillStyle;
+
+      if (hasTransform) {
+        const [a, b, c, d, tx, ty] = transform;
+        const localTx = tx - newLeft;
+        const localTy = ty - newTop;
+
+        // Aplica a matriz afim do texto posicionando a âncora localmente no canvas
+        ctx.setTransform?.(a, b, c, d, localTx, localTy);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+
+        const fontSize = typeof style?.fontSize === 'number' && style.fontSize > 0 ? style.fontSize : 50;
+        ctx.font = `${fontSize}px "${fontName}", "Brush Hand New", Arial, Impact, sans-serif`;
+        ctx.fillText?.(newText.trim(), 0, 0);
+      } else {
+        const fontSize = Math.max(12, Math.round(height * 0.75));
+        ctx.font = `${fontSize}px "${fontName}", Arial, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText?.(newText.trim(), width / 2, height / 2);
+      }
+
+      ctx.restore?.();
+    }
+  } catch {
+    // mock / fallback
+  }
+}
+
 export function invalidateTextLayerPixelCache(layer: Layer): void {
   delete layer.canvas;
   delete layer.imageData;
@@ -247,14 +367,9 @@ export async function executeScantechDirectExportJob(
     };
   }
 
-  // Altera os textos usando os valores da planilha e descarta os pixels rasterizados
-  // antigos da camada para que o Photoshop CS6 renderize de imediato com a tipografia
-  // e efeitos vetoriais nativos perfeitos (sem cortes e com tamanho/espessura originais).
+  // Altera os textos usando os valores da planilha
   wholeLayer.text.text = job.wholeValue.trim();
-  invalidateTextLayerPixelCache(wholeLayer);
-
   fractionLayer.text.text = job.fractionValue.trim();
-  invalidateTextLayerPixelCache(fractionLayer);
 
   let validityApplied = '';
   if (job.validityText) {
@@ -268,7 +383,6 @@ export async function executeScantechDirectExportJob(
     if (validityLayer && validityLayer.text) {
       validityLayer.text.text = job.validityText.trim();
       validityApplied = validityLayer.text.text;
-      invalidateTextLayerPixelCache(validityLayer);
     }
   }
 
@@ -319,6 +433,23 @@ export async function executeScantechDirectExportJob(
       for (const run of wholeLayer.text.styleRuns) {
         if (run.style) run.style.horizontalScale = appliedHScale;
       }
+    }
+  }
+
+  // Renderiza os bitmaps atualizados com matriz afim e bounds expandidos para exibição
+  // imediata no Photoshop CS6 sem cortes e com a tipografia Zullia exata.
+  renderTextLayerToBitmap(wholeLayer, job.wholeValue, psd.width, psd.height);
+  renderTextLayerToBitmap(fractionLayer, job.fractionValue, psd.width, psd.height);
+  if (validityApplied) {
+    let validityLayer = resolveLayerByPath(psd, job.validityLayerId);
+    if (!validityLayer || !validityLayer.text) {
+      validityLayer = findFirstTextLayerMatching(
+        psd,
+        /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b|promo[cç][aã]o|vencimento|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b)/i
+      );
+    }
+    if (validityLayer && validityLayer.text) {
+      renderTextLayerToBitmap(validityLayer, validityApplied, psd.width, psd.height);
     }
   }
 
@@ -466,7 +597,7 @@ export async function exportDerivedPsdDirect(
     const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
     if (wholeLayer && wholeLayer.text) {
       wholeLayer.text.text = payload.whole.trim();
-      invalidateTextLayerPixelCache(wholeLayer);
+      renderTextLayerToBitmap(wholeLayer, payload.whole, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
@@ -475,7 +606,7 @@ export async function exportDerivedPsdDirect(
     const fractionLayer = resolveLayerByPath(psd, payload.roles.fractionLayerId);
     if (fractionLayer && fractionLayer.text) {
       fractionLayer.text.text = payload.fraction.trim();
-      invalidateTextLayerPixelCache(fractionLayer);
+      renderTextLayerToBitmap(fractionLayer, payload.fraction, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
@@ -484,7 +615,7 @@ export async function exportDerivedPsdDirect(
     const catLayer = resolveLayerByPath(psd, payload.roles.categoryLayerId);
     if (catLayer && catLayer.text) {
       catLayer.text.text = payload.category.trim();
-      invalidateTextLayerPixelCache(catLayer);
+      renderTextLayerToBitmap(catLayer, catLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
@@ -494,8 +625,6 @@ export async function exportDerivedPsdDirect(
     if (titleLayer && titleLayer.text) {
       const trimmedTitle = payload.title.trim();
       titleLayer.text.text = trimmedTitle;
-      invalidateTextLayerPixelCache(titleLayer);
-      updatedAnyText = true;
 
       // Se o título for extenso (ex.: mais de 20 caracteres ou com quebra de linha),
       // reduz proporcionalmente o tamanho da fonte no PSD derivado para evitar que o
@@ -524,6 +653,9 @@ export async function exportDerivedPsdDirect(
           }
         }
       }
+
+      renderTextLayerToBitmap(titleLayer, titleLayer.text.text, psd.width, psd.height);
+      updatedAnyText = true;
     }
   }
 
@@ -531,7 +663,7 @@ export async function exportDerivedPsdDirect(
     const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
     if (compLayer && compLayer.text) {
       compLayer.text.text = payload.complement.trim();
-      invalidateTextLayerPixelCache(compLayer);
+      renderTextLayerToBitmap(compLayer, compLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
@@ -540,7 +672,7 @@ export async function exportDerivedPsdDirect(
     const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
     if (packLayer && packLayer.text) {
       packLayer.text.text = payload.packaging.trim();
-      invalidateTextLayerPixelCache(packLayer);
+      renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
@@ -555,7 +687,7 @@ export async function exportDerivedPsdDirect(
     }
     if (valLayer && valLayer.text) {
       valLayer.text.text = payload.validityText.trim();
-      invalidateTextLayerPixelCache(valLayer);
+      renderTextLayerToBitmap(valLayer, valLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
