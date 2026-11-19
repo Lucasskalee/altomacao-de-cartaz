@@ -47,123 +47,20 @@ export function resolveLayerByPath(
   return current ?? null;
 }
 
-function createLayerCanvas(w: number, h: number): any {
-  if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, w);
-    c.height = Math.max(1, h);
-    return c;
-  }
-  const makeImageData = (cw: number, ch: number) => ({
-    data: new Uint8ClampedArray(cw * ch * 4),
-    width: cw,
-    height: ch,
-  });
-  return {
-    width: Math.max(1, w),
-    height: Math.max(1, h),
-    getContext: () => ({
-      getImageData: (_x: number, _y: number, cw: number, ch: number) => makeImageData(cw, ch),
-      createImageData: (cw: number, ch: number) => makeImageData(cw, ch),
-      putImageData: () => {},
-      clearRect: () => {},
-      fillText: () => {},
-      strokeText: () => {},
-      save: () => {},
-      restore: () => {},
-      measureText: (txt: string) => ({ width: txt.length * 10 }),
-    }),
-  };
-}
-
 /**
- * Atualiza o bitmap da camada de texto re-desenhando o texto atualizado com a escala real da camada.
- * No Photoshop, o fontSize interno no style (ex.: 50pt) é frequentemente multiplicado por matrizes
- * afins de transformação (transform com escala de 10x a 16x). Se desenhássemos usando apenas style.fontSize,
- * as letras ficavam minúsculas no Photoshop CS6.
- * Esta função calcula o tamanho real efetivo com base na altura delimitadora e na matriz de transformação,
- * descartando pixels antigos legados (layer.imageData) e gerando um bitmap em escala completa.
+ * Invalida o cache rasterizado da camada de texto (pixels legados em layer.canvas/imageData).
+ * No Photoshop CS6, camadas de texto são vetoriais (TypeLayer). Se a camada contiver um canal
+ * de imagem pré-renderizado (bitmap estático de canvas 2D), o Photoshop CS6 exibe esse bitmap ao abrir,
+ * fazendo com que o texto apareça cortado, sem os efeitos nativos de sombra/traçado ou com preços antigos.
+ * Quando o usuário clica com a ferramenta de texto (T), o Photoshop descarta o bitmap e renderiza
+ * o vetor nativo perfeito.
+ * Ao remover `canvas` e `imageData` da camada de texto e gravar o PSD com `{ invalidateTextLayers: true }`,
+ * o Photoshop CS6 é forçado a renderizar nativamente o texto vetorial de imediato ao abrir o arquivo,
+ * exibindo o texto com tamanho completo, espessura original, efeitos de camada e sem nenhum corte.
  */
-export function updateTextLayerBitmap(layer: Layer, newText: string): void {
-  const width = Math.max(1, (layer.right ?? 0) - (layer.left ?? 0));
-  const height = Math.max(1, (layer.bottom ?? 0) - (layer.top ?? 0));
-
-  // Descarta os pixels legados antigos em cache
+export function invalidateTextLayerPixelCache(layer: Layer): void {
+  delete layer.canvas;
   delete layer.imageData;
-
-  let canvas: any = layer.canvas;
-  if (!canvas || canvas.width !== width || canvas.height !== height) {
-    canvas = createLayerCanvas(width, height);
-  }
-
-  const ctx = canvas?.getContext?.('2d');
-  if (ctx) {
-    try {
-      ctx.clearRect?.(0, 0, width, height);
-
-      const style = layer.text?.style;
-      const transform = layer.text?.transform;
-      let scaleY = 1;
-      if (Array.isArray(transform) && transform.length === 6) {
-        scaleY = Math.hypot(transform[2], transform[3]) || Math.hypot(transform[0], transform[1]) || 1;
-      }
-
-      // Calcula o tamanho real efetivo da fonte no espaço visual da camada
-      const baseFontSize = typeof style?.fontSize === 'number' && style.fontSize > 0 ? style.fontSize : height * 0.85;
-      const effectiveFontSize = Math.round(baseFontSize * scaleY);
-      let fontSize = Math.min(height, Math.max(Math.round(height * 0.8), effectiveFontSize));
-
-      // Se o texto for mais largo que a largura da camada (ex.: 2 ou 3 dígitos), ajusta proporcionalmente
-      const trimmed = newText.trim();
-      const estimatedCharWidth = fontSize * 0.55;
-      const totalEstimatedWidth = estimatedCharWidth * Math.max(1, trimmed.length);
-      if (totalEstimatedWidth > width) {
-        const scaleFactor = width / totalEstimatedWidth;
-        fontSize = Math.max(16, Math.round(fontSize * scaleFactor));
-      }
-
-      const fontName = style?.font?.name ?? 'sans-serif';
-      const color: any = style?.fillColor;
-      let fillStyle = '#000000';
-      if (color) {
-        let r = 0, g = 0, b = 0;
-        if (typeof color.r === 'number' && typeof color.g === 'number' && typeof color.b === 'number') {
-          r = color.r; g = color.g; b = color.b;
-        } else if (typeof color.fr === 'number' && typeof color.fg === 'number' && typeof color.fb === 'number') {
-          r = Math.round(color.fr * 255); g = Math.round(color.fg * 255); b = Math.round(color.fb * 255);
-        } else if (typeof color.red === 'number' && typeof color.green === 'number' && typeof color.blue === 'number') {
-          r = color.red <= 1 ? Math.round(color.red * 255) : Math.round(color.red);
-          g = color.green <= 1 ? Math.round(color.green * 255) : Math.round(color.green);
-          b = color.blue <= 1 ? Math.round(color.blue * 255) : Math.round(color.blue);
-        }
-        r = Math.min(255, Math.max(0, r));
-        g = Math.min(255, Math.max(0, g));
-        b = Math.min(255, Math.max(0, b));
-        fillStyle = `rgb(${r},${g},${b})`;
-      }
-
-      ctx.save?.();
-      if (ctx.font !== undefined) {
-        ctx.font = `bold ${fontSize}px "${fontName}", sans-serif`;
-      }
-      if (ctx.fillStyle !== undefined) {
-        ctx.fillStyle = fillStyle;
-      }
-      if (ctx.textAlign !== undefined) {
-        ctx.textAlign = 'center';
-      }
-      if (ctx.textBaseline !== undefined) {
-        ctx.textBaseline = 'middle';
-      }
-
-      ctx.fillText?.(trimmed, width / 2, height / 2);
-      ctx.restore?.();
-    } catch {
-      // Ignora silenciosamente se o contexto do mock não implementar métodos adicionais
-    }
-  }
-
-  layer.canvas = canvas;
 }
 
 export function findFirstTextLayerMatching(
@@ -350,14 +247,14 @@ export async function executeScantechDirectExportJob(
     };
   }
 
-  // Altera os textos usando os valores da planilha e atualiza o bitmap da camada
-  // desenhando o novo texto, descartando pixels antigos para que o Photoshop CS6
-  // renderize imediatamente a nova arte ao abrir o arquivo.
+  // Altera os textos usando os valores da planilha e descarta os pixels rasterizados
+  // antigos da camada para que o Photoshop CS6 renderize de imediato com a tipografia
+  // e efeitos vetoriais nativos perfeitos (sem cortes e com tamanho/espessura originais).
   wholeLayer.text.text = job.wholeValue.trim();
-  updateTextLayerBitmap(wholeLayer, wholeLayer.text.text);
+  invalidateTextLayerPixelCache(wholeLayer);
 
   fractionLayer.text.text = job.fractionValue.trim();
-  updateTextLayerBitmap(fractionLayer, fractionLayer.text.text);
+  invalidateTextLayerPixelCache(fractionLayer);
 
   let validityApplied = '';
   if (job.validityText) {
@@ -371,7 +268,7 @@ export async function executeScantechDirectExportJob(
     if (validityLayer && validityLayer.text) {
       validityLayer.text.text = job.validityText.trim();
       validityApplied = validityLayer.text.text;
-      updateTextLayerBitmap(validityLayer, validityLayer.text.text);
+      invalidateTextLayerPixelCache(validityLayer);
     }
   }
 
@@ -569,7 +466,7 @@ export async function exportDerivedPsdDirect(
     const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
     if (wholeLayer && wholeLayer.text) {
       wholeLayer.text.text = payload.whole.trim();
-      updateTextLayerBitmap(wholeLayer, wholeLayer.text.text);
+      invalidateTextLayerPixelCache(wholeLayer);
       updatedAnyText = true;
     }
   }
@@ -578,7 +475,7 @@ export async function exportDerivedPsdDirect(
     const fractionLayer = resolveLayerByPath(psd, payload.roles.fractionLayerId);
     if (fractionLayer && fractionLayer.text) {
       fractionLayer.text.text = payload.fraction.trim();
-      updateTextLayerBitmap(fractionLayer, fractionLayer.text.text);
+      invalidateTextLayerPixelCache(fractionLayer);
       updatedAnyText = true;
     }
   }
@@ -587,7 +484,7 @@ export async function exportDerivedPsdDirect(
     const catLayer = resolveLayerByPath(psd, payload.roles.categoryLayerId);
     if (catLayer && catLayer.text) {
       catLayer.text.text = payload.category.trim();
-      updateTextLayerBitmap(catLayer, catLayer.text.text);
+      invalidateTextLayerPixelCache(catLayer);
       updatedAnyText = true;
     }
   }
@@ -597,7 +494,7 @@ export async function exportDerivedPsdDirect(
     if (titleLayer && titleLayer.text) {
       const trimmedTitle = payload.title.trim();
       titleLayer.text.text = trimmedTitle;
-      updateTextLayerBitmap(titleLayer, titleLayer.text.text);
+      invalidateTextLayerPixelCache(titleLayer);
       updatedAnyText = true;
 
       // Se o título for extenso (ex.: mais de 20 caracteres ou com quebra de linha),
@@ -634,7 +531,7 @@ export async function exportDerivedPsdDirect(
     const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
     if (compLayer && compLayer.text) {
       compLayer.text.text = payload.complement.trim();
-      updateTextLayerBitmap(compLayer, compLayer.text.text);
+      invalidateTextLayerPixelCache(compLayer);
       updatedAnyText = true;
     }
   }
@@ -643,7 +540,7 @@ export async function exportDerivedPsdDirect(
     const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
     if (packLayer && packLayer.text) {
       packLayer.text.text = payload.packaging.trim();
-      updateTextLayerBitmap(packLayer, packLayer.text.text);
+      invalidateTextLayerPixelCache(packLayer);
       updatedAnyText = true;
     }
   }
@@ -658,7 +555,7 @@ export async function exportDerivedPsdDirect(
     }
     if (valLayer && valLayer.text) {
       valLayer.text.text = payload.validityText.trim();
-      updateTextLayerBitmap(valLayer, valLayer.text.text);
+      invalidateTextLayerPixelCache(valLayer);
       updatedAnyText = true;
     }
   }

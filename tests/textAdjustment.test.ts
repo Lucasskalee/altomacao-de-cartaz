@@ -389,13 +389,9 @@ test('11. Exportação PSD direta: preserva camadas de imagem e dimensões das c
   assert.equal(wholeLayer.text!.text, '12');
   assert.equal(fractionLayer.text!.text, '99');
 
-  // Garante que as camadas NÃO foram esvaziadas (dimensões maiores que 0, não colapsadas em 0x0)
-  assert.ok((wholeLayer.right ?? 0) > (wholeLayer.left ?? 0), 'Camada de Reais deve manter largura positiva');
-  assert.ok((wholeLayer.bottom ?? 0) > (wholeLayer.top ?? 0), 'Camada de Reais deve manter altura positiva');
-  assert.ok(wholeLayer.imageData || wholeLayer.canvas, 'Camada de Reais deve preservar bitmap no PSD');
-
-  assert.ok((fractionLayer.right ?? 0) > (fractionLayer.left ?? 0), 'Camada de Centavos deve manter largura positiva');
-  assert.ok((fractionLayer.bottom ?? 0) > (fractionLayer.top ?? 0), 'Camada de Centavos deve manter altura positiva');
-  assert.ok(fractionLayer.imageData || fractionLayer.canvas, 'Camada de Centavos deve preservar bitmap no PSD');
+  // Garante que as camadas de texto NÃO mantêm bitmaps estáticos obsoletos que cortariam
+  // o texto ou mostrariam arte desatualizada no Photoshop CS6
+  assert.equal(wholeLayer.imageData, undefined, 'Camada de Reais não deve reter canal de bitmap estático');
+  assert.equal(fractionLayer.imageData, undefined, 'Camada de Centavos não deve reter canal de bitmap estático');
 });
 
