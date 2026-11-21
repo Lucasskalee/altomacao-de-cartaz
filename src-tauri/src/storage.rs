@@ -145,9 +145,34 @@ fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>) -> Result<(), String> {
             rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":true}));
             scan(root, &p, rows)?;
         } else if extension(&p).is_ok() {
-            match read(&p) {
-                Ok(s) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"content":s,"modifiedAt":meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_secs()*1000)})),
-                Err(e) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"error":e})),
+            let is_psd = p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("psd")).unwrap_or(false);
+            if is_psd {
+                let companion = p.with_extension("skcartaz");
+                if companion.exists() {
+                    if let Ok(s) = read(&companion) {
+                        rows.push(json!({
+                            "path": p,
+                            "name": entry.file_name().to_string_lossy(),
+                            "folder": false,
+                            "content": s,
+                            "isPsd": true,
+                            "modifiedAt": meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t| t.as_secs() * 1000)
+                        }));
+                        continue;
+                    }
+                }
+                rows.push(json!({
+                    "path": p,
+                    "name": entry.file_name().to_string_lossy(),
+                    "folder": false,
+                    "isPsd": true,
+                    "modifiedAt": meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t| t.as_secs() * 1000)
+                }));
+            } else {
+                match read(&p) {
+                    Ok(s) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"content":s,"modifiedAt":meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_secs()*1000)})),
+                    Err(e) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"error":e})),
+                }
             }
         }
     }
@@ -197,7 +222,19 @@ pub async fn files(app: tauri::AppHandle, access: tauri::State<'_, Access>, requ
     let p = resolved(&raw)?;
     if !p.starts_with(&root) && !access.files.lock().map_err(err)?.contains(&p) { return Err("Escolha o arquivo no diálogo nativo para autorizar o acesso.".into()); }
     match r.action.as_str() {
-        "read" => Ok(json!(read(&p)?)),
+        "read" => {
+            let is_psd = p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("psd")).unwrap_or(false);
+            if is_psd {
+                let companion = p.with_extension("skcartaz");
+                if companion.exists() {
+                    Ok(json!(read(&companion)?))
+                } else {
+                    Err("Este arquivo PSD não possui um documento companheiro .skcartaz. Abra-o pelo Editor no botão 'Novo a partir de PSD'.".into())
+                }
+            } else {
+                Ok(json!(read(&p)?))
+            }
+        },
         "save" => { write(&p, &r.content.ok_or("Documento ausente.")?, r.overwrite.unwrap_or(false))?; Ok(json!(p)) },
         "mkdir" => {
             inside(&root, &p)?;

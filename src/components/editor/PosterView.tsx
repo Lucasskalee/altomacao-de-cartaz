@@ -28,6 +28,8 @@ export type Poster = {
   boxQuantity?: number;
   boxUnitLabel?: string;
   boxPrice?: string;
+  productImage?: { dataUrl: string; fileName?: string; bounds?: { left: number; top: number; right: number; bottom: number } };
+  showSurgicalGuides?: boolean;
 };
 
 export const initial: Poster = { name: 'REPOLHO', detail: 'VERDE', price: '2,89', unit: 'KG' };
@@ -236,6 +238,8 @@ function ImportedPosterView({
             boxQuantity: poster.boxQuantity,
             boxUnitLabel: poster.boxUnitLabel,
             boxPrice: poster.boxPrice,
+            productImage: poster.productImage,
+            showSurgicalGuides: poster.showSurgicalGuides,
           }
         )
           .then(() => {
@@ -281,6 +285,8 @@ function ImportedPosterView({
             boxQuantity: poster.boxQuantity,
             boxUnitLabel: poster.boxUnitLabel,
             boxPrice: poster.boxPrice,
+            productImage: poster.productImage,
+            showSurgicalGuides: poster.showSurgicalGuides,
           }
         )
           .then(() => {
@@ -317,6 +323,8 @@ function ImportedPosterView({
     poster.boxQuantity,
     poster.boxUnitLabel,
     poster.boxPrice,
+    poster.productImage,
+    poster.showSurgicalGuides,
     poster.expositorPanel,
     isPrint,
     widthMm,

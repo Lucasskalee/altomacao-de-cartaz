@@ -569,6 +569,7 @@ export type DerivedPsdPayload = {
   boxUnitLabel?: string;
   boxWhole?: string;
   boxFraction?: string;
+  productImage?: { dataUrl: string; fileName?: string };
   roles: {
     categoryLayerId?: string;
     titleLayerId?: string;

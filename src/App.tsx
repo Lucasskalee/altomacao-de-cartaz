@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { PosterView, type Poster } from './components/editor/PosterView';
+import { SurgicalLayerEditor } from './components/editor/SurgicalLayerEditor';
 import { exportPng } from './components/editor/exportPng';
 import { Library } from './components/library/Library';
 import { useCartaz } from './hooks/useCartaz';
@@ -181,10 +182,12 @@ export default function App() {
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showFormatMenu]);
+  const [isSurgicalOpen, setIsSurgicalOpen] = useState(false);
   const docPoster = posterFromDocument(editor.document);
   const poster: Poster = {
     ...docPoster,
     price: editor.price,
+    productImage: (editor.document.product as any).productImage,
     hasBoxPrice: Boolean((editor.document.product as any).hasBoxPrice),
     boxQuantity: Number((editor.document.product as any).boxQuantity) || 12,
     boxUnitLabel: ((editor.document.product as any).boxUnitLabel as string) || 'UND.',
@@ -401,6 +404,7 @@ export default function App() {
       boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
       boxWhole: boxWholeVal,
       boxFraction: boxFractionVal,
+      productImage: (d.product as any).productImage,
       roles: {
         wholeLayerId: wholePart?.layerId,
         fractionLayerId: fractionPart?.layerId,
@@ -810,6 +814,15 @@ export default function App() {
             <button type="button" className="editor-btn subtle" onClick={() => run(() => handleExportOrOpenPsd(false))}>
               Exportar PSD
             </button>
+            <button
+              type="button"
+              className="editor-btn subtle"
+              style={{ color: '#059669', background: '#ecfdf5', borderColor: '#a7f3d0', fontWeight: 700 }}
+              title="Abre o Editor Cirúrgico de Camadas (padronização de arte com guias editáveis e bloqueadas)"
+              onClick={() => setIsSurgicalOpen(true)}
+            >
+              🎯 Camadas Cirúrgicas
+            </button>
             {isTauri() && (
               <button
                 type="button"
@@ -844,8 +857,18 @@ export default function App() {
           </div>
         </div>
 
-        {/* Layout Principal: Propriedades + Prévia A5 */}
-        <div className="editor-layout">
+        {/* Layout Principal: Propriedades + Prévia A5 OU Editor Cirúrgico */}
+        {isSurgicalOpen ? (
+          <SurgicalLayerEditor
+            document={editor.document}
+            activeFormat={activeFormat}
+            onChangeField={editor.change}
+            onExportPsd={handleExportOrOpenPsd}
+            onClose={() => setIsSurgicalOpen(false)}
+            isBusy={locked.current}
+          />
+        ) : (
+          <div className="editor-layout">
           {/* Coluna 1: Painel de Propriedades Organizado */}
           <section className="editor-panel" aria-label="Propriedades da oferta">
             <div style={{ marginBottom: 16 }}>
@@ -1004,6 +1027,31 @@ export default function App() {
                 Preparar textos do PSD para edição
               </button>
             )}
+
+            <button
+              type="button"
+              className="editor-btn"
+              style={{
+                width: '100%',
+                background: '#064e3b',
+                color: '#ffffff',
+                border: '1px solid #059669',
+                padding: '10px 12px',
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 16,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                cursor: 'pointer',
+              }}
+              title="Abre o painel de padronização de arte e edição cirúrgica de camadas PSD"
+              onClick={() => setIsSurgicalOpen(true)}
+            >
+              🎯 Editor de Camadas Cirúrgicas (PSD)
+            </button>
 
             {/* SEÇÃO 1: Identificação do Produto */}
             <div className="editor-section">
@@ -1462,6 +1510,7 @@ export default function App() {
             </div>
           </section>
         </div>
+        )}
       </div>
     ) : section === 'library' ? (
       <div className="library-container">

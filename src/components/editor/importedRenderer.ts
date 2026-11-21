@@ -341,6 +341,8 @@ export type DynamicPosterTexts = {
   boxQuantity?: number;
   boxUnitLabel?: string;
   boxPrice?: string;
+  productImage?: { dataUrl: string; fileName?: string; bounds?: { left: number; top: number; right: number; bottom: number } };
+  showSurgicalGuides?: boolean;
 };
 
 export async function drawImported(
@@ -378,6 +380,16 @@ export async function drawImported(
   context.save();
   context.translate(offsetX, offsetY);
   context.scale(scale, scale);
+
+  if (dynamicTexts?.productImage?.dataUrl) {
+    try {
+      const prodImg = await loadImage(dynamicTexts.productImage.dataUrl);
+      drawProductImageAutoFit(context, artwork, prodImg, dynamicTexts.productImage.bounds);
+    } catch {
+      // Fallback silently if product image fails to load
+    }
+  }
+
   for (const part of parts) {
     drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
   }
@@ -395,6 +407,137 @@ export async function drawImported(
       dynamicTexts.boxUnitLabel ?? 'UND.'
     );
   }
+  if (dynamicTexts?.showSurgicalGuides) {
+    drawSurgicalGuides(context, artwork, dynamicTexts);
+  }
+  context.restore();
+}
+
+function drawProductImageAutoFit(
+  context: CanvasRenderingContext2D,
+  artwork: ImportedArtwork,
+  img: HTMLImageElement,
+  customBounds?: { left: number; top: number; right: number; bottom: number }
+) {
+  const canvasW = artwork.canvas.width;
+  const canvasH = artwork.canvas.height;
+  const zone = customBounds || {
+    left: Math.round(canvasW * 0.18),
+    top: Math.round(canvasH * 0.28),
+    right: Math.round(canvasW * 0.82),
+    bottom: Math.round(canvasH * 0.58),
+  };
+  const zoneW = zone.right - zone.left;
+  const zoneH = zone.bottom - zone.top;
+  const fitScale = Math.min(zoneW / img.width, zoneH / img.height);
+  const drawW = img.width * fitScale;
+  const drawH = img.height * fitScale;
+  const drawX = zone.left + (zoneW - drawW) / 2;
+  const drawY = zone.top + (zoneH - drawH) / 2;
+
+  context.save();
+  context.drawImage(img, drawX, drawY, drawW, drawH);
+  context.restore();
+}
+
+function drawSurgicalGuides(
+  context: CanvasRenderingContext2D,
+  artwork: ImportedArtwork,
+  dynamicTexts?: DynamicPosterTexts
+) {
+  const canvasW = artwork.canvas.width;
+  const canvasH = artwork.canvas.height;
+  context.save();
+
+  // 1. ZONA VERMELHA - LOCK_Fundo_Marca (Bloqueada / Identidade Visual)
+  const lockZone = { left: 16, top: 16, right: canvasW - 16, bottom: Math.round(canvasH * 0.16) };
+  context.strokeStyle = 'rgba(239, 68, 68, 0.85)';
+  context.lineWidth = 4;
+  context.setLineDash([]);
+  context.strokeRect(lockZone.left, lockZone.top, lockZone.right - lockZone.left, lockZone.bottom - lockZone.top);
+
+  // Tag Bloqueado
+  context.fillStyle = '#ef4444';
+  context.fillRect(lockZone.left, lockZone.top, 140, 32);
+  context.fillStyle = '#ffffff';
+  context.font = '700 16px sans-serif';
+  context.fillText('🔒 BLOQUEADO', lockZone.left + 10, lockZone.top + 22);
+
+  // 2. ZONA VERDE - EDIT_Titulo_Produto
+  const titlePart = artwork.templateParts?.find(p => p.role === 'title');
+  const titleZone = titlePart ? titlePart.bounds : {
+    left: Math.round(canvasW * 0.08),
+    top: Math.round(canvasH * 0.17),
+    right: Math.round(canvasW * 0.92),
+    bottom: Math.round(canvasH * 0.28),
+  };
+  context.strokeStyle = '#22c55e';
+  context.lineWidth = 3;
+  context.setLineDash([8, 6]);
+  context.strokeRect(titleZone.left, titleZone.top, titleZone.right - titleZone.left, titleZone.bottom - titleZone.top);
+
+  // Tag Editável no Título
+  context.setLineDash([]);
+  context.fillStyle = '#22c55e';
+  context.fillRect(titleZone.right - 100, Math.max(0, titleZone.top - 28), 100, 28);
+  context.fillStyle = '#ffffff';
+  context.font = '700 14px sans-serif';
+  context.fillText('EDITÁVEL', titleZone.right - 88, Math.max(0, titleZone.top - 9));
+
+  // 3. ZONA VERDE - EDIT_Foto_Produto (Packshot com alças)
+  const photoZone = dynamicTexts?.productImage?.bounds || {
+    left: Math.round(canvasW * 0.18),
+    top: Math.round(canvasH * 0.29),
+    right: Math.round(canvasW * 0.82),
+    bottom: Math.round(canvasH * 0.58),
+  };
+  context.strokeStyle = '#22c55e';
+  context.lineWidth = 2.5;
+  context.setLineDash([]);
+  context.strokeRect(photoZone.left, photoZone.top, photoZone.right - photoZone.left, photoZone.bottom - photoZone.top);
+
+  // Alças de ajuste nos cantos (Handles)
+  const handleSize = 12;
+  const drawHandle = (x: number, y: number) => {
+    context.fillStyle = '#ffffff';
+    context.fillRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+    context.strokeStyle = '#22c55e';
+    context.lineWidth = 2;
+    context.strokeRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+  };
+  drawHandle(photoZone.left, photoZone.top);
+  drawHandle(photoZone.right, photoZone.top);
+  drawHandle(photoZone.left, photoZone.bottom);
+  drawHandle(photoZone.right, photoZone.bottom);
+  drawHandle((photoZone.left + photoZone.right) / 2, photoZone.top);
+  drawHandle((photoZone.left + photoZone.right) / 2, photoZone.bottom);
+  drawHandle(photoZone.left, (photoZone.top + photoZone.bottom) / 2);
+  drawHandle(photoZone.right, (photoZone.top + photoZone.bottom) / 2);
+
+  // 4. ZONA VERDE - EDIT_Preco
+  const priceParts = artwork.priceParts || [];
+  const wholePart = priceParts.find(p => p.role === 'whole');
+  const fractionPart = priceParts.find(p => p.role === 'fraction');
+  const priceTop = wholePart ? Math.min(wholePart.bounds.top, fractionPart?.bounds.top ?? wholePart.bounds.top) : Math.round(canvasH * 0.59);
+  const priceBottom = wholePart ? Math.max(wholePart.bounds.bottom, fractionPart?.bounds.bottom ?? wholePart.bounds.bottom) : Math.round(canvasH * 0.88);
+  const priceLeft = wholePart ? Math.min(wholePart.bounds.left, fractionPart?.bounds.left ?? wholePart.bounds.left) - 30 : Math.round(canvasW * 0.08);
+  const priceRight = fractionPart ? Math.max(fractionPart.bounds.right, wholePart?.bounds.right ?? fractionPart.bounds.right) + 30 : Math.round(canvasW * 0.92);
+
+  context.strokeStyle = '#22c55e';
+  context.lineWidth = 3;
+  context.setLineDash([8, 6]);
+  context.strokeRect(priceLeft, priceTop, priceRight - priceLeft, priceBottom - priceTop);
+
+  // 5. ZONA VERDE - EDIT_Caixa_Atacado (se ativo)
+  if (dynamicTexts?.hasBoxPrice) {
+    const boxY = Math.round(canvasH * 0.80);
+    const boxZone = { left: Math.round(canvasW * 0.06), top: boxY, right: Math.round(canvasW * 0.94), bottom: canvasH - 20 };
+    context.strokeStyle = '#22c55e';
+    context.lineWidth = 3;
+    context.setLineDash([8, 6]);
+    context.strokeRect(boxZone.left, boxZone.top, boxZone.right - boxZone.left, boxZone.bottom - boxZone.top);
+  }
+
   context.restore();
 }
 

@@ -981,7 +981,16 @@ export function Library({
                         onClick={() => run(() => open(e.path))}
                         title="Clique para abrir no editor de cartaz"
                       >
-                        <PosterView poster={posterFromDocument(d)} />
+                        {d.layout.template === 'imported-psd' && (d.layout.artwork?.originalPreview || d.layout.artwork?.staticBackground) ? (
+                          <img
+                            src={d.layout.artwork.originalPreview || d.layout.artwork.staticBackground}
+                            alt={d.product.name}
+                            loading="lazy"
+                            className="sk-lib-thumb-img"
+                          />
+                        ) : (
+                          <PosterView poster={posterFromDocument(d)} />
+                        )}
                       </button>
                     ) : (
                       <div className="sk-lib-card-thumb-error">
@@ -1180,7 +1189,16 @@ export function Library({
                               title="Clique para abrir"
                             >
                               <div className="sk-lib-table-thumb-inner">
-                                <PosterView poster={posterFromDocument(d)} />
+                                {d.layout.template === 'imported-psd' && (d.layout.artwork?.originalPreview || d.layout.artwork?.staticBackground) ? (
+                                  <img
+                                    src={d.layout.artwork.originalPreview || d.layout.artwork.staticBackground}
+                                    alt={d.product.name}
+                                    loading="lazy"
+                                    className="sk-lib-thumb-img"
+                                  />
+                                ) : (
+                                  <PosterView poster={posterFromDocument(d)} />
+                                )}
                               </div>
                             </button>
                           ) : (

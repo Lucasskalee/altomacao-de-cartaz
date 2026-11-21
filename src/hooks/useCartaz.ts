@@ -134,21 +134,74 @@ export function useCartaz() {
       if (!await confirmDiscard()) return null;
       const selected = p ?? await storage.chooseOpen();
       if (!selected) return null;
-      const original = await storage.openDocument(selected);
-      let document = original;
+      let document: Cartaz = null as any;
       let preparationError = '';
       let prepared = false;
-      if (prepareTexts && original.layout.template === 'imported-psd' &&
-          !original.layout.artwork.templateParts?.length) {
+
+      if (selected.toLowerCase().endsWith('.psd')) {
+        const companionPath = selected.replace(/\.psd$/i, '.skcartaz');
+        let companionLoaded = false;
         try {
-          const sourcePath = original.layout.artwork.source.sourcePath;
-          if (!sourcePath) throw new Error('O caminho do PSD original não está registrado.');
-          const source = await readPsdByPath(sourcePath);
-          const analysis = await analyzePsd(source.buffer, source.name, source.path);
-          document = prepareLinkedArtworkAutomatically(original, analysis);
-          prepared = true;
-        } catch (ex) {
-          preparationError = ex instanceof Error ? ex.message : String(ex);
+          document = await storage.openDocument(companionPath);
+          companionLoaded = true;
+        } catch {
+          // Sem companion ou companion inacessível; abre diretamente do PSD
+        }
+
+        if (!companionLoaded) {
+          try {
+            const source = await readPsdByPath(selected);
+            const analysis = await analyzePsd(source.buffer, source.name, source.path);
+            const artwork = buildArtwork(analysis, analysis.suggested, analysis.templateSuggested);
+            const catText = artwork.templateParts?.find(p => p.role === 'category')?.originalText ?? '';
+            const titleText = artwork.templateParts?.find(p => p.role === 'title')?.originalText ?? analysis.metadata.name;
+            const compText = artwork.templateParts?.find(p => p.role === 'complement')?.originalText ?? analysis.metadata.complement;
+            const packText = artwork.templateParts?.find(p => p.role === 'packaging')?.originalText ?? analysis.metadata.unit;
+            const valText = artwork.priceParts?.find(p => p.role === 'validity')?.originalText ?? analysis.metadata.validityText ?? '';
+            const now = new Date().toISOString();
+            document = {
+              schemaVersion: 1,
+              id: crypto.randomUUID(),
+              product: {
+                name: (titleText || 'PRODUTO').toUpperCase(),
+                complement: (compText || '').toUpperCase(),
+                unit: (packText || 'UN').toUpperCase(),
+                priceCents: analysis.metadata.price ? priceToCents(analysis.metadata.price) : 289,
+                productCode: null,
+                category: catText.toUpperCase(),
+                validityText: valText,
+              },
+              layout: {
+                template: 'imported-psd',
+                paper: 'A5',
+                orientation: 'portrait',
+                artwork,
+              },
+              metadata: {
+                createdAt: now,
+                updatedAt: now,
+              },
+            };
+            prepared = true;
+          } catch (ex) {
+            throw new Error(`Falha ao abrir arquivo PSD: ${ex instanceof Error ? ex.message : String(ex)}`);
+          }
+        }
+      } else {
+        const original = await storage.openDocument(selected);
+        document = original;
+        if (prepareTexts && original.layout.template === 'imported-psd' &&
+            !original.layout.artwork.templateParts?.length) {
+          try {
+            const sourcePath = original.layout.artwork.source.sourcePath;
+            if (!sourcePath) throw new Error('O caminho do PSD original não está registrado.');
+            const source = await readPsdByPath(sourcePath);
+            const analysis = await analyzePsd(source.buffer, source.name, source.path);
+            document = prepareLinkedArtworkAutomatically(original, analysis);
+            prepared = true;
+          } catch (ex) {
+            preparationError = ex instanceof Error ? ex.message : String(ex);
+          }
         }
       }
       load(document, selected, prepared);
