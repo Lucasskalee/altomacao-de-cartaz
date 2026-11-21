@@ -726,47 +726,171 @@ export async function exportDerivedPsdDirect(
     const mainWholeId = payload.roles.wholeLayerId;
     const mainFractionId = payload.roles.fractionLayerId;
 
-    if (payload.boxWhole) {
-      let bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
-      if (!bWholeLayer || !bWholeLayer.text) {
-        // Procura camada com valor de atacado (ex: '32') diferente da camada de preço unitário
-        bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
-        if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
-          bWholeLayer = null;
-        }
+    let bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
+    if (!bWholeLayer || !bWholeLayer.text) {
+      // Procura camada com valor de atacado (ex: '32') diferente da camada de preço unitário
+      bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
+      if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
+        bWholeLayer = null;
       }
-      if (bWholeLayer && bWholeLayer.text) {
+    }
+
+    if (!bWholeLayer && (payload.hasBoxPrice || payload.boxWhole)) {
+      // Injeta cirurgicamente as camadas do formato de caixa no PSD para o Photoshop CS6
+      const canvasW = psd.width;
+      const canvasH = psd.height;
+      const lineY = Math.round(canvasH * 0.76);
+      const lineMargin = Math.round(canvasW * 0.05);
+
+      // Reduz e sobe a camada de preço unitário para liberar espaço para a caixa
+      const mainWhole = resolveLayerByPath(psd, mainWholeId);
+      if (mainWhole && mainWhole.text) {
+        if (mainWhole.text.transform) {
+          mainWhole.text.transform[0] *= 0.74;
+          mainWhole.text.transform[3] *= 0.74;
+          mainWhole.text.transform[5] -= canvasH * 0.11;
+        } else if (mainWhole.text.style?.fontSize) {
+          mainWhole.text.style.fontSize = Math.round(mainWhole.text.style.fontSize * 0.74);
+        }
+        renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
+      }
+      const mainFrac = resolveLayerByPath(psd, mainFractionId);
+      if (mainFrac && mainFrac.text) {
+        if (mainFrac.text.transform) {
+          mainFrac.text.transform[0] *= 0.74;
+          mainFrac.text.transform[3] *= 0.74;
+          mainFrac.text.transform[5] -= canvasH * 0.11;
+        } else if (mainFrac.text.style?.fontSize) {
+          mainFrac.text.style.fontSize = Math.round(mainFrac.text.style.fontSize * 0.74);
+        }
+        renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
+      }
+
+      // Linha divisória preta
+      const dividerLayer: Layer = {
+        name: 'Rectangle 2 cópia',
+        left: lineMargin,
+        top: lineY,
+        right: canvasW - lineMargin,
+        bottom: lineY + Math.max(6, Math.round(canvasH * 0.006)),
+      };
+
+      // "CAIXA COM"
+      const caixaComLayer: Layer = {
+        name: 'CAIXA COM ',
+        text: {
+          text: 'CAIXA COM',
+          style: {
+            font: { name: 'ArialMT' },
+            fontSize: Math.round(canvasH * 0.028),
+            fillColor: { r: 0, g: 0, b: 0 },
+          },
+          transform: [1, 0, 0, 1, lineMargin + 10, lineY + Math.round(canvasH * 0.038)],
+        },
+      };
+
+      // "${boxQuantity} ${boxUnitLabel}"
+      const qtyStr = `${payload.boxQuantity ?? 12} ${(payload.boxUnitLabel ?? 'UND.').toUpperCase()}`;
+      const qtyLayer: Layer = {
+        name: '12 UND. ',
+        text: {
+          text: qtyStr,
+          style: {
+            font: { name: 'Impact' },
+            fontSize: Math.round(canvasH * 0.042),
+            fillColor: { r: 0, g: 0, b: 0 },
+          },
+          transform: [1, 0, 0, 1, lineMargin + 10, lineY + Math.round(canvasH * 0.088)],
+        },
+      };
+
+      // Preço atacado inteiro (32)
+      const bWhole = payload.boxWhole ?? '0';
+      const bFrac = payload.boxFraction ?? '00';
+      const priceStartX = Math.round(canvasW * 0.44);
+
+      const wholeBoxLayer: Layer = {
+        name: '32',
+        text: {
+          text: bWhole,
+          style: {
+            font: { name: 'Zullia' },
+            fontSize: Math.round(canvasH * 0.12),
+            fillColor: { r: 0, g: 0, b: 0 },
+          },
+          transform: [1, 0, 0, 1, priceStartX, lineY + Math.round(canvasH * 0.14)],
+        },
+      };
+
+      // Vírgula atacado (,  cópia 3)
+      const commaBoxLayer: Layer = {
+        name: ',  cópia 3',
+        text: {
+          text: ',',
+          style: {
+            font: { name: 'Zullia' },
+            fontSize: Math.round(canvasH * 0.045),
+            fillColor: { r: 0, g: 0, b: 0 },
+          },
+          transform: [1, 0, 0, 1, priceStartX + Math.round(canvasW * 0.15), lineY + Math.round(canvasH * 0.14)],
+        },
+      };
+
+      // Centavos atacado (28)
+      const fracBoxLayer: Layer = {
+        name: '28',
+        text: {
+          text: bFrac,
+          style: {
+            font: { name: 'Zullia' },
+            fontSize: Math.round(canvasH * 0.068),
+            fillColor: { r: 0, g: 0, b: 0 },
+          },
+          transform: [1, 0, 0, 1, priceStartX + Math.round(canvasW * 0.16), lineY + Math.round(canvasH * 0.08)],
+        },
+      };
+
+      if (!psd.children) psd.children = [];
+      psd.children.push(dividerLayer, caixaComLayer, qtyLayer, wholeBoxLayer, commaBoxLayer, fracBoxLayer);
+      renderTextLayerToBitmap(caixaComLayer, 'CAIXA COM', psd.width, psd.height);
+      renderTextLayerToBitmap(qtyLayer, qtyStr, psd.width, psd.height);
+      renderTextLayerToBitmap(wholeBoxLayer, bWhole, psd.width, psd.height);
+      renderTextLayerToBitmap(commaBoxLayer, ',', psd.width, psd.height);
+      renderTextLayerToBitmap(fracBoxLayer, bFrac, psd.width, psd.height);
+      updatedAnyText = true;
+    } else {
+      if (payload.boxWhole && bWholeLayer && bWholeLayer.text) {
         bWholeLayer.text.text = payload.boxWhole.trim();
         renderTextLayerToBitmap(bWholeLayer, bWholeLayer.text.text, psd.width, psd.height);
         updatedAnyText = true;
       }
-    }
 
-    if (payload.boxFraction) {
-      let bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
-      if (!bFracLayer || !bFracLayer.text) {
-        bFracLayer = findFirstTextLayerMatching(psd, /^(?:28|88|48|\d{2})$/);
-        if (bFracLayer && (bFracLayer.name === mainWholeId || bFracLayer.name === mainFractionId)) {
-          bFracLayer = null;
+      if (payload.boxFraction) {
+        let bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
+        if (!bFracLayer || !bFracLayer.text) {
+          bFracLayer = findFirstTextLayerMatching(psd, /^(?:28|88|48|\d{2})$/);
+          if (bFracLayer && (bFracLayer.name === mainWholeId || bFracLayer.name === mainFractionId)) {
+            bFracLayer = null;
+          }
+        }
+        if (bFracLayer && bFracLayer.text) {
+          bFracLayer.text.text = payload.boxFraction.trim();
+          renderTextLayerToBitmap(bFracLayer, bFracLayer.text.text, psd.width, psd.height);
+          updatedAnyText = true;
         }
       }
-      if (bFracLayer && bFracLayer.text) {
-        bFracLayer.text.text = payload.boxFraction.trim();
-        renderTextLayerToBitmap(bFracLayer, bFracLayer.text.text, psd.width, psd.height);
-        updatedAnyText = true;
-      }
-    }
 
-    if (payload.boxQuantity != null || payload.boxUnitLabel) {
-      let bQtyLayer = resolveLayerByPath(psd, payload.roles.boxQtyLayerId);
-      if (!bQtyLayer || !bQtyLayer.text) {
-        bQtyLayer = findFirstTextLayerMatching(psd, /^\d+\s*(?:UND|UN|CX|PCT)\.?\s*$/i);
-      }
-      if (bQtyLayer && bQtyLayer.text) {
-        const qtyStr = `${payload.boxQuantity ?? 12} ${payload.boxUnitLabel ?? 'UND.'} `;
-        bQtyLayer.text.text = qtyStr;
-        renderTextLayerToBitmap(bQtyLayer, bQtyLayer.text.text, psd.width, psd.height);
-        updatedAnyText = true;
+      if (payload.boxQuantity != null || payload.boxUnitLabel) {
+        let bQtyLayer = resolveLayerByPath(psd, payload.roles.boxQtyLayerId);
+        if (!bQtyLayer || !bQtyLayer.text) {
+          bQtyLayer = findFirstTextLayerMatching(psd, /^\d+\s*(?:UND|UN|CX|PCT)\.?\s*$/i);
+        }
+        if (bQtyLayer && bQtyLayer.text) {
+          const qtyStr = `${payload.boxQuantity ?? 12} ${payload.boxUnitLabel ?? 'UND.'} `;
+          bQtyLayer.text.text = qtyStr;
+          renderTextLayerToBitmap(bQtyLayer, bQtyLayer.text.text, psd.width, psd.height);
+          updatedAnyText = true;
+        }
       }
     }
   }

@@ -373,7 +373,14 @@ export default function App() {
 
     let sourcePath = d.layout.template === 'imported-psd' ? d.layout.artwork.source.sourcePath : undefined;
     let sourceBuffer: ArrayBuffer | undefined;
-    if (!sourcePath || sourcePath.startsWith('/templates/')) {
+    const isCaixaMode = Boolean((d.product as any).hasBoxPrice);
+    const hasExistingCaixaLayers = d.layout.template === 'imported-psd' &&
+      d.layout.artwork.layers.some(l => /caixa\s*com/i.test(l.name || l.text || ''));
+
+    if (isCaixaMode && !hasExistingCaixaLayers) {
+      sourceBuffer = await fetchTemplateBuffer('caixa');
+      sourcePath = undefined;
+    } else if (!sourcePath || sourcePath.startsWith('/templates/')) {
       sourceBuffer = await fetchTemplateBuffer(editor.posterModel);
       sourcePath = undefined;
     }
@@ -864,6 +871,7 @@ export default function App() {
             activeFormat={activeFormat}
             onChangeField={editor.change}
             onExportPsd={handleExportOrOpenPsd}
+            onSwitchModel={editor.switchModel}
             onClose={() => setIsSurgicalOpen(false)}
             isBusy={locked.current}
           />

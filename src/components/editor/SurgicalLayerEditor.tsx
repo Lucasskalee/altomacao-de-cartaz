@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo } from 'react';
-import type { Cartaz } from '../../features/cartazes/types';
+import type { Cartaz, PosterTemplateModel } from '../../features/cartazes/types';
 import type { PosterFormatConfig } from '../../features/formatos/types';
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { PosterView, type Poster } from './PosterView';
@@ -10,6 +10,7 @@ type Props = {
   activeFormat: PosterFormatConfig;
   onChangeField: (key: string, value: any) => void;
   onExportPsd: (openPhotoshop?: boolean) => Promise<void>;
+  onSwitchModel?: (targetModel: PosterTemplateModel) => Promise<boolean>;
   onClose: () => void;
   isBusy?: boolean;
 };
@@ -19,6 +20,7 @@ export function SurgicalLayerEditor({
   activeFormat,
   onChangeField,
   onExportPsd,
+  onSwitchModel,
   onClose,
   isBusy = false,
 }: Props) {
@@ -287,50 +289,95 @@ export function SurgicalLayerEditor({
           <div className="sk-surgical-card editable">
             <div className="sk-surgical-card-head">
               <span className="sk-surgical-card-title">
-                ✏️ EDIT_Caixa_Atacado — Texto PSD
+                📦 EDIT_Caixa_Atacado — Formato Caixa
               </span>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, cursor: 'pointer', color: '#cbd5e1' }}>
                 <input
                   type="checkbox"
                   checked={Boolean(product.hasBoxPrice)}
-                  onChange={e => onChangeField('hasBoxPrice', e.target.checked)}
+                  onChange={async e => {
+                    const checked = e.target.checked;
+                    onChangeField('hasBoxPrice', checked);
+                    if (checked && !product.boxPriceCents) {
+                      const qty = Number(product.boxQuantity) || 12;
+                      onChangeField('boxPriceCents', product.priceCents * qty);
+                    }
+                    if (onSwitchModel) {
+                      await onSwitchModel(checked ? 'caixa' : 'oferta');
+                    }
+                  }}
                 />
-                Ativar
+                Ativar Formato Caixa
               </label>
             </div>
 
             {Boolean(product.hasBoxPrice) && (
-              <div style={{ display: 'grid', gridTemplateColumns: '80px 80px 1fr', gap: 8, marginTop: 4 }}>
-                <input
-                  type="number"
-                  className="sk-surgical-input"
-                  style={{ padding: '8px' }}
-                  value={product.boxQuantity || 12}
-                  min={1}
-                  onChange={e => onChangeField('boxQuantity', parseInt(e.target.value, 10) || 1)}
-                  placeholder="Qtd"
-                />
-                <input
-                  type="text"
-                  className="sk-surgical-input"
-                  style={{ padding: '8px' }}
-                  value={product.boxUnitLabel || 'UND.'}
-                  onChange={e => onChangeField('boxUnitLabel', e.target.value.toUpperCase())}
-                  placeholder="UND."
-                />
-                <input
-                  type="text"
-                  className="sk-surgical-input"
-                  style={{ padding: '8px' }}
-                  value={product.boxPriceCents ? (product.boxPriceCents / 100).toFixed(2).replace('.', ',') : ''}
-                  onChange={e => {
-                    const raw = e.target.value.replace(/[^\d,]/g, '');
-                    const [w = '0', f = '00'] = raw.split(',');
-                    const cents = (parseInt(w, 10) || 0) * 100 + (parseInt(f.padEnd(2, '0').slice(0, 2), 10) || 0);
-                    onChangeField('boxPriceCents', cents);
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '80px 80px 1fr', gap: 8 }}>
+                  <div>
+                    <label style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>Quantidade</label>
+                    <input
+                      type="number"
+                      className="sk-surgical-input"
+                      style={{ padding: '8px' }}
+                      value={product.boxQuantity || 12}
+                      min={1}
+                      onChange={e => {
+                        const q = parseInt(e.target.value, 10) || 1;
+                        onChangeField('boxQuantity', q);
+                        onChangeField('boxPriceCents', product.priceCents * q);
+                      }}
+                      placeholder="Qtd"
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>Embalagem</label>
+                    <input
+                      type="text"
+                      className="sk-surgical-input"
+                      style={{ padding: '8px' }}
+                      value={product.boxUnitLabel || 'UND.'}
+                      onChange={e => onChangeField('boxUnitLabel', e.target.value.toUpperCase())}
+                      placeholder="UND."
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>Preço da Caixa (R$)</label>
+                    <input
+                      type="text"
+                      className="sk-surgical-input"
+                      style={{ padding: '8px' }}
+                      value={product.boxPriceCents ? (product.boxPriceCents / 100).toFixed(2).replace('.', ',') : ''}
+                      onChange={e => {
+                        const raw = e.target.value.replace(/[^\d,]/g, '');
+                        const [w = '0', f = '00'] = raw.split(',');
+                        const cents = (parseInt(w, 10) || 0) * 100 + (parseInt(f.padEnd(2, '0').slice(0, 2), 10) || 0);
+                        onChangeField('boxPriceCents', cents);
+                      }}
+                      placeholder="Total Caixa"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  style={{
+                    background: '#1e293b',
+                    border: '1px solid #334155',
+                    color: '#cbd5e1',
+                    fontSize: 11,
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    alignSelf: 'flex-start',
                   }}
-                  placeholder="Total Caixa"
-                />
+                  onClick={() => {
+                    const q = Number(product.boxQuantity) || 12;
+                    onChangeField('boxPriceCents', product.priceCents * q);
+                  }}
+                  title="Recalcula Preço da Caixa = Preço Unitário × Quantidade"
+                >
+                  ⚡ Recalcular Automático (R$ {((product.priceCents * (Number(product.boxQuantity) || 12)) / 100).toFixed(2).replace('.', ',')})
+                </button>
               </div>
             )}
           </div>
