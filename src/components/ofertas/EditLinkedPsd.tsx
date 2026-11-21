@@ -7,10 +7,10 @@ import { readPsdByPath, selectPsd } from '../../features/psd/service';
 import { PosterView } from '../editor/PosterView';
 
 const textRoles: { role: ImportedTextRole; label: string; maxLength: number }[] = [
-  { role: 'category', label: 'Categoria', maxLength: 32 },
-  { role: 'title', label: 'Nome / marca', maxLength: 32 },
-  { role: 'complement', label: 'Complemento / sabor', maxLength: 28 },
-  { role: 'packaging', label: 'Embalagem', maxLength: 12 },
+  { role: 'category', label: 'Categoria', maxLength: 100 },
+  { role: 'title', label: 'Nome / marca', maxLength: 100 },
+  { role: 'complement', label: 'Complemento / sabor', maxLength: 100 },
+  { role: 'packaging', label: 'Embalagem', maxLength: 20 },
 ];
 
 type Props = {

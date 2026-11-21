@@ -574,7 +574,16 @@ export function buildCampaignMatchViews(campaign: OfferCampaign, library: Indexe
     const linkedPaths = new Set(posters.map(p => normalizedPath(p.cartazPath)));
     const linkedContent = new Set<string>();
     const matchedPosters = posters.flatMap(state => {
-      const lib = byPath.get(normalizedPath(state.cartazPath)) ?? matchingCartazes.find(m => m.document.id === state.cartazId) ?? null;
+      let lib = byPath.get(normalizedPath(state.cartazPath)) ?? matchingCartazes.find(m => m.document.id === state.cartazId) ?? null;
+      if (!lib && matchingCartazes.length > 0) {
+        // Auto-cura de vínculos: se o arquivo .psd ou caminho original não foi encontrado como .skcartaz no byPath,
+        // mas a biblioteca possui um cartaz com o mesmo F7 do item ou mesmo nome:
+        const cleanBase = state.cartazPath.split(/[\\/]/).pop()?.replace(/\.(?:psd|skcartaz)$/i, '').toLowerCase();
+        lib = matchingCartazes.find(m => {
+          const mBase = m.path.split(/[\\/]/).pop()?.replace(/\.(?:psd|skcartaz)$/i, '').toLowerCase();
+          return mBase === cleanBase || (cleanBase && mBase?.includes(cleanBase)) || (mBase && cleanBase?.includes(mBase));
+        }) ?? (matchingCartazes.length === 1 ? matchingCartazes[0] : null);
+      }
       if (lib) {
         const key = cartazContentKey(lib.document);
         if (linkedContent.has(key)) return [];

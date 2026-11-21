@@ -859,6 +859,40 @@ export function OfferFolders({
     if (onRefreshLibrary) await onRefreshLibrary();
   };
 
+  const handleConvertAllToA6 = async () => {
+    if (!activeCampaign) return;
+    let convertedCount = 0;
+    for (const v of matchViews) {
+      for (const m of v.matchedPosters) {
+        if (m.libraryCartaz) {
+          const currentPaper = m.libraryCartaz.document.layout.paper;
+          if (currentPaper !== 'A6') {
+            const updatedDoc: Cartaz = {
+              ...m.libraryCartaz.document,
+              layout: {
+                ...m.libraryCartaz.document.layout,
+                paper: 'A6',
+              },
+              metadata: {
+                ...m.libraryCartaz.document.metadata,
+                updatedAt: new Date().toISOString(),
+              },
+            };
+            await saveDocument(m.state.cartazPath, updatedDoc, true);
+            convertedCount++;
+          }
+        }
+      }
+    }
+    if (onRefreshLibrary) await onRefreshLibrary();
+    setFormatTab('A6');
+    alert(
+      convertedCount > 0
+        ? `${convertedCount} cartaz(es) foram alterados para Pequenos (A6) com sucesso!`
+        : 'Todos os cartazes já estão configurados no formato Pequenos (A6).'
+    );
+  };
+
   const handleApplyPriceToLibrary = async (cartazPath: string, doc: Cartaz, newPriceCents: number) => {
     const updatedDoc: Cartaz = {
       ...doc,
@@ -1230,6 +1264,14 @@ export function OfferFolders({
                   </button>
                   <button className="subtle" onClick={() => run(handleSyncLibrary)}>
                     Localizar cartazes na biblioteca
+                  </button>
+                  <button
+                    className="subtle"
+                    style={{ color: '#16a34a', fontWeight: 700 }}
+                    title="Altera o formato de todos os cartazes desta pasta para Pequeno (A6)"
+                    onClick={() => run(handleConvertAllToA6)}
+                  >
+                    🏷️ Definir todos como Pequenos (A6)
                   </button>
                   <button
                     className="subtle"
@@ -1804,22 +1846,47 @@ export function OfferFolders({
                                                   const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
                                                   const badge = getFormatBadge(fmt);
                                                   return (
-                                                    <span
+                                                    <select
+                                                      value={fmt}
                                                       style={{
                                                         fontSize: 10.5,
                                                         fontWeight: 700,
-                                                        padding: '2px 7px',
+                                                        padding: '1px 5px',
                                                         borderRadius: 6,
                                                         background: badge.bg,
                                                         color: badge.text,
-                                                        display: 'inline-flex',
-                                                        alignItems: 'center',
-                                                        gap: 4,
+                                                        border: `1px solid ${badge.text}`,
+                                                        cursor: 'pointer',
                                                       }}
-                                                    >
-                                                      {badge.icon} {badge.label}
-                                                    </span>
-                                                  );
+                                                      title="Alterar formato deste cartaz (A6, A5, A4, etc.)"
+                                                      onChange={e => {
+                                                        const newFormat = e.target.value as PaperFormat;
+                                                        if (m.libraryCartaz) {
+                                                          run(async () => {
+                                                            const updatedDoc: Cartaz = {
+                                                              ...m.libraryCartaz!.document,
+                                                              layout: {
+                                                                ...m.libraryCartaz!.document.layout,
+                                                                paper: newFormat,
+                                                             },
+                                                             metadata: {
+                                                               ...m.libraryCartaz!.document.metadata,
+                                                               updatedAt: new Date().toISOString(),
+                                                             },
+                                                           };
+                                                           await saveDocument(m.state.cartazPath, updatedDoc, true);
+                                                           if (onRefreshLibrary) await onRefreshLibrary();
+                                                         });
+                                                       }
+                                                     }}
+                                                   >
+                                                     <option value="A6">🏷️ Pequeno (A6)</option>
+                                                     <option value="A5">📐 Médio (A5)</option>
+                                                     <option value="A4">📄 Cartaz A4</option>
+                                                     <option value="A3">🥩 Açougue (A3)</option>
+                                                     <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
+                                                   </select>
+                                                 );
                                                 })()}
                                                 {Boolean((m.scheduledDocument?.product as any)?.hasBoxPrice) && (
                                                   <span

@@ -251,11 +251,27 @@ export function extractMetadata(layers: ImportedLayerInfo[], roles: PsdRoleMap):
   const visible = layers.filter(layer => layer.visible && !excluded.has(layer.id));
   const unitLayer = visible.find(layer => unitRegex.test((layer.text ?? layer.name).trim()));
   const unit = unitLayer ? (unitLayer.text ?? unitLayer.name).trim().toUpperCase().slice(0, 12) : '';
-  const textLayers = visible
-    .filter(layer => layer.type === 'text' && layer.text && layer.id !== unitLayer?.id && !/^[\d,.\sR$]+$/i.test(layer.text.trim()) && !unitRegex.test(layer.text.trim()) && !validityRegex.test(layer.text.trim()))
-    .sort((a, b) => a.bounds.top - b.bounds.top);
-  const name = (textLayers[0]?.text ?? '').trim().toUpperCase().slice(0, 32);
-  const complement = (textLayers[1]?.text ?? '').trim().toUpperCase().slice(0, 28);
+
+  const templateRoles = suggestTemplateLayers(layers, roles);
+  let name = '';
+  let complement = '';
+
+  if (templateRoles.title) {
+    const tLayer = layers.find(l => l.id === templateRoles.title);
+    name = (tLayer?.text ?? tLayer?.name ?? '').trim().toUpperCase().slice(0, 100);
+  }
+  if (templateRoles.complement) {
+    const cLayer = layers.find(l => l.id === templateRoles.complement);
+    complement = (cLayer?.text ?? cLayer?.name ?? '').trim().toUpperCase().slice(0, 100);
+  }
+  if (!name) {
+    const textLayers = visible
+      .filter(layer => layer.type === 'text' && layer.text && layer.id !== unitLayer?.id && !/^[\d,.\sR$]+$/i.test(layer.text.trim()) && !unitRegex.test(layer.text.trim()) && !validityRegex.test(layer.text.trim()))
+      .sort((a, b) => a.bounds.top - b.bounds.top);
+    name = (textLayers[0]?.text ?? '').trim().toUpperCase().slice(0, 100);
+    complement = (textLayers[1]?.text ?? '').trim().toUpperCase().slice(0, 100);
+  }
+
   const price = extractPriceFromRoles(layers, roles);
   const validityText = extractValidityFromRoles(layers, roles);
   return { name, complement, unit, price, validityText };

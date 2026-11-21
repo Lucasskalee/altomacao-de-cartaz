@@ -147,7 +147,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
         productCode: f7.trim() || null,
         priceCents: libraryPriceCents,
       };
-      document.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
+      document.layout = { template: 'imported-psd', paper: 'A6', orientation: 'portrait', artwork };
       document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
 
       const suggestedName = analysis?.fileName
@@ -258,7 +258,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
               <div>
                 <h3>{offerContext ? `Prévia da oferta (R$ ${price})` : 'Teste do preço'}</h3>
                 {artwork && validPrice ? (
-                  <PosterView poster={{ name, detail: complement, unit, price, category: analysis?.templateSuggested?.category ? analysis?.metadata?.name : undefined, artwork }} />
+                  <PosterView poster={{ name, detail: complement, unit, price, artwork }} />
                 ) : (
                   <p className="empty">
                     Mapeie reais e centavos e informe um preço válido para gerar a prévia editável.
@@ -284,7 +284,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
               <label>
                 Nome
                 <input
-                  maxLength={32}
+                  maxLength={100}
                   placeholder="Extraído das camadas ou informe…"
                   value={name}
                   onChange={event => setName(event.target.value.toUpperCase())}
@@ -293,7 +293,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
               <label>
                 Complemento
                 <input
-                  maxLength={28}
+                  maxLength={100}
                   placeholder="Opcional"
                   value={complement}
                   onChange={event => setComplement(event.target.value.toUpperCase())}

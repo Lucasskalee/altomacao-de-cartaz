@@ -1073,7 +1073,7 @@ export default function App() {
                   <input
                     className="editor-input"
                     value={((editor.document.product as any).category as string) || poster.category || ''}
-                    maxLength={32}
+                    maxLength={100}
                     onChange={e => editor.change('category', e.target.value.toUpperCase())}
                   />
                 </div>
@@ -1086,7 +1086,7 @@ export default function App() {
                   style={{ fontWeight: 700 }}
                   disabled={imported && !hasTextRole('title')}
                   value={poster.name}
-                  maxLength={32}
+                  maxLength={100}
                   onChange={e => editor.change('name', e.target.value.toUpperCase())}
                 />
               </div>
@@ -1097,7 +1097,7 @@ export default function App() {
                   className="editor-input"
                   disabled={imported && !hasTextRole('complement')}
                   value={poster.detail}
-                  maxLength={28}
+                  maxLength={100}
                   onChange={e => editor.change('complement', e.target.value.toUpperCase())}
                 />
               </div>

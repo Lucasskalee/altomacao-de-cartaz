@@ -222,12 +222,12 @@ export function SurgicalLayerEditor({
                 type="text"
                 className="sk-surgical-input"
                 value={product.name || ''}
-                maxLength={32}
+                maxLength={100}
                 onChange={e => onChangeField('name', e.target.value.toUpperCase())}
                 placeholder="Ex: OFERTA ESPECIAL DA SEMANA"
               />
               <span className="sk-surgical-char-counter">
-                ({(product.name || '').length}/32)
+                ({(product.name || '').length}/100)
               </span>
             </div>
 
@@ -237,12 +237,12 @@ export function SurgicalLayerEditor({
                 type="text"
                 className="sk-surgical-input"
                 value={product.complement || ''}
-                maxLength={28}
+                maxLength={100}
                 onChange={e => onChangeField('complement', e.target.value.toUpperCase())}
                 placeholder="Complemento / Sabor / Marca (Opcional)"
               />
               <span className="sk-surgical-char-counter">
-                ({(product.complement || '').length}/28)
+                ({(product.complement || '').length}/100)
               </span>
             </div>
           </div>
