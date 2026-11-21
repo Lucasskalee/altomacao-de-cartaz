@@ -985,6 +985,7 @@ export function OfferFolders({
             currentPriceCents: m.currentPriceCents,
             priceMismatchReason: m.priceMismatchReason,
             poster: posterFromDocument(m.scheduledDocument),
+            doc: m.scheduledDocument,
           };
         }
       }
@@ -998,6 +999,7 @@ export function OfferFolders({
             currentPriceCents: m.currentPriceCents,
             priceMismatchReason: m.priceMismatchReason,
             poster: posterFromDocument(m.scheduledDocument),
+            doc: m.scheduledDocument,
           };
         }
       }
@@ -1124,6 +1126,22 @@ export function OfferFolders({
     }
     setAwaitingPrintConfirm({ keys, count: distinctPostersCount });
     const targetPaper = formatTab === 'todos' ? 'A6' : formatTab;
+    onPrintBatch(queue, { formatConfig: { paper: targetPaper, orientation: 'portrait' } });
+  };
+
+  const handlePrintSinglePoster = (
+    doc?: Cartaz | null,
+    cartazPath?: string,
+    copies = 1,
+    explicitPoster?: Poster
+  ) => {
+    const poster = explicitPoster ?? (doc ? posterFromDocument(doc) : null);
+    if (!poster) return;
+    const targetPaper = getPosterPaperFormat(doc, cartazPath);
+    const queue: Poster[] = [];
+    for (let i = 0; i < copies; i++) {
+      queue.push(poster);
+    }
     onPrintBatch(queue, { formatConfig: { paper: targetPaper, orientation: 'portrait' } });
   };
 
@@ -1985,6 +2003,32 @@ export function OfferFolders({
                                             </button>
                                             <button
                                               type="button"
+                                              style={{
+                                                padding: '5px 10px',
+                                                fontSize: 12,
+                                                fontWeight: 700,
+                                                background: '#16a34a',
+                                                color: '#ffffff',
+                                                borderRadius: 6,
+                                                cursor: 'pointer',
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 4,
+                                                border: 'none',
+                                                boxShadow: '0 1px 3px rgba(22,163,74,0.3)',
+                                              }}
+                                              title="Imprimir 1 teste deste cartaz agora na impressora"
+                                              onClick={() => {
+                                                setPreviewKey(key);
+                                                if (m.scheduledDocument) {
+                                                  handlePrintSinglePoster(m.scheduledDocument, m.state.cartazPath, 1);
+                                                }
+                                              }}
+                                            >
+                                              🖨️ Imprimir
+                                            </button>
+                                            <button
+                                              type="button"
                                               className="subtle"
                                               style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600 }}
                                               title="Trocar a imagem / arte de referência deste produto por outro PSD"
@@ -2083,7 +2127,7 @@ export function OfferFolders({
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                         <h3 style={{ margin: 0, fontSize: 14 }}>Prévia do Cartaz</h3>
                         {selectedPosterPreview && (() => {
-                          const fmt = getPosterPaperFormat(null, selectedPosterPreview.posterState.cartazPath);
+                          const fmt = getPosterPaperFormat(selectedPosterPreview.doc, selectedPosterPreview.posterState.cartazPath);
                           const badge = getFormatBadge(fmt);
                           return (
                             <span
@@ -2116,6 +2160,37 @@ export function OfferFolders({
                               📄 {selectedPosterPreview.posterState.cartazPath.split(/[\\/]/).pop()}
                             </div>
                           </div>
+                          <button
+                            type="button"
+                            style={{
+                              width: '100%',
+                              marginBottom: 10,
+                              padding: '9px 12px',
+                              fontSize: 13,
+                              fontWeight: 700,
+                              background: '#16a34a',
+                              color: '#ffffff',
+                              borderRadius: 8,
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 6,
+                              border: 'none',
+                              boxShadow: '0 2px 4px rgba(22,163,74,0.3)',
+                            }}
+                            title="Imprimir 1 teste deste cartaz na impressora agora"
+                            onClick={() => {
+                              handlePrintSinglePoster(
+                                selectedPosterPreview.doc,
+                                selectedPosterPreview.posterState.cartazPath,
+                                1,
+                                selectedPosterPreview.poster
+                              );
+                            }}
+                          >
+                            🖨️ Imprimir este Cartaz (Teste na Impressora)
+                          </button>
                           <div className="paper-wrap">
                             <PosterView poster={selectedPosterPreview.poster} />
                           </div>
