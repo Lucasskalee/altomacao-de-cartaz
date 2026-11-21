@@ -88,7 +88,11 @@ export async function switchPosterModel(
   currentDoc: Cartaz,
   targetModel: PosterTemplateModel
 ): Promise<Cartaz> {
-  const artwork = await getOfficialArtwork(targetModel);
+  // Se o cartaz já for um PSD customizado importado, preservamos a arte original do usuário
+  // e apenas adaptamos as propriedades e modelo (evita sobrescrever com o cartaz de Cerveja Heineken)
+  const artwork = currentDoc.layout.template === 'imported-psd'
+    ? { ...currentDoc.layout.artwork, posterModel: targetModel }
+    : await getOfficialArtwork(targetModel);
   const currentProd = currentDoc.product as any;
   const currentModel = getPosterModel(currentDoc);
   let validityText = currentProd.validityText ?? '';

@@ -726,16 +726,23 @@ export async function exportDerivedPsdDirect(
     const mainWholeId = payload.roles.wholeLayerId;
     const mainFractionId = payload.roles.fractionLayerId;
 
-    let bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
-    if (!bWholeLayer || !bWholeLayer.text) {
-      // Procura camada com valor de atacado (ex: '32') diferente da camada de preço unitário
-      bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
-      if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
-        bWholeLayer = null;
+    const hasNativeBoxStructure = Boolean(
+      (payload.roles.boxWholeLayerId && resolveLayerByPath(psd, payload.roles.boxWholeLayerId)) ||
+      findFirstTextLayerMatching(psd, /caixa\s+com|fardo\s+com/i)
+    );
+
+    let bWholeLayer: Layer | null = null;
+    if (hasNativeBoxStructure) {
+      bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
+      if (!bWholeLayer || !bWholeLayer.text) {
+        bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
+        if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
+          bWholeLayer = null;
+        }
       }
     }
 
-    if (!bWholeLayer && (payload.hasBoxPrice || payload.boxWhole)) {
+    if (!hasNativeBoxStructure && (payload.hasBoxPrice || payload.boxWhole)) {
       // Injeta cirurgicamente as camadas do formato de caixa no PSD para o Photoshop CS6
       const canvasW = psd.width;
       const canvasH = psd.height;

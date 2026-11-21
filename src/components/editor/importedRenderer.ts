@@ -393,12 +393,62 @@ export async function drawImported(
   for (const part of parts) {
     drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
   }
-  if (artwork.templateParts) {
+  if (artwork.templateParts && artwork.templateParts.length > 0) {
     for (const part of artwork.templateParts) {
       drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
     }
+  } else if (artwork.layers && artwork.layers.length > 0) {
+    // Fallback retrocompatível: localiza camadas de texto dinâmicas (título/marca) em cartazes antigos
+    const priceLayerIds = new Set((artwork.priceParts || []).map(p => p.layerId));
+    const nonPriceTextLayers = artwork.layers.filter(l =>
+      l.visible && l.type === 'text' && !priceLayerIds.has(l.id) &&
+      l.text && !/^[\d,.\sR$]+$/i.test(l.text.trim()) &&
+      !/(?:pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca)/i.test(l.text.trim())
+    ).sort((a, b) => a.bounds.top - b.bounds.top);
+
+    if (nonPriceTextLayers[0]) {
+      const titleLayer = nonPriceTextLayers[0];
+      const titlePart: ImportedPricePart = {
+        role: 'title',
+        layerId: titleLayer.id,
+        bounds: titleLayer.bounds,
+        fontFamily: titleLayer.font || 'Brush Hand New',
+        originalText: titleLayer.text,
+        color: '#000000',
+      };
+      drawPart(context, titlePart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
+    }
+    if (nonPriceTextLayers[1]) {
+      const compLayer = nonPriceTextLayers[1];
+      const compPart: ImportedPricePart = {
+        role: 'complement',
+        layerId: compLayer.id,
+        bounds: compLayer.bounds,
+        fontFamily: compLayer.font || 'Arial Black',
+        originalText: compLayer.text,
+        color: '#000000',
+      };
+      drawPart(context, compPart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
+    }
+    const unitRegex = /^(?:UN|UND|KG|G|L|ML|PCT|CX|LATA|PACOTE|PE[CÇ]A)\b/i;
+    const packLayer = artwork.layers.find(l => l.visible && l.type === 'text' && !priceLayerIds.has(l.id) && unitRegex.test((l.text ?? l.name).trim()));
+    if (packLayer) {
+      const packPart: ImportedPricePart = {
+        role: 'packaging',
+        layerId: packLayer.id,
+        bounds: packLayer.bounds,
+        fontFamily: packLayer.font || 'Brush Hand New',
+        originalText: packLayer.text,
+        color: '#000000',
+      };
+      drawPart(context, packPart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
+    }
   }
-  if (dynamicTexts?.hasBoxPrice && dynamicTexts?.boxPrice) {
+
+  const hasNativeBoxLayers = Boolean(
+    artwork.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name))
+  );
+  if (dynamicTexts?.hasBoxPrice && dynamicTexts?.boxPrice && !hasNativeBoxLayers) {
     drawBoxPriceSection(
       context,
       artwork,
@@ -608,8 +658,11 @@ function drawPart(
   const font = part.fontFamily || (part.role === 'validity' ? 'ArialMT, Arial, sans-serif' : 'Zullia');
   context.save();
 
-  // Adaptação cirúrgica de escala e posição quando formato de Caixa está ativo em template clássico
-  const isCaixaAdapted = Boolean(dynamicTexts?.hasBoxPrice && artwork?.posterModel !== 'caixa');
+  // Adaptação cirúrgica de escala e posição quando formato de Caixa está ativo em template que não possui camadas nativas de caixa
+  const hasNativeBox = Boolean(
+    artwork?.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name))
+  );
+  const isCaixaAdapted = Boolean(dynamicTexts?.hasBoxPrice && !hasNativeBox);
   const isPricePart = part.role === 'whole' || part.role === 'fraction' || part.role === 'decimal' || part.role === 'fractionRule' || part.role === 'packaging';
   if (isCaixaAdapted && isPricePart) {
     const canvasW = artwork?.canvas.width ?? 886;
@@ -629,7 +682,7 @@ function drawPart(
     context.shadowColor = part.shadow.color;
   }
   if (part.role === 'category') {
-    const text = (dynamicTexts?.category ?? part.originalText ?? '').trim();
+    const text = (dynamicTexts ? (dynamicTexts.category ?? '') : (part.originalText ?? '')).trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -637,7 +690,7 @@ function drawPart(
     return;
   }
   if (part.role === 'title') {
-    const text = (dynamicTexts?.name ?? part.originalText ?? '').trim();
+    const text = (dynamicTexts ? (dynamicTexts.name || part.originalText || '') : (part.originalText ?? '')).trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -645,7 +698,7 @@ function drawPart(
     return;
   }
   if (part.role === 'complement') {
-    const text = (dynamicTexts?.complement ?? part.originalText ?? '').trim();
+    const text = (dynamicTexts ? (dynamicTexts.complement ?? '') : (part.originalText ?? '')).trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -653,7 +706,7 @@ function drawPart(
     return;
   }
   if (part.role === 'packaging') {
-    const text = (dynamicTexts?.unit ?? part.originalText ?? '').trim();
+    const text = (dynamicTexts ? (dynamicTexts.unit || part.originalText || '') : (part.originalText ?? '')).trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);

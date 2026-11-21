@@ -269,15 +269,14 @@ export function buildArtwork(
   if (!roles.whole || !roles.fraction) throw new Error('Selecione as camadas de reais e centavos.');
   const selected = new Set(Object.values(roles).filter(Boolean) as string[]);
   if (selected.size !== Object.values(roles).filter(Boolean).length) throw new Error('Cada função do preço deve usar uma camada diferente.');
-  const templateSelected = new Set(templateRoles ? (Object.values(templateRoles).filter(Boolean) as string[]) : []);
+  const effectiveTemplateRoles = templateRoles ?? analysis.templateSuggested ?? {};
+  const templateSelected = new Set(Object.values(effectiveTemplateRoles).filter(Boolean) as string[]);
   const allExcluded = new Set([...selected, ...templateSelected]);
   const staticBackground = composeStatic(analysis, allExcluded);
   const priceParts = (Object.entries(roles) as [ImportedPriceRole,string | undefined][]).flatMap(([role,id]) => id ? [partFromLayer(role,id,analysis)] : []);
-  const templateParts = templateRoles
-    ? (Object.entries(templateRoles) as [ImportedTextRole, string | undefined][]).flatMap(([role, id]) =>
-        id ? [partFromLayer(role, id, analysis)] : []
-      )
-    : undefined;
+  const templateParts = (Object.entries(effectiveTemplateRoles) as [ImportedTextRole, string | undefined][]).flatMap(([role, id]) =>
+    id ? [partFromLayer(role, id, analysis)] : []
+  );
   const warnings = [...analysis.warnings], preparation: string[] = [];
   const wholePart = priceParts.find(item => item.role === 'whole');
   const fractionPart = priceParts.find(item => item.role === 'fraction');

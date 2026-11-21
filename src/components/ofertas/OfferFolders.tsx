@@ -435,7 +435,7 @@ export function OfferFolders({
     if (!roles.whole || !roles.fraction) {
       throw new Error(`Não foi possível detectar as camadas de preço no PSD "${psdData.name}".`);
     }
-    let artwork = buildArtwork(analysis, roles);
+    let artwork = buildArtwork(analysis, roles, analysis.templateSuggested);
     let libraryBasePriceCents: number | null = null;
     if (hasInvertedPsdPriceParts(artwork)) {
       const repaired = repairInvertedPsdArtwork(artwork);

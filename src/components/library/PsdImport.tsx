@@ -49,7 +49,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
   const artwork = useMemo(() => {
     if (!analysis) return null;
     try {
-      return buildArtwork(analysis, roles);
+      return buildArtwork(analysis, roles, analysis.templateSuggested);
     } catch {
       return null;
     }
@@ -258,7 +258,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
               <div>
                 <h3>{offerContext ? `Prévia da oferta (R$ ${price})` : 'Teste do preço'}</h3>
                 {artwork && validPrice ? (
-                  <PosterView poster={{ name, detail: complement, unit, price, artwork }} />
+                  <PosterView poster={{ name, detail: complement, unit, price, category: analysis?.templateSuggested?.category ? analysis?.metadata?.name : undefined, artwork }} />
                 ) : (
                   <p className="empty">
                     Mapeie reais e centavos e informe um preço válido para gerar a prévia editável.

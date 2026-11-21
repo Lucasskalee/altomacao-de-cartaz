@@ -322,7 +322,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
         validity: view.item.validityLayerId ?? analysis.suggested.validity ?? undefined,
       };
       if (roles.whole && roles.fraction) {
-        let built = buildArtwork(analysis, roles);
+        let built = buildArtwork(analysis, roles, analysis.templateSuggested);
         if (hasInvertedPsdPriceParts(built)) {
           built = repairInvertedPsdArtwork(built).artwork;
         }
@@ -433,7 +433,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     let builtArtwork: ImportedArtwork | null = null;
     if (roles.whole && roles.fraction) {
       try {
-        builtArtwork = buildArtwork(analysis, roles);
+        builtArtwork = buildArtwork(analysis, roles, analysis.templateSuggested);
       } catch {
         builtArtwork = null;
       }
@@ -467,7 +467,7 @@ export function ScantechCreator({ libraryData, run, onRefreshLibrary, onPrintBat
     let builtArtwork: ImportedArtwork | null = null;
     if (roles.whole && roles.fraction) {
       try {
-        builtArtwork = buildArtwork(analysis, roles);
+        builtArtwork = buildArtwork(analysis, roles, analysis.templateSuggested);
       } catch {
         builtArtwork = null;
       }
