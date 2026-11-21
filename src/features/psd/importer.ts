@@ -364,13 +364,19 @@ function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): I
   const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
   const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
   const stroke = layer.effects?.stroke?.find(item => item.enabled !== false);
-  const distance = shadow?.distance?.value ?? 0, angle = (shadow?.angle ?? 120) * Math.PI / 180;
+  const rawDist = typeof shadow?.distance === 'number' ? shadow.distance : (shadow?.distance?.value ?? 0);
+  const isPrice = role === 'whole' || role === 'fraction' || role === 'decimal' || role === 'fractionRule';
+  const distance = rawDist || (isPrice ? 12 : 0);
+  const rawAngle = typeof shadow?.angle === 'number' ? shadow.angle : 120;
+  const angle = rawAngle * Math.PI / 180;
+  const size = typeof shadow?.size === 'number' ? shadow.size : (shadow?.size?.value ?? 0);
+  const hasShadow = Boolean(shadow || isPrice);
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
     color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as any, role),
-    shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
-    stroke: stroke ? { size: stroke.size?.value ?? 0, color: '#000000' } : undefined,
+    shadow: hasShadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: size, color: '#000000' } : undefined,
+    stroke: stroke ? { size: typeof stroke.size === 'number' ? stroke.size : (stroke.size?.value ?? 0), color: '#000000' } : undefined,
   };
 }
 

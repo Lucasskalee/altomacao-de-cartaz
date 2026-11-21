@@ -40,14 +40,38 @@ function renderTransformedGlyphs(
   shadow?: { dx: number; dy: number; blur: number; color: string }
 ) {
   const [a, bm, c, d, tx, ty] = transform;
-  const det = a * d - bm * c;
   const scaleY = Math.hypot(c, d);
-
-  const localShadowDx = (shadow && det !== 0) ? (d * shadow.dx - c * shadow.dy) / det : (shadow?.dx ?? 0);
-  const localShadowDy = (shadow && det !== 0) ? (-bm * shadow.dx + a * shadow.dy) / det : (shadow?.dy ?? 0);
-  const localShadowBlur = (shadow?.blur ?? 0) / Math.max(1, scaleY);
   const localLineWidth = ((stroke?.size ?? 0) / Math.max(1, scaleY)) * 2;
 
+  // Pass 1: Sombra projetada fiel ao Photoshop (renderizada como silhueta sólida deslocada no canvas)
+  if (shadow && (shadow.dx !== 0 || shadow.dy !== 0 || shadow.blur > 0)) {
+    context.save();
+    context.transform(a, bm, c, d, tx + shadow.dx, ty + shadow.dy);
+    context.font = fontStr;
+    context.textAlign = 'center';
+    context.textBaseline = 'alphabetic';
+
+    if (shadow.blur > 0) {
+      context.shadowOffsetX = 0;
+      context.shadowOffsetY = 0;
+      context.shadowBlur = shadow.blur;
+      context.shadowColor = shadow.color || '#000000';
+    }
+
+    if (stroke && stroke.size > 0) {
+      context.save();
+      context.lineWidth = localLineWidth;
+      context.strokeStyle = shadow.color || '#000000';
+      context.strokeText(text, 0, 0);
+      context.restore();
+    }
+
+    context.fillStyle = shadow.color || '#000000';
+    context.fillText(text, 0, 0);
+    context.restore();
+  }
+
+  // Pass 2: Texto frontal com miolo e contorno nítidos
   context.save();
   context.transform(a, bm, c, d, tx, ty);
   context.font = fontStr;
@@ -58,32 +82,12 @@ function renderTransformedGlyphs(
     context.save();
     context.lineWidth = localLineWidth;
     context.strokeStyle = stroke.color || '#000000';
-    if (shadow) {
-      context.shadowOffsetX = localShadowDx;
-      context.shadowOffsetY = localShadowDy;
-      context.shadowBlur = localShadowBlur;
-      context.shadowColor = shadow.color || '#000000';
-    }
     context.strokeText(text, 0, 0);
     context.restore();
-
-    // Preenchimento com miolo limpo (sem sombra duplicada interna)
-    context.save();
-    context.shadowColor = 'transparent';
-    context.fillStyle = fillColor;
-    context.fillText(text, 0, 0);
-    context.restore();
-  } else {
-    if (shadow) {
-      context.shadowOffsetX = localShadowDx;
-      context.shadowOffsetY = localShadowDy;
-      context.shadowBlur = localShadowBlur;
-      context.shadowColor = shadow.color || '#000000';
-    }
-    context.fillStyle = fillColor;
-    context.fillText(text, 0, 0);
   }
 
+  context.fillStyle = fillColor;
+  context.fillText(text, 0, 0);
   context.restore();
 }
 
@@ -629,12 +633,6 @@ function drawPart(
   }
 
   context.fillStyle = part.color;
-  if (part.shadow) {
-    context.shadowOffsetX = part.shadow.dx;
-    context.shadowOffsetY = part.shadow.dy;
-    context.shadowBlur = part.shadow.blur;
-    context.shadowColor = part.shadow.color;
-  }
   if (part.role === 'category') {
     const text = (dynamicTexts?.category || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
@@ -668,6 +666,13 @@ function drawPart(
     return;
   }
   if (part.role === 'fractionRule') {
+    const shadow = part.shadow || { dx: 6, dy: 10, blur: 0, color: '#000000' };
+    if (shadow && (shadow.dx !== 0 || shadow.dy !== 0)) {
+      context.save();
+      context.fillStyle = shadow.color || '#000000';
+      context.fillRect(b.left + shadow.dx, b.top + shadow.dy, b.right - b.left, b.bottom - b.top);
+      context.restore();
+    }
     context.fillRect(b.left, b.top, b.right - b.left, b.bottom - b.top);
     context.restore();
     return;
@@ -721,6 +726,9 @@ function drawPart(
   const resolvedFont = resolveFontFamily(part.fontFamily, 'Zullia, sans-serif');
   const fontStr = `400 ${part.fontSize || height * 1.14}px ${resolvedFont}`;
 
+  const isPriceNumber = part.role === 'whole' || part.role === 'fraction' || part.role === 'decimal' || part.role === 'fractionRule';
+  const effectiveShadow = part.shadow || (isPriceNumber ? { dx: 6, dy: 10, blur: 0, color: '#000000' } : undefined);
+
   if (part.transform && part.fontSize) {
     if (part.role === 'whole') {
       const [a, bm, c, d, e, f] = part.transform;
@@ -728,7 +736,7 @@ function drawPart(
 
       const isUnchanged = value === (part.originalText ?? '').trim();
       if (isUnchanged) {
-        renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, part.shadow);
+        renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, effectiveShadow);
         context.restore();
         return;
       }
@@ -759,13 +767,13 @@ function drawPart(
         targetTy,
       ];
 
-      renderTransformedGlyphs(context, value, finalTransform, fontStr, part.color, part.stroke, part.shadow);
+      renderTransformedGlyphs(context, value, finalTransform, fontStr, part.color, part.stroke, effectiveShadow);
       context.restore();
       return;
     }
 
     // Centavos e vírgula usam o transform original do PSD com renderização precisa de sombra e stroke
-    renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, part.shadow);
+    renderTransformedGlyphs(context, value, part.transform, fontStr, part.color, part.stroke, effectiveShadow);
     context.restore();
     return;
   }
@@ -774,17 +782,41 @@ function drawPart(
   context.font = `400 ${fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
   context.textBaseline = 'alphabetic';
   if (part.role === 'whole') {
-    context.textAlign = 'right';
     const available = wholeAdjustment.availableWidth;
     const measured = Math.max(1, context.measureText(value).width);
     const hScale = measured > available ? Math.max(MIN_SAFE_HORIZONTAL_SCALE, available / measured) : 1;
     const targetRight = Math.min(wholeAdjustment.safeRightLimit, b.right);
+
+    if (effectiveShadow && (effectiveShadow.dx !== 0 || effectiveShadow.dy !== 0)) {
+      context.save();
+      context.textAlign = 'right';
+      context.translate(targetRight + effectiveShadow.dx, b.bottom + effectiveShadow.dy);
+      context.scale(hScale, 1);
+      context.fillStyle = effectiveShadow.color || '#000000';
+      context.fillText(value, 0, 0);
+      context.restore();
+    }
+
+    context.save();
+    context.textAlign = 'right';
     context.translate(targetRight, b.bottom);
     context.scale(hScale, 1);
+    context.fillStyle = part.color;
     context.fillText(value, 0, 0);
+    context.restore();
   } else {
+    if (effectiveShadow && (effectiveShadow.dx !== 0 || effectiveShadow.dy !== 0)) {
+      context.save();
+      context.textAlign = 'left';
+      context.fillStyle = effectiveShadow.color || '#000000';
+      context.fillText(value, b.left + effectiveShadow.dx, b.bottom + effectiveShadow.dy);
+      context.restore();
+    }
+    context.save();
     context.textAlign = 'left';
+    context.fillStyle = part.color;
     context.fillText(value, b.left, b.bottom);
+    context.restore();
   }
   context.restore();
 }
