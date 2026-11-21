@@ -164,9 +164,15 @@ export function useCartaz() {
       const baseName = d.product.productCode
         ? `${d.product.productCode} - ${d.product.name}${d.product.complement ? ' ' + d.product.complement : ''}`
         : `${d.product.name}${d.product.complement ? ' ' + d.product.complement : ''}`;
-      const selected = as || !path ? await storage.chooseSave(fileName(baseName)) : path;
+      const cleanBase = fileName(baseName);
+      const suggestedPsdName = `${cleanBase}.psd`;
+      const selected = as || !path ? await storage.chooseSave(suggestedPsdName) : path;
       if (!selected) return false;
       if (as && selected === path) throw new Error('Salvar como exige outro nome para preservar o original.');
+
+      const isPsd = selected.toLowerCase().endsWith('.psd');
+      const destPsdPath = isPsd ? selected : selected.replace(/\.skcartaz$/i, '') + '.psd';
+      const destSkPath = isPsd ? selected.replace(/\.psd$/i, '') + '.skcartaz' : selected;
 
       // Cenário 5: Confirmação e backup ao salvar alterações sobre o mesmo cartaz existente
       if (!as && selected === path) {
@@ -177,8 +183,8 @@ export function useCartaz() {
         if (!confirmed) return false;
 
         try {
-          const oldContent = await storage.files<string>({ action: 'read', path });
-          const backupPath = path.replace(/\.skcartaz$/i, '') + '.bak.skcartaz';
+          const oldContent = await storage.files<string>({ action: 'read', path: destSkPath });
+          const backupPath = destSkPath.replace(/\.skcartaz$/i, '') + '.bak.skcartaz';
           await storage.files<string>({ action: 'save', path: backupPath, content: oldContent, overwrite: true });
         } catch {
           // Backup não bloqueia o salvamento
@@ -186,13 +192,12 @@ export function useCartaz() {
       }
 
       if (d.layout.template === 'imported-psd') {
-        const destPsdPath = selected.replace(/\.skcartaz$/i, '') + '.psd';
         const srcPath = d.layout.artwork?.source?.sourcePath;
         const normSrc = (srcPath || '').replace(/\\/g, '/').toLowerCase();
         const normDst = destPsdPath.replace(/\\/g, '/').toLowerCase();
         const isOverwriteSame = !as && selected === path;
 
-        if (normSrc !== normDst || isOverwriteSame) {
+        if (normSrc !== normDst || isOverwriteSame || isPsd) {
           const wholePart = d.layout.artwork.priceParts.find(p => p.role === 'whole');
           const fractionPart = d.layout.artwork.priceParts.find(p => p.role === 'fraction');
           const catPart = d.layout.artwork.templateParts?.find(p => p.role === 'category');
@@ -264,7 +269,7 @@ export function useCartaz() {
         }
       }
 
-      await storage.saveDocument(selected, d, !as && selected === path);
+      await storage.saveDocument(destSkPath, d, !as && selected === path);
       load(d, selected);
       return true;
     },

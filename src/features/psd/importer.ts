@@ -329,6 +329,13 @@ function drawLayers(context: CanvasRenderingContext2D, layers: Layer[], prefix: 
     const layer = layers[index], id = prefix ? `${prefix}.${index}` : String(index), visible = parentVisible && !layer.hidden;
     if (!visible || excluded.has(id)) continue;
     if (layer.children) { drawLayers(context, layer.children, id, excluded, visible); continue; }
+    // Camadas de texto: NUNCA devem ser desenhadas no fundo estático (evita textos fantasmas como CERVEJA, NATA, etc.)
+    // Exceto avisos legais fixos do modelo de vencimento
+    if (layer.text) {
+      const txt = (layer.text.text || layer.name || '').trim();
+      const isFixedWarning = /(?:pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca)/i.test(txt);
+      if (!isFixedWarning) continue;
+    }
     if (!layer.canvas) continue;
     context.save();
     context.globalAlpha = typeof layer.opacity === 'number' ? Math.min(1, layer.opacity > 1 ? layer.opacity / 255 : layer.opacity) : 1;

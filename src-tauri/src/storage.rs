@@ -40,8 +40,9 @@ pub struct Request {
 }
 fn err(e: impl std::fmt::Display) -> String { format!("Não foi possível concluir a operação: {e}") }
 fn extension(p: &Path) -> Result<(), String> {
-    if p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("skcartaz")) != Some(true) {
-        return Err("Selecione um arquivo .skcartaz.".into());
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if !ext.eq_ignore_ascii_case("skcartaz") && !ext.eq_ignore_ascii_case("psd") {
+        return Err("Selecione um arquivo .psd ou .skcartaz.".into());
     }
     Ok(())
 }
@@ -172,10 +173,12 @@ pub async fn files(app: tauri::AppHandle, access: tauri::State<'_, Access>, requ
         return Ok(json!({"root":root,"entries":rows}));
     }
     if r.action == "openDialog" || r.action == "saveDialog" || r.action == "folderDialog" {
-        let dialog = rfd::AsyncFileDialog::new().set_directory(&root).add_filter("Cartaz Skalee", &["skcartaz"]);
+        let dialog = rfd::AsyncFileDialog::new().set_directory(&root)
+            .add_filter("Arquivo Photoshop (*.psd)", &["psd"])
+            .add_filter("Cartaz Skalee (*.skcartaz)", &["skcartaz"]);
         let chosen = if r.action == "openDialog" { dialog.pick_file().await }
             else if r.action == "folderDialog" { dialog.pick_folder().await }
-            else { dialog.set_file_name(r.name.as_deref().unwrap_or("cartaz.skcartaz")).save_file().await };
+            else { dialog.set_file_name(r.name.as_deref().unwrap_or("cartaz.psd")).save_file().await };
         return match chosen {
             None => Ok(Value::Null),
             Some(file) => {
