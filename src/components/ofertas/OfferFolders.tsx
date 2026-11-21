@@ -59,6 +59,7 @@ import {
   executeScantechDirectExportJob,
   scanScantechPsdFolder,
 } from '../../features/scantech/service';
+import { exportDerivedPsdDirect } from '../../features/scantech/directExport';
 import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech/types';
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
@@ -200,6 +201,7 @@ export function OfferFolders({
   const [exportFormatPsd, setExportFormatPsd] = useState(true);
   const [exportFormatSk, setExportFormatSk] = useState(true);
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
+  const [exportOrganizeByFormat, setExportOrganizeByFormat] = useState(true);
   const [exportFolder, setExportFolder] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<{ current: number; total: number; message: string } | null>(null);
@@ -636,7 +638,11 @@ export function OfferFolders({
         .replace(/[^a-zA-Z0-9_-]+/g, '-')
         .replace(/^-|-$/g, '');
       const subFolderName = `${cleanCampName}_${activeCampaign.campaignDate}`;
-      const targetFolder = `${exportFolder.replace(/[\\/]+$/, '')}\\${subFolderName}`;
+      const exportFolderBase = exportFolder.replace(/[\\/]+$/, '');
+      const isAlreadyCampFolder =
+        exportFolderBase.toLowerCase().includes(activeCampaign.campaignDate) ||
+        exportFolderBase.toLowerCase().includes(cleanCampName.toLowerCase());
+      const targetFolder = isAlreadyCampFolder ? exportFolderBase : `${exportFolderBase}\\${subFolderName}`;
 
       const candidates: {
         item: CampaignItem;
@@ -671,12 +677,28 @@ export function OfferFolders({
       const errors: string[] = [];
 
       for (let i = 0; i < candidates.length; i++) {
-        const { item, doc } = candidates[i];
+        const { item, cartazPath, doc } = candidates[i];
         setExportProgress({
           current: i + 1,
           total: candidates.length,
           message: `Exportando ${i + 1} de ${candidates.length}: F7 ${item.f7} - ${item.description}...`,
         });
+
+        const targetFormat = getPosterPaperFormat(doc, cartazPath);
+        const formatSubFolder =
+          targetFormat === 'A6'
+            ? 'PEQUENOS'
+            : targetFormat === 'A5'
+            ? 'MÉDIOS'
+            : targetFormat === 'A4'
+            ? 'CARTAZ A4'
+            : targetFormat === 'A3'
+            ? 'CARTAZ AÇOUGUE A3'
+            : targetFormat === 'expositor-a3-2x2'
+            ? 'CARTAZ EXTERNOS'
+            : 'MÉDIOS';
+
+        const destFolder = exportOrganizeByFormat ? `${targetFolder}\\${formatSubFolder}` : targetFolder;
 
         const baseSlug = (item.description || 'cartaz')
           .normalize('NFD')
@@ -697,7 +719,7 @@ export function OfferFolders({
             } else {
               skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
             }
-            const skPath = `${targetFolder}\\${skFileName}`;
+            const skPath = `${destFolder}\\${skFileName}`;
             await saveExportDocument(skPath, doc);
             skCount++;
           } catch (e) {
@@ -705,7 +727,7 @@ export function OfferFolders({
           }
         }
 
-        // 2. Exporta .psd
+        // 2. Exporta .psd editável preservando camadas e modelos
         if (exportFormatPsd) {
           if (doc.layout.template === 'imported-psd') {
             const artwork = doc.layout.artwork;
@@ -718,7 +740,7 @@ export function OfferFolders({
               const psdFileName = artwork.source.fileName
                 ? (artwork.source.fileName.endsWith('.psd') ? artwork.source.fileName : `${artwork.source.fileName}.psd`)
                 : `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
-              const outputPsdPath = `${targetFolder}\\${psdFileName}`;
+              const outputPsdPath = `${destFolder}\\${psdFileName}`;
 
               const campaignValidity = formatCampaignDateToValidity(
                 activeCampaign.campaignDate,
@@ -729,22 +751,48 @@ export function OfferFolders({
                   ? doc.product.validityText.trim()
                   : campaignValidity;
 
-              const job: ScantechExportJob = {
-                itemId: item.id,
-                f7: item.f7,
-                description: item.description,
-                sourcePsdPath: artwork.source.sourcePath,
-                outputPsdPath,
-                wholeLayerId: wholePart.layerId,
-                fractionLayerId: fractionPart.layerId,
-                validityLayerId: validityPart?.layerId,
-                wholeValue: parts.whole,
-                fractionValue: parts.fraction,
-                validityText: targetValidity || undefined,
-              };
+              const wholeVal = parts.whole;
+              const fractionVal = parts.fraction;
+              const boxWholeVal = (doc.product as any).hasBoxPrice && (doc.product as any).boxPriceCents
+                ? String(Math.floor((doc.product as any).boxPriceCents / 100))
+                : undefined;
+              const boxFractionVal = (doc.product as any).hasBoxPrice && (doc.product as any).boxPriceCents
+                ? String((doc.product as any).boxPriceCents % 100).padStart(2, '0')
+                : undefined;
+
+              const titlePart = artwork.templateParts?.find(p => p.role === 'title');
+              const compPart = artwork.templateParts?.find(p => p.role === 'complement');
+              const packPart = artwork.templateParts?.find(p => p.role === 'packaging');
+              const catPart = artwork.templateParts?.find(p => p.role === 'category');
 
               try {
-                const res = await executeScantechDirectExportJob(job);
+                const res = await exportDerivedPsdDirect({
+                  sourcePsdPath: artwork.source.sourcePath,
+                  outputPsdPath,
+                  allowSamePath: false,
+                  title: doc.product.name,
+                  complement: doc.product.complement,
+                  packaging: doc.product.unit,
+                  category: (doc.product as any).category,
+                  whole: wholeVal,
+                  fraction: fractionVal,
+                  validityText: targetValidity || undefined,
+                  hasBoxPrice: Boolean((doc.product as any).hasBoxPrice),
+                  boxQuantity: Number((doc.product as any).boxQuantity) || 12,
+                  boxUnitLabel: ((doc.product as any).boxUnitLabel as string) || 'UND.',
+                  boxWhole: boxWholeVal,
+                  boxFraction: boxFractionVal,
+                  roles: {
+                    wholeLayerId: wholePart.layerId,
+                    fractionLayerId: fractionPart.layerId,
+                    validityLayerId: validityPart?.layerId,
+                    titleLayerId: titlePart?.layerId,
+                    complementLayerId: compPart?.layerId,
+                    packagingLayerId: packPart?.layerId,
+                    categoryLayerId: catPart?.layerId,
+                  },
+                });
+
                 if (res.ok) {
                   psdCount++;
                 } else {
@@ -2637,6 +2685,20 @@ export function OfferFolders({
                   Será organizada na subpasta: <code>{activeCampaign.name}_{activeCampaign.campaignDate}</code>
                 </small>
               )}
+            </div>
+
+            <div style={{ margin: '12px 0', padding: '10px 14px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, color: '#166534', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={exportOrganizeByFormat}
+                  onChange={e => setExportOrganizeByFormat(e.target.checked)}
+                />
+                <span>Separar em pastas por tamanho (PEQUENOS, MÉDIOS, CARTAZ A4, etc.)</span>
+              </label>
+              <div style={{ fontSize: 11.5, color: '#15803d', marginTop: 4, marginLeft: 24, lineHeight: 1.4 }}>
+                Separa automaticamente os arquivos A6 na pasta <code>PEQUENOS</code>, A5 em <code>MÉDIOS</code>, A4 em <code>CARTAZ A4</code>, A3 em <code>CARTAZ AÇOUGUE A3</code> e externas em <code>CARTAZ EXTERNOS</code>.
+              </div>
             </div>
 
             {exportProgress && (

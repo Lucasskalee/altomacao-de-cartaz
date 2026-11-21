@@ -81,7 +81,18 @@ export function PosterView({
         onRenderedRef.current?.();
       }
     }
-  }, [poster.name, poster.detail, poster.price, poster.unit, poster.artwork, activeFormat]);
+  }, [
+    poster.name,
+    poster.detail,
+    poster.price,
+    poster.unit,
+    poster.hasBoxPrice,
+    poster.boxQuantity,
+    poster.boxUnitLabel,
+    poster.boxPrice,
+    poster.artwork,
+    activeFormat,
+  ]);
 
   if (poster.artwork) {
     return (
@@ -302,6 +313,10 @@ function ImportedPosterView({
     poster.name,
     poster.detail,
     poster.unit,
+    poster.hasBoxPrice,
+    poster.boxQuantity,
+    poster.boxUnitLabel,
+    poster.boxPrice,
     poster.expositorPanel,
     isPrint,
     widthMm,

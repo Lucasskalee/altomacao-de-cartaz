@@ -29,6 +29,9 @@ import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
 import { priceToCents } from './features/cartazes/validation';
 import { isTauri } from '@tauri-apps/api/core';
+import { exportDerivedPsdDirect } from './features/scantech/directExport';
+import { fetchTemplateBuffer } from './features/psd/templateService';
+import { chooseSave } from './features/cartazes/storage';
 
 const EditLinkedPsd = lazy(() =>
   import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
@@ -177,7 +180,19 @@ export default function App() {
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showFormatMenu]);
-  const poster: Poster = { ...posterFromDocument(editor.document), price: editor.price };
+  const docPoster = posterFromDocument(editor.document);
+  const poster: Poster = {
+    ...docPoster,
+    price: editor.price,
+    hasBoxPrice: Boolean((editor.document.product as any).hasBoxPrice),
+    boxQuantity: Number((editor.document.product as any).boxQuantity) || 12,
+    boxUnitLabel: ((editor.document.product as any).boxUnitLabel as string) || 'UND.',
+    boxPrice: (editor.document.product as any).hasBoxPrice
+      ? (editor.document.product as any).boxPriceCents
+        ? formatCentsBr((editor.document.product as any).boxPriceCents)
+        : formatCentsBr(priceToCents(editor.price) * (Number((editor.document.product as any).boxQuantity) || 12))
+      : undefined,
+  };
   const imported=editor.document.layout.template==='imported-psd';
   const hasTextRole = (role: 'category' | 'title' | 'complement' | 'packaging') =>
     Boolean(poster.artwork?.templateParts?.some(part => part.role === role));
@@ -667,6 +682,9 @@ export default function App() {
             <button type="button" className="editor-btn subtle" onClick={() => run(async () => { await editor.newOfficial('oferta'); })}>
               + Novo (Oferta)
             </button>
+            <button type="button" className="editor-btn subtle" style={{ color: '#15803d', borderColor: '#bbf7d0', background: '#f0fdf4' }} onClick={() => run(async () => { await editor.newOfficial('caixa'); })}>
+              + Novo (Caixa)
+            </button>
             <button type="button" className="editor-btn subtle" style={{ color: '#b45309', borderColor: '#fde68a', background: '#fffbeb' }} onClick={() => run(async () => { await editor.newOfficial('vencimento'); })}>
               + Novo (Vencimento)
             </button>
@@ -740,19 +758,33 @@ export default function App() {
                     fontWeight: 700,
                     padding: '2px 8px',
                     borderRadius: 12,
-                    background: editor.posterModel === 'vencimento' ? '#fef3c7' : '#e0e7ff',
-                    color: editor.posterModel === 'vencimento' ? '#92400e' : '#3730a3',
+                    background:
+                      editor.posterModel === 'vencimento'
+                        ? '#fef3c7'
+                        : editor.posterModel === 'caixa'
+                        ? '#dcfce7'
+                        : '#e0e7ff',
+                    color:
+                      editor.posterModel === 'vencimento'
+                        ? '#92400e'
+                        : editor.posterModel === 'caixa'
+                        ? '#166534'
+                        : '#3730a3',
                   }}
                 >
-                  {editor.posterModel === 'vencimento' ? '⏳ Vencimento' : '🏷️ Oferta Normal'}
+                  {editor.posterModel === 'vencimento'
+                    ? '⏳ Vencimento'
+                    : editor.posterModel === 'caixa'
+                    ? '📦 Caixa Fechada'
+                    : '🏷️ Oferta Normal'}
                 </span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
                 <button
                   type="button"
                   style={{
-                    padding: '7px 10px',
-                    fontSize: 12,
+                    padding: '7px 6px',
+                    fontSize: 11.5,
                     fontWeight: 700,
                     borderRadius: 7,
                     border: editor.posterModel === 'oferta' ? '2px solid #2563eb' : '1px solid #cbd5e1',
@@ -762,7 +794,7 @@ export default function App() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: 6,
+                    gap: 4,
                   }}
                   onClick={() => run(async () => {
                     if (editor.posterModel !== 'oferta') {
@@ -771,13 +803,38 @@ export default function App() {
                     }
                   })}
                 >
-                  🏷️ Oferta Normal
+                  🏷️ Oferta
                 </button>
                 <button
                   type="button"
                   style={{
-                    padding: '7px 10px',
-                    fontSize: 12,
+                    padding: '7px 6px',
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    borderRadius: 7,
+                    border: editor.posterModel === 'caixa' ? '2px solid #16a34a' : '1px solid #cbd5e1',
+                    background: editor.posterModel === 'caixa' ? '#f0fdf4' : '#ffffff',
+                    color: editor.posterModel === 'caixa' ? '#15803d' : '#475569',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 4,
+                  }}
+                  onClick={() => run(async () => {
+                    if (editor.posterModel !== 'caixa') {
+                      await editor.switchModel('caixa');
+                      setMessage('Modelo alterado para Caixa Fechada / Atacado.');
+                    }
+                  })}
+                >
+                  📦 Caixa
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    padding: '7px 6px',
+                    fontSize: 11.5,
                     fontWeight: 700,
                     borderRadius: 7,
                     border: editor.posterModel === 'vencimento' ? '2px solid #d97706' : '1px solid #cbd5e1',
@@ -787,7 +844,7 @@ export default function App() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: 6,
+                    gap: 4,
                   }}
                   onClick={() => run(async () => {
                     if (editor.posterModel !== 'vencimento') {
@@ -972,15 +1029,26 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={Boolean((editor.document.product as any).hasBoxPrice)}
-                    onChange={e => {
+                    onChange={async e => {
                       const checked = e.target.checked;
                       editor.change('hasBoxPrice', checked);
-                      if (checked && !(editor.document.product as any).boxPriceCents) {
+                      if (checked) {
                         const unitPrice = priceToCents(editor.price);
                         const qty = Number((editor.document.product as any).boxQuantity) || 12;
                         editor.change('boxQuantity', qty);
                         editor.change('boxUnitLabel', (editor.document.product as any).boxUnitLabel || 'UND.');
-                        editor.change('boxPriceCents', unitPrice * qty);
+                        if (!(editor.document.product as any).boxPriceCents) {
+                          editor.change('boxPriceCents', unitPrice * qty);
+                        }
+                        if (editor.posterModel !== 'caixa') {
+                          await editor.switchModel('caixa');
+                          setMessage('Layout ajustado automaticamente para Caixa Fechada.');
+                        }
+                      } else {
+                        if (editor.posterModel === 'caixa') {
+                          await editor.switchModel('oferta');
+                          setMessage('Layout retornado para Oferta Normal.');
+                        }
                       }
                     }}
                   />
@@ -1163,6 +1231,110 @@ export default function App() {
                   Exportar PNG 300 DPI
                 </button>
               </div>
+
+              <button
+                type="button"
+                className="editor-btn secondary"
+                style={{
+                  width: '100%',
+                  marginTop: 10,
+                  justifyContent: 'center',
+                  height: 38,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  borderColor: '#93c5fd',
+                  background: '#f8fafc',
+                  color: '#1d4ed8',
+                }}
+                disabled={Boolean(priceWarning)}
+                onClick={() => run(async () => {
+                  const p = validPoster();
+                  const d = editor.document;
+                  const cleanName = (p.name || 'cartaz').replace(/[/\\?%*:|"<>]/g, '').trim() || 'cartaz';
+                  const suggestedName = `${cleanName}.psd`;
+
+                  let chosenPath: string | null = null;
+                  if (isTauri()) {
+                    chosenPath = await chooseSave(suggestedName);
+                    if (!chosenPath) return;
+                    if (!chosenPath.toLowerCase().endsWith('.psd')) {
+                      chosenPath = chosenPath.replace(/\.[^.]+$/, '') + '.psd';
+                    }
+                  }
+
+                  const wholeVal = formatCentsBr(d.product.priceCents).split(',')[0];
+                  const fractionVal = formatCentsBr(d.product.priceCents).split(',')[1];
+                  const boxWholeVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+                    ? formatCentsBr((d.product as any).boxPriceCents).split(',')[0]
+                    : undefined;
+                  const boxFractionVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+                    ? formatCentsBr((d.product as any).boxPriceCents).split(',')[1]
+                    : undefined;
+
+                  let sourcePath = d.layout.template === 'imported-psd' ? d.layout.artwork.source.sourcePath : undefined;
+                  let sourceBuffer: ArrayBuffer | undefined;
+                  if (!sourcePath) {
+                    sourceBuffer = await fetchTemplateBuffer(editor.posterModel);
+                  }
+
+                  const artwork = d.layout.template === 'imported-psd' ? d.layout.artwork : undefined;
+                  const wholePart = artwork?.priceParts?.find(part => part.role === 'whole');
+                  const fractionPart = artwork?.priceParts?.find(part => part.role === 'fraction');
+                  const catPart = artwork?.templateParts?.find(part => part.role === 'category');
+                  const titlePart = artwork?.templateParts?.find(part => part.role === 'title');
+                  const compPart = artwork?.templateParts?.find(part => part.role === 'complement');
+                  const packPart = artwork?.templateParts?.find(part => part.role === 'packaging');
+                  const valPart = artwork?.priceParts?.find(part => part.role === 'validity');
+
+                  const expResult = await exportDerivedPsdDirect({
+                    sourcePsdPath: sourcePath || undefined,
+                    sourcePsdBuffer: sourceBuffer,
+                    outputPsdPath: chosenPath || suggestedName,
+                    allowSamePath: false,
+                    category: (d.product as any).category,
+                    title: d.product.name,
+                    complement: d.product.complement,
+                    packaging: d.product.unit,
+                    whole: wholeVal,
+                    fraction: fractionVal,
+                    validityText: (d.product as any).validityText,
+                    hasBoxPrice: Boolean((d.product as any).hasBoxPrice),
+                    boxQuantity: Number((d.product as any).boxQuantity) || 12,
+                    boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
+                    boxWhole: boxWholeVal,
+                    boxFraction: boxFractionVal,
+                    roles: {
+                      wholeLayerId: wholePart?.layerId,
+                      fractionLayerId: fractionPart?.layerId,
+                      categoryLayerId: catPart?.layerId,
+                      titleLayerId: titlePart?.layerId,
+                      complementLayerId: compPart?.layerId,
+                      packagingLayerId: packPart?.layerId,
+                      validityLayerId: valPart?.layerId,
+                    },
+                  });
+
+                  if (expResult.ok) {
+                    if (!isTauri() && expResult.bytes) {
+                      const blob = new Blob([expResult.bytes], { type: 'image/vnd.adobe.photoshop' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = suggestedName;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }
+                    setMessage(`PSD editável exportado com sucesso: ${chosenPath || suggestedName}`);
+                  } else {
+                    throw new Error(expResult.error || 'Falha ao exportar PSD editável.');
+                  }
+                })}
+              >
+                🎨 Exportar PSD Editável (.psd)
+              </button>
 
               <button
                 type="button"

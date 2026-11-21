@@ -3,8 +3,19 @@ import { analyzePsd, buildArtwork } from './importer';
 
 const artworkCache = new Map<PosterTemplateModel, ImportedArtwork>();
 
+export function getTemplateFileName(model: PosterTemplateModel): string {
+  switch (model) {
+    case 'vencimento':
+      return 'modelo_vencimento.psd';
+    case 'caixa':
+      return 'modelo_caixa.psd';
+    default:
+      return 'modelo_oferta.psd';
+  }
+}
+
 export async function fetchTemplateBuffer(model: PosterTemplateModel): Promise<ArrayBuffer> {
-  const fileName = model === 'vencimento' ? 'modelo_vencimento.psd' : 'modelo_oferta.psd';
+  const fileName = getTemplateFileName(model);
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     const res = await window.fetch(`/templates/${fileName}`);
     if (!res.ok) throw new Error(`Falha ao carregar modelo oficial ${fileName}: ${res.statusText}`);
@@ -26,7 +37,7 @@ export async function getOfficialArtwork(model: PosterTemplateModel): Promise<Im
   const cached = artworkCache.get(model);
   if (cached) return cached;
   const buffer = await fetchTemplateBuffer(model);
-  const fileName = model === 'vencimento' ? 'modelo_vencimento.psd' : 'modelo_oferta.psd';
+  const fileName = getTemplateFileName(model);
   const analysis = await analyzePsd(buffer, fileName, `/templates/${fileName}`);
   const artwork = buildArtwork(analysis, analysis.suggested, analysis.templateSuggested);
   artwork.posterModel = model;
@@ -48,13 +59,17 @@ export async function createOfficialDocument(
     schemaVersion: 1,
     id: crypto.randomUUID(),
     product: {
-      name: initial?.name || (model === 'vencimento' ? 'BALANCE' : 'PRODUTO'),
-      complement: initial?.complement || (model === 'vencimento' ? 'SABORES' : 'SABORES'),
-      category: initial?.category || (model === 'vencimento' ? 'RAÇÃO' : 'MERCEARIA'),
+      name: initial?.name || (model === 'vencimento' ? 'BALANCE' : model === 'caixa' ? 'CERVEJA AMSTEL' : 'PRODUTO'),
+      complement: initial?.complement || (model === 'vencimento' ? 'SABORES' : model === 'caixa' ? 'LAGER LATA 269ML' : 'SABORES'),
+      category: initial?.category || (model === 'vencimento' ? 'RAÇÃO' : model === 'caixa' ? 'BEBIDAS' : 'MERCEARIA'),
       unit: initial?.unit || (model === 'vencimento' ? '900G' : 'UN'),
-      priceCents: initial?.priceCents ?? 1197,
+      priceCents: initial?.priceCents ?? (model === 'caixa' ? 269 : 1197),
       productCode: initial?.productCode ?? null,
       validityText: initial?.validityText || (model === 'vencimento' ? '02/12' : ''),
+      hasBoxPrice: model === 'caixa' ? true : Boolean((initial as any)?.hasBoxPrice),
+      boxQuantity: model === 'caixa' ? ((initial as any)?.boxQuantity ?? 12) : (initial as any)?.boxQuantity,
+      boxUnitLabel: ((initial as any)?.boxUnitLabel as string) || 'UND.',
+      boxPriceCents: model === 'caixa' ? ((initial as any)?.boxPriceCents ?? 3228) : (initial as any)?.boxPriceCents,
     },
     layout: {
       template: 'imported-psd',
@@ -83,6 +98,11 @@ export async function switchPosterModel(
     validityText = '';
   }
 
+  const hasBoxPrice = targetModel === 'caixa' ? true : targetModel === 'oferta' ? false : Boolean(currentProd.hasBoxPrice);
+  const boxQuantity = currentProd.boxQuantity ?? 12;
+  const boxUnitLabel = currentProd.boxUnitLabel ?? 'UND.';
+  const boxPriceCents = currentProd.boxPriceCents ?? (currentDoc.product.priceCents * boxQuantity);
+
   return {
     ...currentDoc,
     product: {
@@ -94,6 +114,10 @@ export async function switchPosterModel(
       priceCents: currentDoc.product.priceCents,
       productCode: currentDoc.product.productCode ?? null,
       validityText,
+      hasBoxPrice,
+      boxQuantity,
+      boxUnitLabel,
+      boxPriceCents,
     },
     layout: {
       ...currentDoc.layout,
@@ -113,7 +137,13 @@ export function getPosterModel(doc: Cartaz): PosterTemplateModel {
     const hasVencimento = doc.layout.artwork.layers.some(l =>
       l.visible && /vencimento|pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca/i.test(l.text ?? l.name)
     );
-    return hasVencimento ? 'vencimento' : 'oferta';
+    if (hasVencimento) return 'vencimento';
+    const hasCaixa = Boolean((doc.product as any).hasBoxPrice) || doc.layout.artwork.layers.some(l =>
+      l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name)
+    );
+    if (hasCaixa) return 'caixa';
+    return 'oferta';
   }
+  if ((doc.product as any).hasBoxPrice) return 'caixa';
   return (doc.product as any).posterModel === 'vencimento' ? 'vencimento' : 'oferta';
 }

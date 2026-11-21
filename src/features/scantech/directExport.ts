@@ -553,7 +553,8 @@ export async function exportScantechPsdsDirect(
 }
 
 export type DerivedPsdPayload = {
-  sourcePsdPath: string;
+  sourcePsdPath?: string | null;
+  sourcePsdBuffer?: ArrayBuffer;
   outputPsdPath: string;
   allowSamePath?: boolean;
   category?: string;
@@ -563,6 +564,11 @@ export type DerivedPsdPayload = {
   whole: string;
   fraction: string;
   validityText?: string;
+  hasBoxPrice?: boolean;
+  boxQuantity?: number;
+  boxUnitLabel?: string;
+  boxWhole?: string;
+  boxFraction?: string;
   roles: {
     categoryLayerId?: string;
     titleLayerId?: string;
@@ -571,32 +577,39 @@ export type DerivedPsdPayload = {
     wholeLayerId?: string;
     fractionLayerId?: string;
     validityLayerId?: string;
+    boxQtyLayerId?: string;
+    boxWholeLayerId?: string;
+    boxFractionLayerId?: string;
   };
 };
 
 export async function exportDerivedPsdDirect(
   payload: DerivedPsdPayload,
   io: ScantechDirectExportIo = defaultDirectExportIo
-): Promise<{ ok: boolean; error?: string; outputPsdPath: string }> {
-  if (!payload.sourcePsdPath || !payload.sourcePsdPath.trim()) {
+): Promise<{ ok: boolean; error?: string; outputPsdPath: string; bytes?: Uint8Array }> {
+  if (!payload.sourcePsdBuffer && (!payload.sourcePsdPath || !payload.sourcePsdPath.trim())) {
     return { ok: false, error: 'Arquivo PSD de referência não informado.', outputPsdPath: payload.outputPsdPath };
   }
   if (!payload.outputPsdPath || !payload.outputPsdPath.trim()) {
     return { ok: false, error: 'Caminho de saída do PSD não informado.', outputPsdPath: payload.outputPsdPath };
   }
-  const normSrc = payload.sourcePsdPath.replace(/\\/g, '/').toLowerCase();
+  const normSrc = (payload.sourcePsdPath || '').replace(/\\/g, '/').toLowerCase();
   const normDst = payload.outputPsdPath.replace(/\\/g, '/').toLowerCase();
-  if (normSrc === normDst && !payload.allowSamePath) {
+  if (normSrc && normSrc === normDst && !payload.allowSamePath) {
     return { ok: false, error: 'Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD de referência original.', outputPsdPath: payload.outputPsdPath };
   }
 
   ensureCanvasInitialized();
 
   let rawBuffer: ArrayBuffer;
-  try {
-    rawBuffer = await io.readSourcePsd(payload.sourcePsdPath);
-  } catch (e) {
-    return { ok: false, error: `Falha ao ler o PSD de referência: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+  if (payload.sourcePsdBuffer) {
+    rawBuffer = payload.sourcePsdBuffer;
+  } else {
+    try {
+      rawBuffer = await io.readSourcePsd(payload.sourcePsdPath!);
+    } catch (e) {
+      return { ok: false, error: `Falha ao ler o PSD de referência: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
+    }
   }
 
   let psd: Psd;
@@ -707,6 +720,56 @@ export async function exportDerivedPsdDirect(
     }
   }
 
+  // Atualização dos campos de Caixa Fechada / Atacado
+  if (payload.hasBoxPrice || payload.boxWhole || payload.boxFraction) {
+    const mainWholeId = payload.roles.wholeLayerId;
+    const mainFractionId = payload.roles.fractionLayerId;
+
+    if (payload.boxWhole) {
+      let bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
+      if (!bWholeLayer || !bWholeLayer.text) {
+        // Procura camada com valor de atacado (ex: '32') diferente da camada de preço unitário
+        bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
+        if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
+          bWholeLayer = null;
+        }
+      }
+      if (bWholeLayer && bWholeLayer.text) {
+        bWholeLayer.text.text = payload.boxWhole.trim();
+        renderTextLayerToBitmap(bWholeLayer, bWholeLayer.text.text, psd.width, psd.height);
+        updatedAnyText = true;
+      }
+    }
+
+    if (payload.boxFraction) {
+      let bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
+      if (!bFracLayer || !bFracLayer.text) {
+        bFracLayer = findFirstTextLayerMatching(psd, /^(?:28|88|48|\d{2})$/);
+        if (bFracLayer && (bFracLayer.name === mainWholeId || bFracLayer.name === mainFractionId)) {
+          bFracLayer = null;
+        }
+      }
+      if (bFracLayer && bFracLayer.text) {
+        bFracLayer.text.text = payload.boxFraction.trim();
+        renderTextLayerToBitmap(bFracLayer, bFracLayer.text.text, psd.width, psd.height);
+        updatedAnyText = true;
+      }
+    }
+
+    if (payload.boxQuantity != null || payload.boxUnitLabel) {
+      let bQtyLayer = resolveLayerByPath(psd, payload.roles.boxQtyLayerId);
+      if (!bQtyLayer || !bQtyLayer.text) {
+        bQtyLayer = findFirstTextLayerMatching(psd, /^\d+\s*(?:UND|UN|CX|PCT)\.?\s*$/i);
+      }
+      if (bQtyLayer && bQtyLayer.text) {
+        const qtyStr = `${payload.boxQuantity ?? 12} ${payload.boxUnitLabel ?? 'UND.'} `;
+        bQtyLayer.text.text = qtyStr;
+        renderTextLayerToBitmap(bQtyLayer, bQtyLayer.text.text, psd.width, psd.height);
+        updatedAnyText = true;
+      }
+    }
+  }
+
   if (updatedAnyText) {
     delete psd.canvas;
     delete psd.imageData;
@@ -723,15 +786,15 @@ export async function exportDerivedPsdDirect(
   try {
     if (payload.allowSamePath && normSrc === normDst) {
       try {
-        await io.writeOutputPsd(payload.outputPsdPath + '.bak', payload.sourcePsdPath, new Uint8Array(rawBuffer));
+        await io.writeOutputPsd(payload.outputPsdPath + '.bak', payload.sourcePsdPath || '', new Uint8Array(rawBuffer));
       } catch {
         // backup do PSD anterior
       }
     }
-    await io.writeOutputPsd(payload.outputPsdPath, payload.sourcePsdPath, new Uint8Array(outBytes));
+    await io.writeOutputPsd(payload.outputPsdPath, payload.sourcePsdPath || '', new Uint8Array(outBytes));
   } catch (e) {
     return { ok: false, error: `Falha ao gravar PSD derivado: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };
   }
 
-  return { ok: true, outputPsdPath: payload.outputPsdPath };
+  return { ok: true, outputPsdPath: payload.outputPsdPath, bytes: new Uint8Array(outBytes) };
 }

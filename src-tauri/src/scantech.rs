@@ -1120,10 +1120,7 @@ pub fn write_scantech_psd(
     request: WriteScantechPsdRequest,
 ) -> Result<WriteScantechPsdResponse, String> {
     let raw_out = PathBuf::from(&request.output_path);
-    let raw_src = PathBuf::from(&request.source_psd_path);
-
     let out_path = clean_windows_path(&raw_out);
-    let src_path = clean_windows_path(&raw_src);
 
     if out_path
         .extension()
@@ -1134,18 +1131,20 @@ pub fn write_scantech_psd(
         return Err("O caminho de saída deve ter extensão .psd.".into());
     }
 
-    if !src_path.is_file() {
-        return Err(format!(
-            "Arquivo PSD original não encontrado: {}",
-            src_path.display()
-        ));
-    }
+    let has_src = !request.source_psd_path.trim().is_empty();
+    let src_path = if has_src {
+        clean_windows_path(&PathBuf::from(&request.source_psd_path))
+    } else {
+        PathBuf::new()
+    };
 
-    if paths_point_to_same_file(&out_path, &src_path) {
-        return Err(
-            "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
-                .into(),
-        );
+    if has_src && src_path.is_file() {
+        if paths_point_to_same_file(&out_path, &src_path) {
+            return Err(
+                "Bloqueado por segurança: o arquivo de saída não pode sobrescrever o PSD original."
+                    .into(),
+            );
+        }
     }
 
     if request.bytes.len() < 64 || request.bytes.len() > 50 * 1024 * 1024 {
@@ -1156,8 +1155,11 @@ pub fn write_scantech_psd(
         return Err("Assinatura binária 8BPS ausente no arquivo exportado.".into());
     }
 
-    let orig_meta = fs::metadata(&src_path).map_err(err)?;
-    let orig_len = orig_meta.len();
+    let orig_len = if has_src && src_path.is_file() {
+        fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0)
+    } else {
+        0
+    };
 
     let parent = out_path
         .parent()
@@ -1235,9 +1237,11 @@ pub fn write_scantech_psd(
     }
 
     // 5. Verificação de integridade: assegura que o arquivo de origem nunca foi modificado
-    if let Ok(meta) = fs::metadata(&src_path) {
-        if meta.len() != orig_len {
-            return Err("Alerta de integridade: o arquivo PSD original foi modificado.".into());
+    if has_src && src_path.is_file() {
+        if let Ok(meta) = fs::metadata(&src_path) {
+            if meta.len() != orig_len {
+                return Err("Alerta de integridade: o arquivo PSD original foi modificado.".into());
+            }
         }
     }
 

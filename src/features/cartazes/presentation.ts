@@ -34,9 +34,13 @@ export function posterFromDocument(document: Cartaz): Poster {
       artwork?.priceParts?.find(p => p.role === 'validity')?.originalText ||
       '',
     hasBoxPrice: Boolean((product as any).hasBoxPrice),
-    boxQuantity: (product as any).boxQuantity ? Number((product as any).boxQuantity) : undefined,
+    boxQuantity: (product as any).boxQuantity ? Number((product as any).boxQuantity) : 12,
     boxUnitLabel: ((product as any).boxUnitLabel as string) || 'UND.',
-    boxPrice: (product as any).boxPriceCents ? formatCentsBr((product as any).boxPriceCents) : undefined,
+    boxPrice: (product as any).boxPriceCents
+      ? formatCentsBr((product as any).boxPriceCents)
+      : (product as any).hasBoxPrice
+        ? formatCentsBr(product.priceCents * (Number((product as any).boxQuantity) || 12))
+        : undefined,
     artwork,
   };
 }

@@ -424,3 +424,59 @@ test('Caixa Fechada e Filtros de Formato: suporte a PEQUENOS (A6), MÉDIOS (A5),
   const badgeA5 = getFormatBadge('A5');
   assert.equal(badgeA5.label, 'Médio (A5)');
 });
+
+test('Modelo Caixa Fechada: criação oficial, alternância dinâmica e exportação PSD direta com atacado', async () => {
+  const { createOfficialDocument, switchPosterModel, getPosterModel } = await import('../src/features/psd/templateService');
+  const { exportDerivedPsdDirect } = await import('../src/features/scantech/directExport');
+
+  // Cria cartaz normal de melancia
+  const docMelancia = await createOfficialDocument('oferta', {
+    name: 'FLV.MELANCIA KG',
+    complement: '',
+    priceCents: 399,
+    unit: 'KG',
+  });
+
+  assert.equal(getPosterModel(docMelancia), 'oferta');
+  assert.equal(docMelancia.product.name, 'FLV.MELANCIA KG');
+
+  // Alterna para Caixa Fechada
+  const docCaixa = await switchPosterModel(docMelancia, 'caixa');
+  assert.equal(getPosterModel(docCaixa), 'caixa');
+  assert.equal(docCaixa.product.name, 'FLV.MELANCIA KG');
+  assert.equal((docCaixa.product as any).hasBoxPrice, true);
+  assert.equal((docCaixa.product as any).boxQuantity, 12);
+  assert.equal((docCaixa.product as any).boxPriceCents, 399 * 12);
+
+  // Teste de exportDerivedPsdDirect simulado em memória
+  const mockIo = {
+    readSourcePsd: async () => {
+      const fs = await import('node:fs/promises');
+      const path = await import('node:path');
+      const buf = await fs.readFile(path.resolve(process.cwd(), 'public/templates/modelo_caixa.psd'));
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    },
+    writeOutputPsd: async () => ({ fileSize: 50000 }),
+  };
+
+  const exp = await exportDerivedPsdDirect({
+    sourcePsdPath: 'C:\\fake\\modelo_caixa.psd',
+    outputPsdPath: 'C:\\fake\\PEQUENOS\\FLV.MELANCIA KG.psd',
+    title: 'MELANCIA KG',
+    whole: '3',
+    fraction: '99',
+    hasBoxPrice: true,
+    boxQuantity: 12,
+    boxUnitLabel: 'UND.',
+    boxWhole: '47',
+    boxFraction: '88',
+    roles: {
+      wholeLayerId: '2',
+      fractionLayerId: '69',
+      titleLayerId: 'CERVEJA',
+    },
+  }, mockIo as any);
+
+  assert.equal(exp.ok, true);
+  assert.ok(exp.bytes && exp.bytes.length > 100);
+});
