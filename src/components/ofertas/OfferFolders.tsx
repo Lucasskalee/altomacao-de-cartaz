@@ -76,10 +76,36 @@ type PsdPairingFilter =
   | 'selected-batch'
   | 'already-linked';
 
+export type FormatTab = 'todos' | 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2';
+
+export function getPosterPaperFormat(doc?: Cartaz | null, path?: string): PaperFormat {
+  if (doc?.layout?.paper && ['A6', 'A5', 'A4', 'A3', 'expositor-a3-2x2'].includes(doc.layout.paper)) {
+    return doc.layout.paper as PaperFormat;
+  }
+  const upper = (path || '').toUpperCase();
+  if (upper.includes('PEQUENO') || upper.includes('A6')) return 'A6';
+  if (upper.includes('MÉDIO') || upper.includes('MEDIO') || upper.includes('A5')) return 'A5';
+  if (upper.includes('EXTERNO') || upper.includes('EXPOSITOR') || upper.includes('2X2')) return 'expositor-a3-2x2';
+  if (upper.includes('AÇOUGUE') || upper.includes('ACOUGUE') || upper.includes('A3')) return 'A3';
+  if (upper.includes('A4')) return 'A4';
+  return 'A6';
+}
+
+export function getFormatBadge(format: PaperFormat): { label: string; icon: string; bg: string; text: string } {
+  switch (format) {
+    case 'A6': return { label: 'Pequeno (A6)', icon: '🏷️', bg: '#fef3c7', text: '#92400e' };
+    case 'A5': return { label: 'Médio (A5)', icon: '📐', bg: '#e0e7ff', text: '#3730a3' };
+    case 'A4': return { label: 'Cartaz A4', icon: '📄', bg: '#dcfce7', text: '#166534' };
+    case 'A3': return { label: 'Açougue (A3)', icon: '🥩', bg: '#fee2e2', text: '#991b1b' };
+    case 'expositor-a3-2x2': return { label: 'Externos (2×2)', icon: '🏢', bg: '#f3e8ff', text: '#6b21a8' };
+    default: return { label: format, icon: '📋', bg: '#f1f5f9', text: '#475569' };
+  }
+}
+
 type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
-  onPrintBatch: (posters: Poster[]) => void;
+  onPrintBatch: (posters: Poster[], options?: any) => void;
   onEditPoster?: (path: string, scheduledPriceCents?: number) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
   initialCampaigns?: OfferCampaign[];
@@ -143,6 +169,7 @@ export function OfferFolders({
   // Filter & preview inside active campaign
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'todos' | 'com-cartaz' | 'sem-cartaz' | PrintStatus>('todos');
+  const [formatTab, setFormatTab] = useState<FormatTab>('todos');
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState('');
@@ -459,6 +486,18 @@ export function OfferFolders({
     if (!folder) return;
 
     setPsdFolder(folder);
+    const normFolder = folder.toLowerCase();
+    if (/pequeno|a6/i.test(normFolder)) {
+      setPsdPaperSize('A6');
+    } else if (/m[eé]dio|a5/i.test(normFolder)) {
+      setPsdPaperSize('A5');
+    } else if (/a4/i.test(normFolder)) {
+      setPsdPaperSize('A4');
+    } else if (/a[cç]ougue|a3/i.test(normFolder)) {
+      setPsdPaperSize('A3');
+    } else if (/externo|expositor/i.test(normFolder)) {
+      setPsdPaperSize('expositor-a3-2x2');
+    }
     setBatchLinkResult(null);
     setShowBatchConfirmStep(false);
     setPsdPairingSelections({});
@@ -793,6 +832,43 @@ export function OfferFolders({
     return buildCampaignMatchViews(activeCampaign, libraryIndex);
   }, [activeCampaign, libraryIndex]);
 
+  const formatCounts = useMemo(() => {
+    const counts: Record<FormatTab, number> = {
+      todos: 0,
+      A6: 0,
+      A5: 0,
+      A4: 0,
+      A3: 0,
+      'expositor-a3-2x2': 0,
+    };
+    for (const v of matchViews) {
+      for (const m of v.matchedPosters) {
+        if (!m.libraryCartaz) continue;
+        const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+        counts.todos++;
+        if (fmt in counts) {
+          counts[fmt as FormatTab]++;
+        }
+      }
+    }
+    return counts;
+  }, [matchViews]);
+
+  const currentFormatQueueCount = useMemo(() => {
+    let count = 0;
+    for (const v of matchViews) {
+      for (const m of v.matchedPosters) {
+        if (!m.state.selected || !m.scheduledDocument || m.state.status === 'impresso') continue;
+        if (formatTab !== 'todos') {
+          const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+          if (posterFmt !== formatTab) continue;
+        }
+        count++;
+      }
+    }
+    return count;
+  }, [matchViews, formatTab]);
+
   const filteredViews = useMemo(() => {
     const q = searchQuery.trim().toLocaleLowerCase('pt-BR');
     return matchViews.filter(v => {
@@ -804,9 +880,17 @@ export function OfferFolders({
       if (statusFilter === 'pendente' || statusFilter === 'preparado' || statusFilter === 'impresso') {
         return v.matchedPosters.some(m => m.state.status === statusFilter);
       }
+      if (formatTab !== 'todos') {
+        const hasMatchingFormat = v.matchedPosters.some(m => {
+          if (!m.libraryCartaz) return false;
+          const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+          return fmt === formatTab;
+        });
+        if (!hasMatchingFormat) return false;
+      }
       return true;
     });
-  }, [matchViews, searchQuery, statusFilter]);
+  }, [matchViews, searchQuery, statusFilter, formatTab]);
 
   const selectedPosterPreview = useMemo(() => {
     for (const v of matchViews) {
@@ -925,6 +1009,10 @@ export function OfferFolders({
       for (const m of v.matchedPosters) {
         if (!m.state.selected || !m.scheduledDocument) continue;
         if (!reprintPrinted && m.state.status === 'impresso') continue;
+        if (formatTab !== 'todos') {
+          const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+          if (posterFmt !== formatTab) continue;
+        }
         if (m.priceMismatchReason) {
           blockedProducts.push(`F7 ${v.item.f7} (${v.item.description}): ${m.priceMismatchReason}`);
           continue;
@@ -949,11 +1037,12 @@ export function OfferFolders({
       throw new Error(
         reprintPrinted
           ? 'Selecione ao menos um cartaz válido para reimprimir.'
-          : 'Não há cartazes selecionados com status Preparado/Pendente para imprimir.'
+          : `Não há cartazes selecionados ${formatTab !== 'todos' ? `no formato ${formatTab} ` : ''}com status Preparado/Pendente para imprimir.`
       );
     }
     setAwaitingPrintConfirm({ keys, count: distinctPostersCount });
-    onPrintBatch(queue);
+    const targetPaper = formatTab === 'todos' ? 'A6' : formatTab;
+    onPrintBatch(queue, { formatConfig: { paper: targetPaper, orientation: 'portrait' } });
   };
 
   const handleConfirmPrinted = async () => {
@@ -1193,6 +1282,183 @@ export function OfferFolders({
 
               {activeCampaign.items.length > 0 && (
                 <>
+                  {/* BARRA VISUAL DE ETAPAS DE PRODUÇÃO POR TAMANHO */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>
+                        Etapas de Produção por Formato (Pastas da Loja):
+                      </span>
+                      <span style={{ fontSize: 11.5, color: '#64748b' }}>
+                        Selecione um tamanho para produzir e imprimir em lote
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                      {(
+                        [
+                          { id: 'todos', label: 'Todos os Tamanhos', icon: '📋', subtitle: 'Visão geral' },
+                          { id: 'A6', label: '1. Pequenos (A6)', icon: '🏷️', subtitle: 'Topo do A4 em pé' },
+                          { id: 'A5', label: '2. Médios (A5)', icon: '📐', subtitle: 'Metade A4 em pé' },
+                          { id: 'A4', label: '3. Cartaz A4', icon: '📄', subtitle: 'Folha A4 inteira' },
+                          { id: 'A3', label: '4. Açougue (A3)', icon: '🥩', subtitle: 'Folha A3 vertical' },
+                          { id: 'expositor-a3-2x2', label: '5. Externos (2×2)', icon: '🏢', subtitle: 'Expositor 4 folhas A3' },
+                        ] as const
+                      ).map(tab => {
+                        const isSelected = formatTab === tab.id;
+                        const count = formatCounts[tab.id as FormatTab] ?? 0;
+                        return (
+                          <div
+                            key={tab.id}
+                            role="button"
+                            tabIndex={0}
+                            style={{
+                              padding: '10px 12px',
+                              borderRadius: 10,
+                              cursor: 'pointer',
+                              border: isSelected ? '2px solid #2563eb' : '1px solid #e2e8f0',
+                              background: isSelected ? '#eff6ff' : '#ffffff',
+                              boxShadow: isSelected ? '0 2px 8px rgba(37,99,235,0.15)' : '0 1px 2px rgba(0,0,0,0.03)',
+                              transition: 'all 0.15s ease',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              justifyContent: 'space-between',
+                            }}
+                            onClick={() => setFormatTab(tab.id as FormatTab)}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setFormatTab(tab.id as FormatTab); }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <span style={{ fontSize: 16 }}>{tab.icon}</span>
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                  padding: '1px 7px',
+                                  borderRadius: 10,
+                                  background: isSelected ? '#2563eb' : count > 0 ? '#dcfce7' : '#f1f5f9',
+                                  color: isSelected ? '#ffffff' : count > 0 ? '#166534' : '#64748b',
+                                }}
+                              >
+                                {count} {count === 1 ? 'cartaz' : 'cartazes'}
+                              </span>
+                            </div>
+                            <div style={{ fontWeight: 700, fontSize: 12.5, color: isSelected ? '#1d4ed8' : '#1e293b' }}>
+                              {tab.label}
+                            </div>
+                            <div style={{ fontSize: 10.5, color: isSelected ? '#3b82f6' : '#64748b', marginTop: 2 }}>
+                              {tab.subtitle}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* PAINEL DE CONTROLE DE IMPRESSÃO DO FORMATO ATIVO */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 14,
+                      flexWrap: 'wrap',
+                      padding: '12px 16px',
+                      background: formatTab === 'todos' ? '#f8fafc' : '#f0fdf4',
+                      border: formatTab === 'todos' ? '1px solid #cbd5e1' : '1.5px solid #86efac',
+                      borderRadius: 10,
+                      marginBottom: 14,
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 16 }}>
+                          {formatTab === 'A6' ? '🏷️' : formatTab === 'A5' ? '📐' : formatTab === 'A4' ? '📄' : formatTab === 'A3' ? '🥩' : formatTab === 'expositor-a3-2x2' ? '🏢' : '📋'}
+                        </span>
+                        <strong style={{ fontSize: 14, color: formatTab === 'todos' ? '#1e293b' : '#166534' }}>
+                          Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
+                        </strong>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: 12,
+                            background: currentFormatQueueCount > 0 ? '#16a34a' : '#94a3b8',
+                            color: '#ffffff',
+                          }}
+                        >
+                          {currentFormatQueueCount} na fila para imprimir
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 3 }}>
+                        {formatTab === 'A6'
+                          ? 'Epson L14150: Impressão vertical no topo da folha A4 (Superior: 0, centralizado)'
+                          : formatTab === 'A5'
+                            ? 'Epson L14150: Impressão vertical centralizada no A4 (Superior: 0)'
+                            : formatTab === 'A4'
+                              ? 'Epson L14150: Folha A4 vertical completa'
+                              : formatTab === 'A3'
+                                ? 'Epson L14150: Folha A3 vertical completa (bandeja traseira)'
+                                : 'Impressão proporcional ao formato selecionado'}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                        Por vez:
+                        <input
+                          type="number"
+                          min={1}
+                          max={200}
+                          value={batchSize}
+                          onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 10))}
+                          style={{ width: 60, padding: '5px 6px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        style={{
+                          background: '#16a34a',
+                          color: '#ffffff',
+                          padding: '8px 16px',
+                          fontSize: 12.5,
+                          fontWeight: 700,
+                          borderRadius: 8,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          boxShadow: '0 2px 4px rgba(22,163,74,0.25)',
+                        }}
+                        onClick={() =>
+                          run(async () => {
+                            handleTriggerPartialPrint(false);
+                          })
+                        }
+                      >
+                        🖨️ Imprimir Lote ({currentFormatQueueCount > 0 ? Math.min(currentFormatQueueCount, batchSize) : 0})
+                      </button>
+                      <button
+                        type="button"
+                        className="subtle"
+                        style={{ padding: '8px 12px', fontSize: 12 }}
+                        onClick={() =>
+                          run(async () => {
+                            handleTriggerPartialPrint(true);
+                          })
+                        }
+                      >
+                        🔄 Reimprimir
+                      </button>
+                      <button
+                        type="button"
+                        style={{ background: '#0284c7', color: '#fff', padding: '8px 12px', fontSize: 12, borderRadius: 8 }}
+                        onClick={() => setShowExportModal(true)}
+                      >
+                        📦 Exportar (PSD / SK)
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="library-toolbar" style={{ marginBottom: 14 }}>
                     <input
                       aria-label="Pesquisar F7 ou descrição na pasta de ofertas"
@@ -1212,42 +1478,6 @@ export function OfferFolders({
                       <option value="pendente">Status: Pendente</option>
                       <option value="impresso">Status: Impresso</option>
                     </select>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-                      Cartazes por parte:
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={batchSize}
-                        onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 10))}
-                        style={{ width: 70 }}
-                      />
-                    </label>
-                    <button
-                      onClick={() =>
-                        run(async () => {
-                          handleTriggerPartialPrint(false);
-                        })
-                      }
-                    >
-                      Imprimir próxima parte (até {batchSize})
-                    </button>
-                    <button
-                      className="subtle"
-                      onClick={() =>
-                        run(async () => {
-                          handleTriggerPartialPrint(true);
-                        })
-                      }
-                    >
-                      Reimprimir selecionados
-                    </button>
-                    <button
-                      style={{ background: '#0284c7', color: '#fff', marginLeft: 'auto' }}
-                      onClick={() => setShowExportModal(true)}
-                    >
-                      📦 Exportar Cartazes (PSD / SK)
-                    </button>
                   </div>
 
                   <div className="offer-workspace">
@@ -1498,8 +1728,17 @@ export function OfferFolders({
                                   <div className="offer-posters-cell">
                                     {v.matchedPosters.map(m => {
                                       const key = `${v.item.id}::${m.state.cartazPath}`;
+                                      const isPreviewActive = key === previewKey;
                                       return (
-                                        <div key={key} className="offer-poster-row">
+                                        <div
+                                          key={key}
+                                          className="offer-poster-row"
+                                          style={{
+                                            border: isPreviewActive ? '2px solid #2563eb' : '1px solid #dfe5ee',
+                                            background: isPreviewActive ? '#f0f7ff' : '#f8fafd',
+                                            transition: 'all 0.15s ease',
+                                          }}
+                                        >
                                           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                             <input
                                               type="checkbox"
@@ -1508,10 +1747,50 @@ export function OfferFolders({
                                               onChange={e => handleTogglePosterSelection(v.item.id, m.state.cartazPath, e.target.checked)}
                                             />
                                             <span>
-                                              <strong>
-                                                {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
-                                                {m.libraryCartaz?.document.product.complement ?? ''}
-                                              </strong>
+                                              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                                                <strong>
+                                                  {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
+                                                  {m.libraryCartaz?.document.product.complement ?? ''}
+                                                </strong>
+                                                {(() => {
+                                                  const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+                                                  const badge = getFormatBadge(fmt);
+                                                  return (
+                                                    <span
+                                                      style={{
+                                                        fontSize: 10.5,
+                                                        fontWeight: 700,
+                                                        padding: '2px 7px',
+                                                        borderRadius: 6,
+                                                        background: badge.bg,
+                                                        color: badge.text,
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        gap: 4,
+                                                      }}
+                                                    >
+                                                      {badge.icon} {badge.label}
+                                                    </span>
+                                                  );
+                                                })()}
+                                                {Boolean((m.scheduledDocument?.product as any)?.hasBoxPrice) && (
+                                                  <span
+                                                    style={{
+                                                      fontSize: 10.5,
+                                                      fontWeight: 700,
+                                                      padding: '2px 7px',
+                                                      borderRadius: 6,
+                                                      background: '#dcfce7',
+                                                      color: '#166534',
+                                                      display: 'inline-flex',
+                                                      alignItems: 'center',
+                                                      gap: 4,
+                                                    }}
+                                                  >
+                                                    📦 Caixa {(m.scheduledDocument?.product as any).boxQuantity || 12} {(m.scheduledDocument?.product as any).boxUnitLabel || 'UND.'}
+                                                  </span>
+                                                )}
+                                              </div>
                                               <div style={{ fontSize: 13, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                                                 <span>
                                                   Preço no cartaz:{' '}
@@ -1686,23 +1965,49 @@ export function OfferFolders({
                     </div>
 
                     <div className="offer-preview-box">
-                      <h3>Prévia com Preço Programado</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <h3 style={{ margin: 0, fontSize: 14 }}>Prévia do Cartaz</h3>
+                        {selectedPosterPreview && (() => {
+                          const fmt = getPosterPaperFormat(null, selectedPosterPreview.posterState.cartazPath);
+                          const badge = getFormatBadge(fmt);
+                          return (
+                            <span
+                              style={{
+                                fontSize: 10.5,
+                                fontWeight: 700,
+                                padding: '2px 8px',
+                                borderRadius: 12,
+                                background: badge.bg,
+                                color: badge.text,
+                              }}
+                            >
+                              {badge.icon} {badge.label}
+                            </span>
+                          );
+                        })()}
+                      </div>
                       {selectedPosterPreview ? (
                         <>
-                          <p style={{ marginBottom: 8 }}>
-                            <strong>{selectedPosterPreview.item.description}</strong> (F7:{' '}
-                            {selectedPosterPreview.item.f7})
-                            <br />
-                            Biblioteca: {money(selectedPosterPreview.currentPriceCents)} →{' '}
-                            <strong>Programado: {money(selectedPosterPreview.item.scheduledPriceCents)}</strong>
-                          </p>
+                          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', marginBottom: 10 }}>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b' }}>
+                              {selectedPosterPreview.item.description}
+                            </div>
+                            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span>F7: <strong>{selectedPosterPreview.item.f7}</strong></span>
+                              <span>•</span>
+                              <span>Preço Oferta: <strong style={{ color: '#16a34a', fontSize: 13 }}>{money(selectedPosterPreview.item.scheduledPriceCents)}</strong></span>
+                            </div>
+                            <div style={{ fontSize: 10.5, color: '#3b82f6', marginTop: 4 }}>
+                              📄 {selectedPosterPreview.posterState.cartazPath.split(/[\\/]/).pop()}
+                            </div>
+                          </div>
                           <div className="paper-wrap">
                             <PosterView poster={selectedPosterPreview.poster} />
                           </div>
                         </>
                       ) : (
                         <p className="empty">
-                          Vincule um cartaz da biblioteca pelo F7 para visualizar a prévia com o preço futuro.
+                          Selecione um cartaz da lista para visualizar a prévia com o preço da oferta.
                         </p>
                       )}
                     </div>

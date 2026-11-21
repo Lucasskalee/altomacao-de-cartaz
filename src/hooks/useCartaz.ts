@@ -79,9 +79,9 @@ export function useCartaz() {
       const normalize = (value: string) => value.replace(/\//g, '\\').toLowerCase();
       if (!dirty && path && paths.some(value => normalize(value) === normalize(path))) load(await storage.openDocument(path), path);
     },
-    change(field: string, value: string) {
+    change(field: string, value: any) {
       if (field === 'price') setPrice(value);
-      else setDocument(d => ({ ...d, product: { ...d.product, [field]: field === 'productCode' ? digitsOnly(value) : value } }));
+      else setDocument(d => ({ ...d, product: { ...d.product, [field]: field === 'productCode' && typeof value === 'string' ? digitsOnly(value) : value } }));
       setDirty(true);
     },
     changeLayout(patch: Partial<Cartaz['layout']>) {

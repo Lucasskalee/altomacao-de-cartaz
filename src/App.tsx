@@ -27,6 +27,7 @@ import {
 import { addPrintHistoryEntries, updatePrintHistoryStatus } from './features/history/service';
 import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
+import { priceToCents } from './features/cartazes/validation';
 import { isTauri } from '@tauri-apps/api/core';
 
 const EditLinkedPsd = lazy(() =>
@@ -946,6 +947,95 @@ export default function App() {
                   />
                 </div>
               )}
+
+              {/* MÓDULO OPCIONAL: Caixa Fechada / Atacado (Preço Duplo) */}
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '10px 12px',
+                  background: (editor.document.product as any).hasBoxPrice ? '#f0fdf4' : '#f8fafc',
+                  borderRadius: 8,
+                  border: (editor.document.product as any).hasBoxPrice ? '1px solid #86efac' : '1px solid #e2e8f0',
+                }}
+              >
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    cursor: 'pointer',
+                    fontWeight: 700,
+                    margin: 0,
+                    color: (editor.document.product as any).hasBoxPrice ? '#166534' : '#334155',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={Boolean((editor.document.product as any).hasBoxPrice)}
+                    onChange={e => {
+                      const checked = e.target.checked;
+                      editor.change('hasBoxPrice', checked);
+                      if (checked && !(editor.document.product as any).boxPriceCents) {
+                        const unitPrice = priceToCents(editor.price);
+                        const qty = Number((editor.document.product as any).boxQuantity) || 12;
+                        editor.change('boxQuantity', qty);
+                        editor.change('boxUnitLabel', (editor.document.product as any).boxUnitLabel || 'UND.');
+                        editor.change('boxPriceCents', unitPrice * qty);
+                      }
+                    }}
+                  />
+                  <span>📦 Ativar Caixa Fechada (Atacado / Combo)</span>
+                </label>
+
+                {Boolean((editor.document.product as any).hasBoxPrice) && (
+                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '80px 80px 1fr auto', gap: 8, alignItems: 'flex-end' }}>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Qtd. Caixa</label>
+                      <input
+                        type="number"
+                        className="editor-input"
+                        min={1}
+                        style={{ padding: '6px 8px', fontSize: 13 }}
+                        value={(editor.document.product as any).boxQuantity ?? 12}
+                        onChange={e => editor.change('boxQuantity', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Rótulo</label>
+                      <input
+                        className="editor-input"
+                        style={{ padding: '6px 8px', fontSize: 13 }}
+                        value={((editor.document.product as any).boxUnitLabel as string) || 'UND.'}
+                        onChange={e => editor.change('boxUnitLabel', e.target.value.toUpperCase())}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Preço Total (R$)</label>
+                      <input
+                        className="editor-input price-input"
+                        inputMode="decimal"
+                        style={{ padding: '6px 8px', fontSize: 13 }}
+                        value={formatCentsBr((editor.document.product as any).boxPriceCents ?? (priceToCents(editor.price) * (Number((editor.document.product as any).boxQuantity) || 12)))}
+                        onChange={e => editor.change('boxPriceCents', priceToCents(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        className="editor-btn subtle"
+                        style={{ padding: '7px 10px', fontSize: 11, height: 35, whiteSpace: 'nowrap' }}
+                        title="Recalcular = Preço unitário × Quantidade"
+                        onClick={() => {
+                          const qty = Number((editor.document.product as any).boxQuantity) || 12;
+                          editor.change('boxPriceCents', priceToCents(editor.price) * qty);
+                        }}
+                      >
+                        ⚡ Calcular
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {priceWarning && (
                 <p className="error-text" role="alert" style={{ margin: '10px 0 0 0', fontSize: 12 }}>

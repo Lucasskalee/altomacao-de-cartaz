@@ -1,5 +1,16 @@
-import { readPsd, type Layer, type Psd, type RGB, type RGBA, type FRGB } from 'ag-psd';
+import { readPsd, type ColorMode, type Layer, type Psd, type RGB, type RGBA, type FRGB, type CMYK, type Grayscale } from 'ag-psd';
 import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole, PosterTemplateModel } from '../cartazes/types';
+
+export const PSD_COLOR_MODE = {
+  Bitmap: 0,
+  Grayscale: 1,
+  Indexed: 2,
+  RGB: 3,
+  CMYK: 4,
+  Multichannel: 7,
+  Duotone: 8,
+  Lab: 9,
+} as const;
 
 export const PSD_MAX_BYTES = 80 * 1024 * 1024;
 export type PsdRoleMap = Partial<Record<ImportedPriceRole, string>>;
@@ -48,7 +59,29 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
     psd = readPsd(bytes, { skipThumbnail: true, skipLinkedFilesData: true, totalMemoryLimit: 512 * 1024 * 1024, throwForMissingFeatures: false });
   } catch (error) { throw new Error(`Não foi possível interpretar o PSD: ${String(error)}`); }
   if (psd.width < 1 || psd.height < 1 || psd.width > 10_000 || psd.height > 10_000) throw new Error('Dimensões PSD fora do limite de 10.000 × 10.000 px.');
-  if (psd.bitsPerChannel !== 8 || psd.colorMode !== 3) throw new Error('O piloto aceita somente PSD RGB com 8 bits por canal.');
+  const supportedColorModes: number[] = [
+    PSD_COLOR_MODE.RGB, // 3
+    PSD_COLOR_MODE.CMYK, // 4
+    PSD_COLOR_MODE.Grayscale, // 1
+    PSD_COLOR_MODE.Indexed, // 2
+  ];
+  if (psd.colorMode !== undefined && !supportedColorModes.includes(psd.colorMode)) {
+    const modeName =
+      psd.colorMode === PSD_COLOR_MODE.Bitmap
+        ? 'Bitmap'
+        : psd.colorMode === PSD_COLOR_MODE.Multichannel
+        ? 'Multichannel'
+        : psd.colorMode === PSD_COLOR_MODE.Duotone
+        ? 'Duotone'
+        : psd.colorMode === PSD_COLOR_MODE.Lab
+        ? 'Lab'
+        : `Código ${psd.colorMode}`;
+    throw new Error(`Modo de cor não suportado (${modeName}). Utilize arquivos PSD nos modos RGB, CMYK ou Tons de Cinza.`);
+  }
+  const supportedBits = [8, 16, 32];
+  if (psd.bitsPerChannel !== undefined && !supportedBits.includes(psd.bitsPerChannel)) {
+    throw new Error(`Profundidade de cor (${psd.bitsPerChannel} bits por canal) não suportada. Utilize PSD com 8 ou 16 bits por canal.`);
+  }
   if (!psd.canvas) throw new Error('O PSD não contém uma composição visual utilizável.');
   const runtime = new Map<string, Layer>();
   const layers: ImportedLayerInfo[] = [];
@@ -57,6 +90,14 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   const suggested = suggest(layers);
   const metadata = extractMetadata(layers, suggested);
   const warnings: string[] = [];
+  if (psd.colorMode === PSD_COLOR_MODE.CMYK) {
+    warnings.push('O PSD original está em CMYK (padrão gráfico de impressão); a prévia foi convertida automaticamente para RGB com preservação visual.');
+  } else if (psd.colorMode === PSD_COLOR_MODE.Grayscale) {
+    warnings.push('O PSD original está em Tons de Cinza (Grayscale).');
+  }
+  if (psd.bitsPerChannel && psd.bitsPerChannel > 8) {
+    warnings.push(`O PSD possui alta fidelidade de cor (${psd.bitsPerChannel} bits por canal) e foi adaptado para visualização.`);
+  }
   const ratio = psd.width / psd.height, a5 = 148 / 210;
   if (Math.abs(ratio - a5) / a5 > .005) warnings.push('A proporção difere do A5; será aplicado encaixe proporcional com margens, sem distorção.');
   if (!suggested.whole || !suggested.fraction) warnings.push('Confirme manualmente as camadas de reais e centavos.');
@@ -312,25 +353,57 @@ function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): I
   return {
     role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
     fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
-    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as RGB | RGBA | FRGB | undefined, role),
+    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as any, role),
     shadow: shadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: shadow.size?.value ?? 0, color: '#000000' } : undefined,
     stroke: stroke ? { size: stroke.size?.value ?? 0, color: '#000000' } : undefined,
   };
 }
 
-function colorHex(color?: RGB | RGBA | FRGB, role?: ImportedRole): string {
+export function colorHex(color?: RGB | RGBA | FRGB | CMYK | Grayscale | { [key: string]: unknown }, role?: ImportedRole): string {
   if (!color) {
     return (role === 'validity' || role === 'category' || role === 'complement' || role === 'title' || role === 'packaging')
       ? '#000000'
       : '#c74624';
   }
-  if ('fr' in color) {
-    const values = [color.fr, color.fg, color.fb].map(v => Math.round(Math.max(0, Math.min(255, v * 255))));
+  if ('fr' in color && typeof color.fr === 'number') {
+    const values = [color.fr, (color as FRGB).fg, (color as FRGB).fb].map(v => Math.round(Math.max(0, Math.min(255, v * 255))));
     return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;
   }
-  const values = [color.r, color.g, color.b].map(v => Math.round(Math.max(0, Math.min(255, v))));
-  if (values.every(v => v <= 18)) {
-    return '#000000';
+  if ('c' in color && 'm' in color && 'y' in color && 'k' in color) {
+    const cVal = Number(color.c) || 0;
+    const mVal = Number(color.m) || 0;
+    const yVal = Number(color.y) || 0;
+    const kVal = Number(color.k) || 0;
+    const c = Math.max(0, Math.min(1, cVal > 1 ? cVal / 255 : cVal));
+    const m = Math.max(0, Math.min(1, mVal > 1 ? mVal / 255 : mVal));
+    const y = Math.max(0, Math.min(1, yVal > 1 ? yVal / 255 : yVal));
+    const k = Math.max(0, Math.min(1, kVal > 1 ? kVal / 255 : kVal));
+    const r = Math.round(255 * (1 - c) * (1 - k));
+    const g = Math.round(255 * (1 - m) * (1 - k));
+    const b = Math.round(255 * (1 - y) * (1 - k));
+    if (r <= 18 && g <= 18 && b <= 18) {
+      return '#000000';
+    }
+    return `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
   }
-  return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  if ('k' in color && !('c' in color)) {
+    const kVal = Number(color.k) || 0;
+    const k = Math.max(0, Math.min(255, kVal > 1 ? kVal : kVal * 255));
+    const val = Math.round(255 - k);
+    if (val <= 18) {
+      return '#000000';
+    }
+    const hex = val.toString(16).padStart(2, '0');
+    return `#${hex}${hex}${hex}`;
+  }
+  if ('r' in color && 'g' in color && 'b' in color) {
+    const values = [(color as RGB).r, (color as RGB).g, (color as RGB).b].map(v => Math.round(Math.max(0, Math.min(255, Number(v) || 0))));
+    if (values.every(v => v <= 18)) {
+      return '#000000';
+    }
+    return `#${values.map(v => v.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return (role === 'validity' || role === 'category' || role === 'complement' || role === 'title' || role === 'packaging')
+    ? '#000000'
+    : '#c74624';
 }

@@ -13,7 +13,7 @@ export type ImportedPricePart = {
   color: string; shadow?: { dx: number; dy: number; blur: number; color: string };
   stroke?: { size: number; color: string };
 };
-export type PosterTemplateModel = 'oferta' | 'vencimento';
+export type PosterTemplateModel = 'oferta' | 'destaque' | 'vencimento' | 'scantech' | 'caixa';
 
 export type ImportedArtwork = {
   kind: 'imported-psd'; compatibility: 'ready' | 'requires-preparation';

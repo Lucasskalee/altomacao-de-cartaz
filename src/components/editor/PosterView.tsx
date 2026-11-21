@@ -24,6 +24,10 @@ export type Poster = {
   validityText?: string;
   formatConfig?: PosterFormatConfig;
   expositorPanel?: ExpositorPanelInfo;
+  hasBoxPrice?: boolean;
+  boxQuantity?: number;
+  boxUnitLabel?: string;
+  boxPrice?: string;
 };
 
 export const initial: Poster = { name: 'REPOLHO', detail: 'VERDE', price: '2,89', unit: 'KG' };
@@ -217,6 +221,10 @@ function ImportedPosterView({
             name: poster.name,
             complement: poster.detail,
             unit: poster.unit,
+            hasBoxPrice: poster.hasBoxPrice,
+            boxQuantity: poster.boxQuantity,
+            boxUnitLabel: poster.boxUnitLabel,
+            boxPrice: poster.boxPrice,
           }
         )
           .then(() => {
@@ -258,6 +266,10 @@ function ImportedPosterView({
             name: poster.name,
             complement: poster.detail,
             unit: poster.unit,
+            hasBoxPrice: poster.hasBoxPrice,
+            boxQuantity: poster.boxQuantity,
+            boxUnitLabel: poster.boxUnitLabel,
+            boxPrice: poster.boxPrice,
           }
         )
           .then(() => {

@@ -33,6 +33,10 @@ export function posterFromDocument(document: Cartaz): Poster {
       ((product as any).validityText as string) ||
       artwork?.priceParts?.find(p => p.role === 'validity')?.originalText ||
       '',
+    hasBoxPrice: Boolean((product as any).hasBoxPrice),
+    boxQuantity: (product as any).boxQuantity ? Number((product as any).boxQuantity) : undefined,
+    boxUnitLabel: ((product as any).boxUnitLabel as string) || 'UND.',
+    boxPrice: (product as any).boxPriceCents ? formatCentsBr((product as any).boxPriceCents) : undefined,
     artwork,
   };
 }

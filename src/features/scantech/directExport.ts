@@ -267,6 +267,20 @@ export const defaultDirectExportIo: ScantechDirectExportIo = {
   },
 };
 
+function preparePsdForWriting(psd: Psd) {
+  psd.colorMode = 3; // ColorMode.RGB
+  psd.bitsPerChannel = 8;
+  const cleanLayer = (layer: Layer) => {
+    if (layer.rawData && (layer.rawData.bitsPerChannel !== 8 || layer.rawData.colorMode !== 3)) {
+      delete (layer as any).rawData;
+    }
+    if (layer.children) {
+      layer.children.forEach(cleanLayer);
+    }
+  };
+  (psd.children ?? []).forEach(cleanLayer);
+}
+
 export async function executeScantechDirectExportJob(
   job: ScantechExportJob,
   io: ScantechDirectExportIo = defaultDirectExportIo
@@ -455,6 +469,7 @@ export async function executeScantechDirectExportJob(
 
   let outBytes: ArrayBuffer;
   try {
+    preparePsdForWriting(psd);
     outBytes = writePsd(psd, { invalidateTextLayers: true });
   } catch (e) {
     return {
@@ -699,6 +714,7 @@ export async function exportDerivedPsdDirect(
 
   let outBytes: ArrayBuffer;
   try {
+    preparePsdForWriting(psd);
     outBytes = writePsd(psd, { invalidateTextLayers: true });
   } catch (e) {
     return { ok: false, error: `Falha ao serializar PSD atualizado: ${e instanceof Error ? e.message : String(e)}`, outputPsdPath: payload.outputPsdPath };

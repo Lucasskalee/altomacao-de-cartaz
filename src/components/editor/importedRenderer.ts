@@ -337,6 +337,10 @@ export type DynamicPosterTexts = {
   name?: string;
   complement?: string;
   unit?: string;
+  hasBoxPrice?: boolean;
+  boxQuantity?: number;
+  boxUnitLabel?: string;
+  boxPrice?: string;
 };
 
 export async function drawImported(
@@ -382,6 +386,59 @@ export async function drawImported(
       drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
     }
   }
+  if (dynamicTexts?.hasBoxPrice && dynamicTexts?.boxPrice) {
+    drawBoxPriceSection(
+      context,
+      artwork,
+      dynamicTexts.boxPrice,
+      dynamicTexts.boxQuantity ?? 12,
+      dynamicTexts.boxUnitLabel ?? 'UND.'
+    );
+  }
+  context.restore();
+}
+
+function drawBoxPriceSection(
+  context: CanvasRenderingContext2D,
+  artwork: ImportedArtwork,
+  boxPrice: string,
+  boxQty = 12,
+  boxUnit = 'UND.'
+) {
+  const { whole, fraction } = sanitizePrice(boxPrice);
+  const canvasW = artwork.canvas.width;
+  const canvasH = artwork.canvas.height;
+
+  const lineY = Math.round(canvasH * 0.80);
+  const lineMargin = Math.round(canvasW * 0.07);
+  context.save();
+  context.fillStyle = '#000000';
+  context.fillRect(lineMargin, lineY, canvasW - lineMargin * 2, 8);
+
+  context.font = '700 36px ArialMT, Arial, sans-serif';
+  context.textAlign = 'left';
+  context.textBaseline = 'top';
+  context.fillText('CAIXA COM', lineMargin + 10, lineY + 20);
+
+  context.font = '900 48px Impact, Arial Black, sans-serif';
+  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, lineMargin + 10, lineY + 68);
+
+  const priceStartX = Math.round(canvasW * 0.46);
+  context.fillStyle = '#000000';
+  context.font = '700 140px Zullia, sans-serif';
+  context.textBaseline = 'alphabetic';
+  const wholeMetrics = context.measureText(whole);
+  context.fillText(whole, priceStartX, lineY + 130);
+
+  const fracX = priceStartX + wholeMetrics.width + 12;
+  context.font = '700 80px Zullia, sans-serif';
+  context.fillText(fraction, fracX, lineY + 70);
+
+  const fracMetrics = context.measureText(fraction);
+  context.fillRect(fracX - 4, lineY + 84, Math.max(60, fracMetrics.width + 8), 6);
+
+  context.font = '700 50px Zullia, sans-serif';
+  context.fillText(',', fracX + 4, lineY + 130);
   context.restore();
 }
 

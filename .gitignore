@@ -11,3 +11,4 @@ artifacts/
 *.xlsx
 *.xls
 .agents/
+dist-installer*/

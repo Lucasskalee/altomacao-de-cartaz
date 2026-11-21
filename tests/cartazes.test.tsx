@@ -9,6 +9,7 @@ import './history.test';
 import './filtros.test';
 import './textAdjustment.test';
 import './visualFidelity.test';
+import './psdColorDepth.test';
 import assert from 'node:assert/strict';
 import { createDocument, duplicate, serialize, deserialize } from '../src/features/cartazes/serialization';
 import { priceToCents, fileName, MAX_DOCUMENT_CHARS } from '../src/features/cartazes/validation';
@@ -387,4 +388,39 @@ test('Modelos de Layout: criação de Oferta e Vencimento, alternância dinâmic
   assert.equal(getPosterModel(docRetornado), 'oferta');
   assert.equal(docRetornado.product.name, 'MACARRÃO INSTANTÂNEO');
   assert.equal(docRetornado.product.priceCents, 249);
+});
+
+test('Caixa Fechada e Filtros de Formato: suporte a PEQUENOS (A6), MÉDIOS (A5), A4, A3 e EXTERNOS', async () => {
+  const { getPosterPaperFormat, getFormatBadge } = await import('../src/components/ofertas/OfferFolders');
+  const doc = createDocument();
+  doc.product = {
+    name: 'CERVEJA AMSTEL',
+    complement: 'LATA 269ML',
+    priceCents: 269,
+    unit: 'UN',
+    hasBoxPrice: true,
+    boxQuantity: 12,
+    boxUnitLabel: 'UND.',
+    boxPriceCents: 3228,
+  } as any;
+
+  const poster = posterFromDocument(doc);
+  assert.equal(poster.name, 'CERVEJA AMSTEL');
+  assert.equal(poster.price, '2,69');
+  assert.equal(poster.hasBoxPrice, true);
+  assert.equal(poster.boxQuantity, 12);
+  assert.equal(poster.boxUnitLabel, 'UND.');
+  assert.equal(poster.boxPrice, '32,28');
+
+  // Detecção de formatos pelas pastas e metadados
+  assert.equal(getPosterPaperFormat(null, 'C:\\Ofertas\\PEQUENOS\\amstel.skcartaz'), 'A6');
+  assert.equal(getPosterPaperFormat(null, 'C:\\Ofertas\\MÉDIOS\\amstel.skcartaz'), 'A5');
+  assert.equal(getPosterPaperFormat(null, 'C:\\Ofertas\\CARTAZ A4\\amstel.skcartaz'), 'A4');
+  assert.equal(getPosterPaperFormat(null, 'C:\\Ofertas\\CARTAZ AÇOUGUE A3\\carne.skcartaz'), 'A3');
+  assert.equal(getPosterPaperFormat(null, 'C:\\Ofertas\\CARTAZ EXTERNOS\\outdoor.skcartaz'), 'expositor-a3-2x2');
+
+  const badgeA6 = getFormatBadge('A6');
+  assert.equal(badgeA6.label, 'Pequeno (A6)');
+  const badgeA5 = getFormatBadge('A5');
+  assert.equal(badgeA5.label, 'Médio (A5)');
 });
