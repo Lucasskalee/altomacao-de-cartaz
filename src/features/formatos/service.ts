@@ -157,16 +157,41 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
         margin: 0 !important;
         padding: 0 !important;
         background: #fff !important;
+        overflow: visible !important;
       }
-      header, main, .sk-header, .sk-navigation, .notifications, .workspace, .modal-backdrop {
+      body > *:not(.print-only),
+      #root > *:not(.print-only),
+      .app > *:not(.print-only),
+      .sk-body-layout,
+      .sk-sidebar,
+      .sk-main-content,
+      .sk-header,
+      .library-container,
+      .offer-folders,
+      header,
+      aside,
+      nav,
+      main,
+      fieldset,
+      .workspace,
+      .modal-backdrop,
+      .notifications,
+      .price-confirmation {
         display: none !important;
+        visibility: hidden !important;
+        height: 0 !important;
+        width: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        overflow: hidden !important;
       }
       .print-only {
         display: block !important;
-        position: absolute !important;
-        inset: 0 !important;
+        visibility: visible !important;
+        position: static !important;
         width: ${sheetWidth}mm !important;
-        margin: 0 !important;
+        margin: 0 auto !important;
         padding: 0 !important;
         background: #fff !important;
       }
@@ -180,8 +205,8 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
         display: flex !important;
         flex-direction: column !important;
         align-items: center !important;
-        justify-content: flex-start !important;
-        margin: 0 !important;
+        justify-content: center !important;
+        margin: 0 auto !important;
         padding: 0 !important;
         background: transparent !important;
         box-sizing: border-box !important;
@@ -193,7 +218,7 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
       .print-only .poster {
         width: ${artWidth}mm !important;
         height: ${artHeight}mm !important;
-        margin: 0 auto !important;
+        margin: auto !important;
         box-shadow: none !important;
         print-color-adjust: exact !important;
         -webkit-print-color-adjust: exact !important;

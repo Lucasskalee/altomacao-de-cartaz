@@ -159,6 +159,17 @@ export function useCartaz() {
             const packText = artwork.templateParts?.find(p => p.role === 'packaging')?.originalText ?? analysis.metadata.unit;
             const valText = artwork.priceParts?.find(p => p.role === 'validity')?.originalText ?? analysis.metadata.validityText ?? '';
             const now = new Date().toISOString();
+            const upperPath = (source.path || source.name).toUpperCase();
+            const detectedPaper =
+              upperPath.includes('MÉDIO') || upperPath.includes('MEDIO') || upperPath.includes('A5')
+                ? 'A5'
+                : upperPath.includes('A4')
+                ? 'A4'
+                : upperPath.includes('A3')
+                ? 'A3'
+                : upperPath.includes('EXTERNO') || upperPath.includes('2X2')
+                ? 'expositor-a3-2x2'
+                : 'A6';
             document = {
               schemaVersion: 1,
               id: crypto.randomUUID(),
@@ -173,7 +184,7 @@ export function useCartaz() {
               },
               layout: {
                 template: 'imported-psd',
-                paper: 'A5',
+                paper: detectedPaper,
                 orientation: 'portrait',
                 artwork,
               },

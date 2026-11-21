@@ -94,6 +94,7 @@ export default function App() {
   const [queue, setQueue] = useState<Poster[]>([]);
   const [conductorQueue, setConductorQueue] = useState<ConductorQueueItem[]>([]);
   const [batchPrintPosters, setBatchPrintPosters] = useState<Poster[] | null>(null);
+  const [batchPrintFormat, setBatchPrintFormat] = useState<PosterFormatConfig | null>(null);
   const [showFormatMenu, setShowFormatMenu] = useState(() => (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('formatMenu') === '1' : false));
   const formatMenuRef = useRef<HTMLDivElement>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
@@ -263,10 +264,12 @@ export default function App() {
   ) => {
     if (!posters || posters.length === 0) {
       setBatchPrintPosters(null);
+      setBatchPrintFormat(null);
       return;
     }
 
     const effectiveFormat = options?.formatConfig || activeFormat;
+    setBatchPrintFormat(effectiveFormat);
     applyDynamicPrintStyles(effectiveFormat);
 
     renderedPostersCountRef.current = 0;
@@ -315,6 +318,7 @@ export default function App() {
 
     if (!options?.keepMountedUntilConfirmed) {
       setBatchPrintPosters(null);
+      setBatchPrintFormat(null);
     }
     removeDynamicPrintStyles();
   };
@@ -1714,12 +1718,21 @@ export default function App() {
       {batchPrintPosters && batchPrintPosters.length > 0 ? (
         batchPrintPosters.map((p, i) => (
           <div className="print-page" key={i}>
-            <PosterView poster={p} isPrint={true} onRendered={handlePosterRendered} />
+            <PosterView
+              poster={p}
+              isPrint={true}
+              formatConfig={p.formatConfig || batchPrintFormat || activeFormat}
+              onRendered={handlePosterRendered}
+            />
           </div>
         ))
       ) : (
         <div className="print-page">
-          <PosterView poster={poster} isPrint={true} />
+          <PosterView
+            poster={poster}
+            isPrint={true}
+            formatConfig={batchPrintFormat || activeFormat}
+          />
         </div>
       )}
     </div>
