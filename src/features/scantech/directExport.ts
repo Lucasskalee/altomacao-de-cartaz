@@ -78,6 +78,96 @@ function createLayerCanvas(w: number, h: number): any {
 }
 
 /**
+ * Calcula a matriz afim de transformação de Reais ajustada com precisão cirúrgica,
+ * garantindo alinhamento à direita junto à vírgula e escala horizontal para evitar
+ * colisões com centavos ou limites da página no Photoshop CS6.
+ */
+export function computeAdjustedWholeTransform(
+  wholeLayer: Layer,
+  newWhole: string,
+  fractionLayer?: Layer | null,
+  canvasWidth = 1179
+): {
+  transform: [number, number, number, number, number, number];
+  horizontalScale: number;
+} | null {
+  if (!wholeLayer.text?.transform || wholeLayer.text.transform.length !== 6) {
+    return null;
+  }
+  const [a, bm, c, d, e, f] = wholeLayer.text.transform;
+  const origText = (wholeLayer.text.text || '0').trim();
+  const value = newWhole.trim();
+  const fontSize = typeof wholeLayer.text.style?.fontSize === 'number' && wholeLayer.text.style.fontSize > 0
+    ? wholeLayer.text.style.fontSize
+    : 50;
+
+  // Medição no espaço do transform usando canvas se disponível, com fallback para métricas Zullia
+  let origLocal = 0;
+  let measuredLocal = 0;
+
+  const canvas = createLayerCanvas(10, 10);
+  const ctx = canvas?.getContext?.('2d');
+  if (ctx && typeof ctx.measureText === 'function') {
+    ctx.font = `400 ${fontSize}px "Zullia", sans-serif`;
+    origLocal = ctx.measureText(origText).width;
+    measuredLocal = ctx.measureText(value).width;
+  }
+
+  const estimateZulliaWidth = (text: string) => {
+    let units = 0;
+    for (const ch of text) {
+      if (ch === '1') units += 0.36;
+      else if (ch === '0') units += 0.58;
+      else if (ch === '2' || ch === '3' || ch === '5') units += 0.54;
+      else if (ch === '4' || ch === '6' || ch === '9') units += 0.56;
+      else if (ch === '7') units += 0.48;
+      else if (ch === '8') units += 0.55;
+      else units += 0.54;
+    }
+    return units * fontSize;
+  };
+
+  if (origLocal <= 0 || isNaN(origLocal) || origLocal === origText.length * 10) {
+    origLocal = estimateZulliaWidth(origText);
+  }
+  if (measuredLocal <= 0 || isNaN(measuredLocal) || measuredLocal === value.length * 10) {
+    measuredLocal = estimateZulliaWidth(value);
+  }
+
+  const scaleX = Math.hypot(a, bm);
+  const unscaledPxWidth = measuredLocal * scaleX;
+
+  // Limite seguro à esquerda e à direita
+  const obstacleLeft = fractionLayer?.left && fractionLayer.left > 100
+    ? fractionLayer.left
+    : canvasWidth * 0.55;
+  const safeRightLimit = Math.max(120, obstacleLeft - 20);
+  const safeLeftLimit = 36;
+  const availableWidth = Math.max(120, safeRightLimit - safeLeftLimit);
+
+  const hScale = unscaledPxWidth > availableWidth
+    ? Math.max(0.48, availableWidth / unscaledPxWidth)
+    : 1.0;
+
+  // Alinhamento à direita preservando a proximidade da vírgula
+  const deltaU = (origLocal - measuredLocal * hScale) / 2;
+  const targetTx = e + deltaU * a;
+  const targetTy = f + deltaU * bm;
+
+  return {
+    transform: [
+      a * hScale,
+      bm * hScale,
+      c,
+      d,
+      targetTx,
+      targetTy,
+    ],
+    horizontalScale: hScale,
+  };
+}
+
+/**
  * Renderiza o texto atualizado diretamente no canal de bitmap (layer.canvas) com bounds expandidos
  * e matriz afim de transformação (transform).
  * No Photoshop CS6, camadas de texto dependem do canal de bitmap para exibição imediata ao abrir o arquivo.
@@ -438,6 +528,15 @@ export async function executeScantechDirectExportJob(
     }
   }
 
+  const adjJob = computeAdjustedWholeTransform(wholeLayer, job.wholeValue, fractionLayer, psd.width);
+  if (adjJob) {
+    wholeLayer.text.transform = adjJob.transform;
+    normalizedTransformApplied = true;
+    if (adjJob.horizontalScale < 1) {
+      appliedHScale = Math.min(appliedHScale, adjJob.horizontalScale);
+    }
+  }
+
   if (typeof job.horizontalScale === 'number' && job.horizontalScale > 0 && job.horizontalScale < 1) {
     appliedHScale = job.horizontalScale;
     if (wholeLayer.text.style) {
@@ -625,6 +724,16 @@ export async function exportDerivedPsdDirect(
   if (payload.roles.wholeLayerId) {
     const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
     if (wholeLayer && wholeLayer.text) {
+      const fractionLayer = payload.roles.fractionLayerId
+        ? resolveLayerByPath(psd, payload.roles.fractionLayerId)
+        : null;
+      const adj = computeAdjustedWholeTransform(wholeLayer, payload.whole, fractionLayer, psd.width);
+      if (adj) {
+        wholeLayer.text.transform = adj.transform;
+        if (adj.horizontalScale < 1 && wholeLayer.text.style) {
+          wholeLayer.text.style.horizontalScale = adj.horizontalScale;
+        }
+      }
       wholeLayer.text.text = payload.whole.trim();
       renderTextLayerToBitmap(wholeLayer, payload.whole, psd.width, psd.height);
       updatedAnyText = true;
