@@ -878,9 +878,27 @@ export function OfferFolders({
                 updatedAt: new Date().toISOString(),
               },
             };
-            await saveDocument(m.state.cartazPath, updatedDoc, true);
+            const savePath = m.libraryCartaz.path || m.state.cartazPath;
+            await saveDocument(savePath, updatedDoc, true);
             convertedCount++;
           }
+        }
+      }
+      for (const unlinked of v.unlinkedLibraryPosters) {
+        if (unlinked.document.layout.paper !== 'A6') {
+          const updatedDoc: Cartaz = {
+            ...unlinked.document,
+            layout: {
+              ...unlinked.document.layout,
+              paper: 'A6',
+            },
+            metadata: {
+              ...unlinked.document.metadata,
+              updatedAt: new Date().toISOString(),
+            },
+          };
+          await saveDocument(unlinked.path, updatedDoc, true);
+          convertedCount++;
         }
       }
     }
@@ -1892,7 +1910,8 @@ export function OfferFolders({
                                                                updatedAt: new Date().toISOString(),
                                                              },
                                                            };
-                                                           await saveDocument(m.state.cartazPath, updatedDoc, true);
+                                                           const savePath = m.libraryCartaz!.path || m.state.cartazPath;
+                                                           await saveDocument(savePath, updatedDoc, true);
                                                            if (onRefreshLibrary) await onRefreshLibrary();
                                                          });
                                                        }

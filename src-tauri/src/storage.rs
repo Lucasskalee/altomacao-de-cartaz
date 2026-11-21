@@ -71,8 +71,24 @@ pub(crate) fn document(s: &str) -> Result<Value, String> {
     // is digit-only in the editor; string codes have no fixed length limit.
     let template = v["layout"]["template"].as_str();
     let imported_ok = template != Some("imported-psd") || imported_artwork(&v["layout"]["artwork"]);
-    if v["schemaVersion"] != 1 || !text(&v["id"], 100) || v["id"].as_str() == Some("") || !text(&p["name"],32) || p["name"].as_str().unwrap_or("").trim().is_empty() || !text(&p["complement"],28) || !text(&p["unit"],12) || p["unit"].as_str().unwrap_or("").trim().is_empty() || !(p["productCode"].is_null() || p["productCode"].is_string()) || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true) || !matches!(template, Some("oferta-classica" | "imported-psd")) || !imported_ok || v["layout"]["paper"] != "A5" || v["layout"]["orientation"] != "portrait" || !text(&v["metadata"]["createdAt"],40) || !text(&v["metadata"]["updatedAt"],40) {
-        return Err("Documento incompatível: confira versão, produto, preço em centavos e layout A5.".into());
+    if v["schemaVersion"] != 1
+        || !text(&v["id"], 100)
+        || v["id"].as_str() == Some("")
+        || !text(&p["name"], 100)
+        || p["name"].as_str().unwrap_or("").trim().is_empty()
+        || !text(&p["complement"], 100)
+        || !text(&p["unit"], 12)
+        || p["unit"].as_str().unwrap_or("").trim().is_empty()
+        || !(p["productCode"].is_null() || p["productCode"].is_string())
+        || p["priceCents"].as_u64().map(|n| n > 99_999_999).unwrap_or(true)
+        || !matches!(template, Some("oferta-classica" | "imported-psd" | "oferta" | "caixa" | "vencimento"))
+        || !imported_ok
+        || !matches!(v["layout"]["paper"].as_str(), Some("A6" | "A5" | "A4" | "A3" | "expositor-a3-2x2" | "custom"))
+        || !matches!(v["layout"]["orientation"].as_str(), Some("portrait" | "landscape"))
+        || !text(&v["metadata"]["createdAt"], 40)
+        || !text(&v["metadata"]["updatedAt"], 40)
+    {
+        return Err("Documento incompatível: confira versão, produto, preço em centavos e layout.".into());
     }
     Ok(v)
 }
