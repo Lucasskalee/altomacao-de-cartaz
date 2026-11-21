@@ -636,7 +636,7 @@ function drawPart(
     context.shadowColor = part.shadow.color;
   }
   if (part.role === 'category') {
-    const text = (dynamicTexts ? (dynamicTexts.category ?? '') : (part.originalText ?? '')).trim();
+    const text = (dynamicTexts?.category || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -644,7 +644,7 @@ function drawPart(
     return;
   }
   if (part.role === 'title') {
-    const text = (dynamicTexts ? (dynamicTexts.name || part.originalText || '') : (part.originalText ?? '')).trim();
+    const text = (dynamicTexts?.name || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -652,7 +652,7 @@ function drawPart(
     return;
   }
   if (part.role === 'complement') {
-    const text = (dynamicTexts ? (dynamicTexts.complement ?? '') : (part.originalText ?? '')).trim();
+    const text = (dynamicTexts?.complement || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
@@ -660,7 +660,7 @@ function drawPart(
     return;
   }
   if (part.role === 'packaging') {
-    const text = (dynamicTexts ? (dynamicTexts.unit || part.originalText || '') : (part.originalText ?? '')).trim();
+    const text = (dynamicTexts?.unit || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
     drawTextLayer(context, part, text, '"Brush Hand New", BrushHandNew, cursive, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);

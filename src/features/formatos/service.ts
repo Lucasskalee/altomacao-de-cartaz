@@ -202,7 +202,7 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
         display: flex !important;
         flex-direction: column !important;
         align-items: center !important;
-        justify-content: center !important;
+        justify-content: flex-start !important;
         margin: 0 auto !important;
         padding: 0 !important;
         background: transparent !important;
@@ -215,7 +215,7 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
       .print-only .poster {
         width: ${artWidth}mm !important;
         height: ${artHeight}mm !important;
-        margin: auto !important;
+        margin: 0 auto !important;
         box-shadow: none !important;
         print-color-adjust: exact !important;
         -webkit-print-color-adjust: exact !important;

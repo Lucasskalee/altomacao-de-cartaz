@@ -139,13 +139,14 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
           libraryPriceCents = priceToCents(price);
         }
       }
-      document.product = {
+        document.product = {
         ...document.product,
         name: name.trim().toUpperCase(),
         complement: complement.trim().toUpperCase(),
         unit: unit.trim().toUpperCase(),
         productCode: f7.trim() || null,
         priceCents: libraryPriceCents,
+        category: artwork?.templateParts?.find(p => p.role === 'category')?.originalText || (document.product as any).category || '',
       };
       document.layout = { template: 'imported-psd', paper: 'A6', orientation: 'portrait', artwork };
       document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
@@ -258,7 +259,16 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
               <div>
                 <h3>{offerContext ? `Prévia da oferta (R$ ${price})` : 'Teste do preço'}</h3>
                 {artwork && validPrice ? (
-                  <PosterView poster={{ name, detail: complement, unit, price, artwork }} />
+                  <PosterView
+                    poster={{
+                      name,
+                      detail: complement,
+                      unit,
+                      price,
+                      category: artwork?.templateParts?.find(p => p.role === 'category')?.originalText,
+                      artwork,
+                    }}
+                  />
                 ) : (
                   <p className="empty">
                     Mapeie reais e centavos e informe um preço válido para gerar a prévia editável.
