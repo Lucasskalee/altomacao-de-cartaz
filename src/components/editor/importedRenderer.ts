@@ -397,52 +397,6 @@ export async function drawImported(
     for (const part of artwork.templateParts) {
       drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
     }
-  } else if (artwork.layers && artwork.layers.length > 0) {
-    // Fallback retrocompatível: localiza camadas de texto dinâmicas (título/marca) em cartazes antigos
-    const priceLayerIds = new Set((artwork.priceParts || []).map(p => p.layerId));
-    const nonPriceTextLayers = artwork.layers.filter(l =>
-      l.visible && l.type === 'text' && !priceLayerIds.has(l.id) &&
-      l.text && !/^[\d,.\sR$]+$/i.test(l.text.trim()) &&
-      !/(?:pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca)/i.test(l.text.trim())
-    ).sort((a, b) => a.bounds.top - b.bounds.top);
-
-    if (nonPriceTextLayers[0]) {
-      const titleLayer = nonPriceTextLayers[0];
-      const titlePart: ImportedPricePart = {
-        role: 'title',
-        layerId: titleLayer.id,
-        bounds: titleLayer.bounds,
-        fontFamily: titleLayer.font || 'Brush Hand New',
-        originalText: titleLayer.text,
-        color: '#000000',
-      };
-      drawPart(context, titlePart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
-    }
-    if (nonPriceTextLayers[1]) {
-      const compLayer = nonPriceTextLayers[1];
-      const compPart: ImportedPricePart = {
-        role: 'complement',
-        layerId: compLayer.id,
-        bounds: compLayer.bounds,
-        fontFamily: compLayer.font || 'Arial Black',
-        originalText: compLayer.text,
-        color: '#000000',
-      };
-      drawPart(context, compPart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
-    }
-    const unitRegex = /^(?:UN|UND|KG|G|L|ML|PCT|CX|LATA|PACOTE|PE[CÇ]A)\b/i;
-    const packLayer = artwork.layers.find(l => l.visible && l.type === 'text' && !priceLayerIds.has(l.id) && unitRegex.test((l.text ?? l.name).trim()));
-    if (packLayer) {
-      const packPart: ImportedPricePart = {
-        role: 'packaging',
-        layerId: packLayer.id,
-        bounds: packLayer.bounds,
-        fontFamily: packLayer.font || 'Brush Hand New',
-        originalText: packLayer.text,
-        color: '#000000',
-      };
-      drawPart(context, packPart, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
-    }
   }
 
   const hasNativeBoxLayers = Boolean(
@@ -730,6 +684,8 @@ function drawPart(
       const [a, bm, c, d, e, f] = part.transform;
       const scaleY = Math.hypot(c, d);
       const localStrokeWidth = Math.max(1, (strokeSize / Math.max(1, scaleY)) * 2);
+      const targetCenterX = (b.left + b.right) / 2;
+      const localTargetX = Math.abs(a) > 0.001 ? (targetCenterX - e) / a : 0;
       context.transform(a, bm, c, d, e, f);
       context.font = `bold ${part.fontSize}px ${valFont}`;
       context.textAlign = 'center';
@@ -738,10 +694,10 @@ function drawPart(
         context.save();
         context.lineWidth = localStrokeWidth;
         context.strokeStyle = part.stroke?.color ?? '#000000';
-        context.strokeText(val, 0, 0);
+        context.strokeText(val, localTargetX, 0);
         context.restore();
       }
-      context.fillText(val, 0, 0);
+      context.fillText(val, localTargetX, 0);
       context.restore();
       return;
     }
@@ -869,6 +825,8 @@ function drawTextLayer(
     const [a, bm, c, d, e, f] = part.transform;
     const scaleY = Math.hypot(c, d);
     const localStrokeWidth = Math.max(1, (strokeSize / Math.max(1, scaleY)) * 2);
+    const targetCenterX = (b.left + b.right) / 2;
+    const localTargetX = Math.abs(a) > 0.001 ? (targetCenterX - e) / a : 0;
 
     context.save();
     context.transform(a, bm, c, d, e, f);
@@ -887,10 +845,10 @@ function drawTextLayer(
         context.save();
         context.lineWidth = localStrokeWidth;
         context.strokeStyle = part.stroke?.color ?? '#000000';
-        context.strokeText(lineText, 0, lineY);
+        context.strokeText(lineText, localTargetX, lineY);
         context.restore();
       }
-      context.fillText(lineText, 0, lineY);
+      context.fillText(lineText, localTargetX, lineY);
     });
 
     context.restore();
