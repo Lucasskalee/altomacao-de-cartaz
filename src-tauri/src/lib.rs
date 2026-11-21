@@ -39,6 +39,7 @@ pub fn run() {
             scantech::scantech_campaigns,
             scantech::write_scantech_psd,
             scantech::export_scantech_psds,
+            scantech::open_in_photoshop,
             price_updates::prepare_price_updates,
             price_updates::prepare_price_restore,
             price_updates::commit_price_updates,

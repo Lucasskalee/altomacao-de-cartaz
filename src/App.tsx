@@ -32,6 +32,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { exportDerivedPsdDirect } from './features/scantech/directExport';
 import { fetchTemplateBuffer } from './features/psd/templateService';
 import { chooseSave } from './features/cartazes/storage';
+import { openInPhotoshop } from './features/psd/service';
 
 const EditLinkedPsd = lazy(() =>
   import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
@@ -338,6 +339,104 @@ export default function App() {
   };
   const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
   const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
+
+  const handleExportOrOpenPsd = async (openPhotoshop = false) => {
+    const p = validPoster();
+    const d = editor.document;
+    const cleanName = (p.name || 'cartaz').replace(/[/\\?%*:|"<>]/g, '').trim() || 'cartaz';
+    const suggestedName = `${cleanName}.psd`;
+
+    let chosenPath: string | null = null;
+    if (editor.path && !openPhotoshop) {
+      chosenPath = editor.path.replace(/\.skcartaz$/i, '.psd');
+    }
+
+    if (isTauri() && !chosenPath) {
+      chosenPath = await chooseSave(suggestedName);
+      if (!chosenPath) return;
+      if (!chosenPath.toLowerCase().endsWith('.psd')) {
+        chosenPath = chosenPath.replace(/\.[^.]+$/, '') + '.psd';
+      }
+    }
+
+    const wholeVal = formatCentsBr(d.product.priceCents).split(',')[0];
+    const fractionVal = formatCentsBr(d.product.priceCents).split(',')[1];
+    const boxWholeVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+      ? formatCentsBr((d.product as any).boxPriceCents).split(',')[0]
+      : undefined;
+    const boxFractionVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+      ? formatCentsBr((d.product as any).boxPriceCents).split(',')[1]
+      : undefined;
+
+    let sourcePath = d.layout.template === 'imported-psd' ? d.layout.artwork.source.sourcePath : undefined;
+    let sourceBuffer: ArrayBuffer | undefined;
+    if (!sourcePath || sourcePath.startsWith('/templates/')) {
+      sourceBuffer = await fetchTemplateBuffer(editor.posterModel);
+      sourcePath = undefined;
+    }
+
+    const artwork = d.layout.template === 'imported-psd' ? d.layout.artwork : undefined;
+    const wholePart = artwork?.priceParts?.find(part => part.role === 'whole');
+    const fractionPart = artwork?.priceParts?.find(part => part.role === 'fraction');
+    const catPart = artwork?.templateParts?.find(part => part.role === 'category');
+    const titlePart = artwork?.templateParts?.find(part => part.role === 'title');
+    const compPart = artwork?.templateParts?.find(part => part.role === 'complement');
+    const packPart = artwork?.templateParts?.find(part => part.role === 'packaging');
+    const valPart = artwork?.priceParts?.find(part => part.role === 'validity');
+
+    const expResult = await exportDerivedPsdDirect({
+      sourcePsdPath: sourcePath || undefined,
+      sourcePsdBuffer: sourceBuffer,
+      outputPsdPath: chosenPath || suggestedName,
+      allowSamePath: true,
+      category: (d.product as any).category,
+      title: d.product.name,
+      complement: d.product.complement,
+      packaging: d.product.unit,
+      whole: wholeVal,
+      fraction: fractionVal,
+      validityText: (d.product as any).validityText,
+      hasBoxPrice: Boolean((d.product as any).hasBoxPrice),
+      boxQuantity: Number((d.product as any).boxQuantity) || 12,
+      boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
+      boxWhole: boxWholeVal,
+      boxFraction: boxFractionVal,
+      roles: {
+        wholeLayerId: wholePart?.layerId,
+        fractionLayerId: fractionPart?.layerId,
+        categoryLayerId: catPart?.layerId,
+        titleLayerId: titlePart?.layerId,
+        complementLayerId: compPart?.layerId,
+        packagingLayerId: packPart?.layerId,
+        validityLayerId: valPart?.layerId,
+      },
+    });
+
+    if (expResult.ok) {
+      const finalPsdPath = chosenPath || suggestedName;
+      if (!isTauri() && expResult.bytes) {
+        const blob = new Blob([expResult.bytes], { type: 'image/vnd.adobe.photoshop' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = suggestedName;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      if (openPhotoshop && isTauri()) {
+        try {
+          await openInPhotoshop(finalPsdPath);
+          setMessage(`PSD gerado e aberto no Photoshop: ${finalPsdPath}`);
+        } catch (e) {
+          setMessage(`PSD gerado: ${finalPsdPath} (não foi possível abrir no Photoshop automaticamente).`);
+        }
+      } else {
+        setMessage(`PSD editável exportado com sucesso: ${finalPsdPath}`);
+      }
+    } else {
+      throw new Error(expResult.error || 'Falha ao exportar PSD editável.');
+    }
+  };
   return <div className="app">
     <header className="sk-header">
       <div className="brand">
@@ -708,6 +807,20 @@ export default function App() {
             <button type="button" className="editor-btn subtle" onClick={() => run(() => save(true))}>
               Salvar Como
             </button>
+            <button type="button" className="editor-btn subtle" onClick={() => run(() => handleExportOrOpenPsd(false))}>
+              Exportar PSD
+            </button>
+            {isTauri() && (
+              <button
+                type="button"
+                className="editor-btn subtle"
+                style={{ color: '#2563eb', fontWeight: 600 }}
+                title="Abre o arquivo PSD diretamente no Photoshop para você inspecionar a arte"
+                onClick={() => run(() => handleExportOrOpenPsd(true))}
+              >
+                👁️ Abrir no Photoshop
+              </button>
+            )}
             <button
               type="button"
               className="editor-btn subtle"
@@ -1232,109 +1345,49 @@ export default function App() {
                 </button>
               </div>
 
-              <button
-                type="button"
-                className="editor-btn secondary"
-                style={{
-                  width: '100%',
-                  marginTop: 10,
-                  justifyContent: 'center',
-                  height: 38,
-                  fontSize: 12.5,
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  borderColor: '#93c5fd',
-                  background: '#f8fafc',
-                  color: '#1d4ed8',
-                }}
-                disabled={Boolean(priceWarning)}
-                onClick={() => run(async () => {
-                  const p = validPoster();
-                  const d = editor.document;
-                  const cleanName = (p.name || 'cartaz').replace(/[/\\?%*:|"<>]/g, '').trim() || 'cartaz';
-                  const suggestedName = `${cleanName}.psd`;
-
-                  let chosenPath: string | null = null;
-                  if (isTauri()) {
-                    chosenPath = await chooseSave(suggestedName);
-                    if (!chosenPath) return;
-                    if (!chosenPath.toLowerCase().endsWith('.psd')) {
-                      chosenPath = chosenPath.replace(/\.[^.]+$/, '') + '.psd';
-                    }
-                  }
-
-                  const wholeVal = formatCentsBr(d.product.priceCents).split(',')[0];
-                  const fractionVal = formatCentsBr(d.product.priceCents).split(',')[1];
-                  const boxWholeVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
-                    ? formatCentsBr((d.product as any).boxPriceCents).split(',')[0]
-                    : undefined;
-                  const boxFractionVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
-                    ? formatCentsBr((d.product as any).boxPriceCents).split(',')[1]
-                    : undefined;
-
-                  let sourcePath = d.layout.template === 'imported-psd' ? d.layout.artwork.source.sourcePath : undefined;
-                  let sourceBuffer: ArrayBuffer | undefined;
-                  if (!sourcePath) {
-                    sourceBuffer = await fetchTemplateBuffer(editor.posterModel);
-                  }
-
-                  const artwork = d.layout.template === 'imported-psd' ? d.layout.artwork : undefined;
-                  const wholePart = artwork?.priceParts?.find(part => part.role === 'whole');
-                  const fractionPart = artwork?.priceParts?.find(part => part.role === 'fraction');
-                  const catPart = artwork?.templateParts?.find(part => part.role === 'category');
-                  const titlePart = artwork?.templateParts?.find(part => part.role === 'title');
-                  const compPart = artwork?.templateParts?.find(part => part.role === 'complement');
-                  const packPart = artwork?.templateParts?.find(part => part.role === 'packaging');
-                  const valPart = artwork?.priceParts?.find(part => part.role === 'validity');
-
-                  const expResult = await exportDerivedPsdDirect({
-                    sourcePsdPath: sourcePath || undefined,
-                    sourcePsdBuffer: sourceBuffer,
-                    outputPsdPath: chosenPath || suggestedName,
-                    allowSamePath: false,
-                    category: (d.product as any).category,
-                    title: d.product.name,
-                    complement: d.product.complement,
-                    packaging: d.product.unit,
-                    whole: wholeVal,
-                    fraction: fractionVal,
-                    validityText: (d.product as any).validityText,
-                    hasBoxPrice: Boolean((d.product as any).hasBoxPrice),
-                    boxQuantity: Number((d.product as any).boxQuantity) || 12,
-                    boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
-                    boxWhole: boxWholeVal,
-                    boxFraction: boxFractionVal,
-                    roles: {
-                      wholeLayerId: wholePart?.layerId,
-                      fractionLayerId: fractionPart?.layerId,
-                      categoryLayerId: catPart?.layerId,
-                      titleLayerId: titlePart?.layerId,
-                      complementLayerId: compPart?.layerId,
-                      packagingLayerId: packPart?.layerId,
-                      validityLayerId: valPart?.layerId,
-                    },
-                  });
-
-                  if (expResult.ok) {
-                    if (!isTauri() && expResult.bytes) {
-                      const blob = new Blob([expResult.bytes], { type: 'image/vnd.adobe.photoshop' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = suggestedName;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    }
-                    setMessage(`PSD editável exportado com sucesso: ${chosenPath || suggestedName}`);
-                  } else {
-                    throw new Error(expResult.error || 'Falha ao exportar PSD editável.');
-                  }
-                })}
-              >
-                🎨 Exportar PSD Editável (.psd)
-              </button>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="editor-btn secondary"
+                  style={{
+                    justifyContent: 'center',
+                    height: 38,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    borderColor: '#93c5fd',
+                    background: '#f8fafc',
+                    color: '#1d4ed8',
+                  }}
+                  disabled={Boolean(priceWarning)}
+                  onClick={() => run(() => handleExportOrOpenPsd(false))}
+                >
+                  🎨 Exportar PSD (.psd)
+                </button>
+                <button
+                  type="button"
+                  className="editor-btn secondary"
+                  style={{
+                    justifyContent: 'center',
+                    height: 38,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    borderColor: '#c7d2fe',
+                    background: '#f5f3ff',
+                    color: '#4338ca',
+                  }}
+                  disabled={Boolean(priceWarning)}
+                  title="Gera o arquivo PSD e abre diretamente no Photoshop para você conferir as camadas e o visual"
+                  onClick={() => run(() => handleExportOrOpenPsd(true))}
+                >
+                  👁️ Abrir no Photoshop
+                </button>
+              </div>
 
               <button
                 type="button"

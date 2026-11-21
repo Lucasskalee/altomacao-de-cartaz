@@ -269,6 +269,40 @@ pub fn detect_photoshop() -> Result<PhotoshopStatus, String> {
 }
 
 #[tauri::command]
+pub fn open_in_photoshop(psd_path: String) -> Result<bool, String> {
+    let p = clean_windows_path(&PathBuf::from(&psd_path));
+    if !p.is_file() {
+        return Err(format!("Arquivo PSD não encontrado: {}", p.display()));
+    }
+
+    if let Some((exe, _, _)) = find_photoshop_executable() {
+        std::process::Command::new(exe)
+            .arg(&p)
+            .spawn()
+            .map_err(|e| format!("Não foi possível abrir o Photoshop: {e}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Não foi possível abrir o arquivo: {e}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| format!("Não foi possível abrir o arquivo: {e}"))?;
+        Ok(true)
+    }
+}
+
+#[tauri::command]
 pub async fn choose_scantech_psd_folder() -> Result<Option<String>, String> {
     let chosen = rfd::AsyncFileDialog::new()
         .set_title("Selecionar pasta com artes PSD de referência")

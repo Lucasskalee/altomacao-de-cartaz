@@ -12,7 +12,7 @@ import { readPsdByPath, selectPsd } from '../features/psd/service';
 import { analyzePsd, buildArtwork } from '../features/psd/importer';
 import { prepareLinkedArtworkAutomatically } from '../features/psd/editLinkedArtwork';
 import { exportDerivedPsdDirect } from '../features/scantech/directExport';
-import { createOfficialDocument, getPosterModel, switchPosterModel } from '../features/psd/templateService';
+import { createOfficialDocument, fetchTemplateBuffer, getPosterModel, switchPosterModel } from '../features/psd/templateService';
 import type { PosterTemplateModel } from '../features/cartazes/types';
 export function useCartaz() {
   const [document, setDocument] = useState(createDocument);
@@ -185,9 +185,10 @@ export function useCartaz() {
         }
       }
 
-      if (d.layout.template === 'imported-psd' && d.layout.artwork.source.sourcePath) {
+      if (d.layout.template === 'imported-psd') {
         const destPsdPath = selected.replace(/\.skcartaz$/i, '') + '.psd';
-        const normSrc = d.layout.artwork.source.sourcePath.replace(/\\/g, '/').toLowerCase();
+        const srcPath = d.layout.artwork?.source?.sourcePath;
+        const normSrc = (srcPath || '').replace(/\\/g, '/').toLowerCase();
         const normDst = destPsdPath.replace(/\\/g, '/').toLowerCase();
         const isOverwriteSame = !as && selected === path;
 
@@ -201,9 +202,28 @@ export function useCartaz() {
           const valPart = d.layout.artwork.priceParts.find(p => p.role === 'validity');
           const wholeVal = formatCentsBr(d.product.priceCents).split(',')[0];
           const fractionVal = formatCentsBr(d.product.priceCents).split(',')[1];
+          const boxWholeVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+            ? String(Math.floor((d.product as any).boxPriceCents / 100))
+            : undefined;
+          const boxFractionVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
+            ? String((d.product as any).boxPriceCents % 100).padStart(2, '0')
+            : undefined;
+
+          let sourceBuffer: ArrayBuffer | undefined;
+          let sourcePathToUse = srcPath;
+          if (!srcPath || srcPath.startsWith('/templates/')) {
+            try {
+              sourceBuffer = await fetchTemplateBuffer(getPosterModel(d));
+              sourcePathToUse = undefined;
+            } catch {
+              // fallback
+            }
+          }
+
           try {
             const exp = await exportDerivedPsdDirect({
-              sourcePsdPath: d.layout.artwork.source.sourcePath,
+              sourcePsdPath: sourcePathToUse || undefined,
+              sourcePsdBuffer: sourceBuffer,
               outputPsdPath: destPsdPath,
               allowSamePath: isOverwriteSame,
               category: (d.product as any).category,
@@ -213,6 +233,11 @@ export function useCartaz() {
               whole: wholeVal,
               fraction: fractionVal,
               validityText: (d.product as any).validityText,
+              hasBoxPrice: Boolean((d.product as any).hasBoxPrice),
+              boxQuantity: Number((d.product as any).boxQuantity) || 12,
+              boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
+              boxWhole: boxWholeVal,
+              boxFraction: boxFractionVal,
               roles: {
                 wholeLayerId: wholePart?.layerId,
                 fractionLayerId: fractionPart?.layerId,

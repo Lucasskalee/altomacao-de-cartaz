@@ -13,3 +13,8 @@ export async function readPsdByPath(path: string): Promise<{name:string;path:str
   return {name:path.split(/[\\/]/).pop() || 'arte.psd',path,buffer};
 }
 
+export async function openInPhotoshop(psdPath: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>('open_in_photoshop', { psdPath });
+}
+
