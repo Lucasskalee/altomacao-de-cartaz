@@ -745,6 +745,7 @@ function drawPart(
     const origTop = wholePart ? Math.min(wholePart.bounds.top, fracPart?.bounds.top ?? wholePart.bounds.top) : canvasH * 0.50;
     const origBottom = wholePart ? Math.max(wholePart.bounds.bottom, fracPart?.bounds.bottom ?? wholePart.bounds.bottom) : canvasH * 0.80;
     const origCenterY = (origTop + origBottom) / 2;
+    const boxDividerY = Math.round(canvasH * 0.821);
     const targetCenterY = canvasH * 0.63;
     const scale = 0.64;
 
@@ -752,8 +753,9 @@ function drawPart(
     const titlePart = artwork?.templateParts?.find(p => p.role === 'title') || artwork?.priceParts?.find(p => p.role === 'title');
     const maxTopObstacle = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0);
     const scaledHalfH = ((origBottom - origTop) * scale) / 2;
-    const safeMinCenterY = maxTopObstacle > 0 ? maxTopObstacle + scaledHalfH + 15 : canvasH * 0.60;
-    const effectiveCenterY = Math.max(targetCenterY, safeMinCenterY);
+    const safeMinCenterY = maxTopObstacle > 0 ? maxTopObstacle + scaledHalfH + 15 : canvasH * 0.58;
+    const maxAllowedCenterY = boxDividerY - scaledHalfH - 12;
+    const effectiveCenterY = Math.min(maxAllowedCenterY, Math.max(targetCenterY, safeMinCenterY));
 
     context.translate(centerX, effectiveCenterY);
     context.scale(scale, scale);

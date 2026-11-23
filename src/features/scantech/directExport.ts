@@ -210,7 +210,9 @@ export function computeAdjustedWholeTransform(
   // Alinhamento à direita preservando a proximidade da vírgula
   const deltaU = (origLocal - measuredLocal * hScale) / 2;
   const targetTx = e + deltaU * a;
-  const targetTy = f + deltaU * bm;
+  // Trava de baseline: se o texto for horizontal, mantém estritamente f sem flutuar para cima ou para baixo
+  const isHorizontal = Math.abs(bm) < 0.15;
+  const targetTy = isHorizontal ? f : f + deltaU * bm;
 
   return {
     transform: [
@@ -924,7 +926,8 @@ function scaleAndCenterPriceLayer(
   canvasH: number,
   origCenterY = canvasH * 0.65,
   targetCenterY = canvasH * 0.63,
-  scale = 0.64
+  scale = 0.64,
+  maxBottom?: number
 ): void {
   const centerX = canvasW / 2;
 
@@ -935,7 +938,10 @@ function scaleAndCenterPriceLayer(
     const c = t[2] * scale;
     const d = t[3] * scale;
     const tx = centerX + (t[4] - centerX) * scale;
-    const ty = targetCenterY + (t[5] - origCenterY) * scale;
+    let ty = targetCenterY + (t[5] - origCenterY) * scale;
+    if (typeof maxBottom === 'number' && ty > maxBottom) {
+      ty = maxBottom;
+    }
     layer.text.transform = [a, b, c, d, tx, ty];
   }
 
@@ -959,7 +965,11 @@ function scaleAndCenterPriceLayer(
   }
   if (typeof layer.top === 'number' && typeof layer.bottom === 'number') {
     const h = (layer.bottom - layer.top) * scale;
-    const midY = targetCenterY + ((layer.top + layer.bottom) / 2 - origCenterY) * scale;
+    let midY = targetCenterY + ((layer.top + layer.bottom) / 2 - origCenterY) * scale;
+    const currentBottom = Math.round(midY + h / 2);
+    if (typeof maxBottom === 'number' && currentBottom > maxBottom) {
+      midY -= (currentBottom - maxBottom);
+    }
     layer.top = Math.round(midY - h / 2);
     layer.bottom = Math.round(midY + h / 2);
   }
@@ -1057,11 +1067,14 @@ function scaleAndCenterPriceLayer(
         ', cópia 1',
         'UN',
       ]);
+
+      // IMPORTANTE: Captura referências das camadas de preço ANTES de remover camadas para evitar
+      // que o deslocamento de índices em psd.children anule a busca por layerId.
+      const mainWhole = resolvedWholeLayer || resolveLayerByPath(psd, mainWholeId);
+      const mainFrac = resolvedFractionLayer || resolveLayerByPath(psd, mainFractionId);
       removeBoxLayersRecursively(psd, BOX_LAYER_NAMES);
 
       // 2. Reduz e centraliza a camada de preço unitário (vermelho) no espaço entre o título e a caixa
-      const mainWhole = resolveLayerByPath(psd, mainWholeId);
-      const mainFrac = resolveLayerByPath(psd, mainFractionId);
       let origPriceCenterY = canvasH * 0.65;
       let origPriceH = canvasH * 0.35;
       if (mainWhole && typeof mainWhole.top === 'number' && typeof mainWhole.bottom === 'number') {
@@ -1078,18 +1091,23 @@ function scaleAndCenterPriceLayer(
         (titleLayer && typeof titleLayer.bottom === 'number') ? titleLayer.bottom : 0
       );
 
-      const targetCenterY = canvasH * 0.63;
+      // Linha divisória da caixa calibrada fielmente ao modelo (Rectangle 2 cópia)
+      const boxDividerY = Math.round(1018 * (canvasH / BOX_TEMPLATE_CANVAS.height));
+      const targetCenterY = Math.round(canvasH * 0.63);
       const scale = 0.64;
       const scaledHalfH = (origPriceH * scale) / 2;
-      const safeMinCenterY = maxObstacleBottom > 0 ? maxObstacleBottom + scaledHalfH + 15 : canvasH * 0.60;
-      const effectiveCenterY = Math.max(targetCenterY, safeMinCenterY);
+      const safeMinCenterY = maxObstacleBottom > 0 ? maxObstacleBottom + scaledHalfH + 15 : Math.round(canvasH * 0.58);
+      // Trava de segurança absoluta: o centro NUNCA pode empurrar a base do preço sobre ou abaixo da linha divisória
+      const maxAllowedCenterY = boxDividerY - scaledHalfH - 18;
+      const effectiveCenterY = Math.min(maxAllowedCenterY, Math.max(targetCenterY, safeMinCenterY));
+      const maxBottomLimit = boxDividerY - 12;
 
       if (mainWhole && mainWhole.text) {
-        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
       if (mainFrac && mainFrac.text) {
-        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
       }
 
@@ -1114,7 +1132,7 @@ function scaleAndCenterPriceLayer(
           if (shouldUseUnBadge) {
             packLayer.hidden = true;
           } else {
-            scaleAndCenterPriceLayer(packLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+            scaleAndCenterPriceLayer(packLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
             if (packLayer.text) renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
           }
         }
@@ -1122,17 +1140,17 @@ function scaleAndCenterPriceLayer(
       if (payload.roles.fractionRuleLayerId) {
         const ruleLayer = resolveLayerByPath(psd, payload.roles.fractionRuleLayerId);
         if (ruleLayer) {
-          scaleAndCenterPriceLayer(ruleLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+          scaleAndCenterPriceLayer(ruleLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
         }
       } else {
         const fallbackRule = psd.children?.find(l => l.name === 'Rectangle 3');
         if (fallbackRule && fallbackRule.name !== 'Rectangle 3 cópia 2') {
-          scaleAndCenterPriceLayer(fallbackRule, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+          scaleAndCenterPriceLayer(fallbackRule, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
         }
       }
       const commaUnitLayer = findFirstTextLayerMatching(psd, /^,\s*(?:c[oó]pia)?$/i);
       if (commaUnitLayer && commaUnitLayer.text && commaUnitLayer !== mainWhole && commaUnitLayer !== mainFrac) {
-        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale, maxBottomLimit);
         renderTextLayerToBitmap(commaUnitLayer, commaUnitLayer.text.text, psd.width, psd.height);
       }
 
@@ -1206,6 +1224,19 @@ function scaleAndCenterPriceLayer(
               for (const run of cloned.text.styleRuns) {
                 if (run.style) run.style.fillColor = redColor;
               }
+            }
+            // Para valores de caixa com 3 dígitos (ex: R$ 131,88), comprime horizontalmente
+            // e ajusta a âncora à direita junto à vírgula para não invadir o rótulo "CAIXA COM 12 UND."
+            if (bWhole.length >= 3 && cloned.text.transform) {
+              const hComp = bWhole.length === 3 ? 0.76 : 0.66;
+              cloned.text.transform[0] *= hComp;
+              if (cloned.text.style) cloned.text.style.horizontalScale = hComp;
+              if (cloned.text.styleRuns) {
+                for (const run of cloned.text.styleRuns) {
+                  if (run.style) run.style.horizontalScale = hComp;
+                }
+              }
+              cloned.text.transform[4] += (1 - hComp) * 55 * scaleX;
             }
           }
         } else if (cloned.name === '68' || cloned.name === '28') {
