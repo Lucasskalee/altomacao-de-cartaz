@@ -2,6 +2,7 @@ import { readPsd, writePsd, initializeCanvas, type Layer, type Psd } from 'ag-ps
 import type { ScantechExportJob, ScantechExportJobResult, ScantechExportBatchResult } from './types';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { readPsdByPath } from '../psd/service';
+import { OFFICIAL_BOX_LAYERS, BOX_TEMPLATE_CANVAS } from './boxModelTemplate';
 
 let canvasReady = false;
 export function ensureCanvasInitialized(): void {
@@ -34,17 +35,31 @@ export function resolveLayerByPath(
   container: { children?: Layer[] },
   pathStr: string | null | undefined
 ): Layer | null {
-  if (!pathStr) return null;
+  if (!pathStr || !container?.children) return null;
   const parts = pathStr.split('.');
   let current: any = container;
+  let isNumericPath = true;
   for (const part of parts) {
     const idx = parseInt(part, 10);
     if (isNaN(idx) || !current?.children || idx < 0 || idx >= current.children.length) {
-      return null;
+      isNumericPath = false;
+      break;
     }
     current = current.children[idx];
   }
-  return current ?? null;
+  if (isNumericPath && current && current !== container) {
+    return current;
+  }
+
+  // Fallback: busca recursiva por nome de camada
+  for (const child of container.children) {
+    if (child.name === pathStr) return child;
+    if (child.children) {
+      const found = resolveLayerByPath(child, pathStr);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 function createLayerCanvas(w: number, h: number): any {
@@ -830,6 +845,40 @@ export async function exportDerivedPsdDirect(
     }
   }
 
+function scaleAndShiftPriceLayer(
+  layer: Layer,
+  scale: number,
+  shiftY: number,
+  canvasW: number
+): void {
+  const centerX = canvasW / 2;
+  if (layer.text?.transform) {
+    const t = layer.text.transform;
+    const a = t[0] * scale;
+    const b = t[1] * scale;
+    const c = t[2] * scale;
+    const d = t[3] * scale;
+    const tx = centerX + scale * (t[4] - centerX);
+    const ty = t[5] + shiftY;
+    layer.text.transform = [a, b, c, d, tx, ty];
+  } else if (layer.text?.style?.fontSize) {
+    layer.text.style.fontSize = Math.round(layer.text.style.fontSize * scale);
+  }
+
+  if (typeof layer.left === 'number' && typeof layer.right === 'number') {
+    const w = (layer.right - layer.left) * scale;
+    const midX = centerX + scale * ((layer.left + layer.right) / 2 - centerX);
+    layer.left = Math.round(midX - w / 2);
+    layer.right = Math.round(midX + w / 2);
+  }
+  if (typeof layer.top === 'number' && typeof layer.bottom === 'number') {
+    const h = (layer.bottom - layer.top) * scale;
+    const midY = (layer.top + layer.bottom) / 2 + shiftY;
+    layer.top = Math.round(midY - h / 2);
+    layer.bottom = Math.round(midY + h / 2);
+  }
+}
+
   // Atualização dos campos de Caixa Fechada / Atacado
   if (payload.hasBoxPrice || payload.boxWhole || payload.boxFraction) {
     const mainWholeId = payload.roles.wholeLayerId;
@@ -853,161 +902,119 @@ export async function exportDerivedPsdDirect(
 
     if (!hasNativeBoxStructure && (payload.hasBoxPrice || payload.boxWhole)) {
       // Injeta cirurgicamente as camadas do formato de caixa no PSD para o Photoshop CS6
+      // Calibrado fielmente a partir do modelo_de_caixa.psd oficial
       const canvasW = psd.width;
       const canvasH = psd.height;
-      const lineY = Math.round(canvasH * 0.75);
-      const lineMargin = Math.round(canvasW * 0.05);
 
-      // Reduz e sobe a camada de preço unitário para liberar espaço para a caixa
+      // 1. Limpa camadas de caixa pré-existentes de exportações anteriores para evitar duplicações
+      const BOX_LAYER_NAMES = new Set([
+        'Rectangle 2 cópia',
+        'Rectangle 3 cópia 2',
+        'CAIXA COM ',
+        'CAIXA COM',
+        '12 UND. ',
+        '12 UND.',
+        '46',
+        '68',
+        '32',
+        '20',
+        '28',
+        ',  cópia 3',
+        ', cópia 3',
+      ]);
+      if (psd.children) {
+        psd.children = psd.children.filter(l => !l.name || !BOX_LAYER_NAMES.has(l.name));
+      }
+
+      // 2. Reduz e sobe a camada de preço unitário (vermelho) para liberar espaço no rodapé
       const mainWhole = resolveLayerByPath(psd, mainWholeId);
       if (mainWhole && mainWhole.text) {
-        if (mainWhole.text.transform) {
-          mainWhole.text.transform[0] *= 0.60;
-          mainWhole.text.transform[3] *= 0.60;
-          mainWhole.text.transform[5] -= canvasH * 0.15;
-        } else if (mainWhole.text.style?.fontSize) {
-          mainWhole.text.style.fontSize = Math.round(mainWhole.text.style.fontSize * 0.60);
-        }
+        scaleAndShiftPriceLayer(mainWhole, 0.58, -canvasH * 0.16, canvasW);
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
       const mainFrac = resolveLayerByPath(psd, mainFractionId);
       if (mainFrac && mainFrac.text) {
-        if (mainFrac.text.transform) {
-          mainFrac.text.transform[0] *= 0.60;
-          mainFrac.text.transform[3] *= 0.60;
-          mainFrac.text.transform[5] -= canvasH * 0.15;
-        } else if (mainFrac.text.style?.fontSize) {
-          mainFrac.text.style.fontSize = Math.round(mainFrac.text.style.fontSize * 0.60);
-        }
+        scaleAndShiftPriceLayer(mainFrac, 0.58, -canvasH * 0.16, canvasW);
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
       }
-
-      // Se houver camada de embalagem/unidade (ex: 5KG, UN), reduz e sobe junto
       if (payload.roles.packagingLayerId) {
         const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
         if (packLayer && packLayer.text) {
-          if (packLayer.text.transform) {
-            packLayer.text.transform[0] *= 0.60;
-            packLayer.text.transform[3] *= 0.60;
-            packLayer.text.transform[5] -= canvasH * 0.15;
-          } else if (packLayer.text.style?.fontSize) {
-            packLayer.text.style.fontSize = Math.round(packLayer.text.style.fontSize * 0.60);
-          }
+          scaleAndShiftPriceLayer(packLayer, 0.58, -canvasH * 0.16, canvasW);
           renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
         }
       }
+      const commaUnitLayer = findFirstTextLayerMatching(psd, /^,\s*(?:c[oó]pia)?$/i);
+      if (commaUnitLayer && commaUnitLayer.text && commaUnitLayer !== mainWhole && commaUnitLayer !== mainFrac) {
+        scaleAndShiftPriceLayer(commaUnitLayer, 0.58, -canvasH * 0.16, canvasW);
+        renderTextLayerToBitmap(commaUnitLayer, commaUnitLayer.text.text, psd.width, psd.height);
+      }
 
-      // Ajusta um pouco no de cima (título e complemento) para afastar do preço
+      // 3. Ajusta suavemente o topo (título e complemento) para balanceamento visual perfeito
       if (payload.roles.titleLayerId) {
         const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
-        if (titleLayer && titleLayer.text && titleLayer.text.transform) {
-          titleLayer.text.transform[0] *= 0.92;
-          titleLayer.text.transform[3] *= 0.92;
-          titleLayer.text.transform[5] -= canvasH * 0.04;
+        if (titleLayer && titleLayer.text) {
+          scaleAndShiftPriceLayer(titleLayer, 0.92, -canvasH * 0.04, canvasW);
           renderTextLayerToBitmap(titleLayer, titleLayer.text.text, psd.width, psd.height);
         }
       }
       if (payload.roles.complementLayerId) {
         const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
-        if (compLayer && compLayer.text && compLayer.text.transform) {
-          compLayer.text.transform[0] *= 0.92;
-          compLayer.text.transform[3] *= 0.92;
-          compLayer.text.transform[5] -= canvasH * 0.04;
+        if (compLayer && compLayer.text) {
+          scaleAndShiftPriceLayer(compLayer, 0.92, -canvasH * 0.04, canvasW);
           renderTextLayerToBitmap(compLayer, compLayer.text.text, psd.width, psd.height);
         }
       }
 
-      // Linha divisória preta
-      const dividerLayer: Layer = {
-        name: 'Rectangle 2 cópia',
-        left: lineMargin,
-        top: lineY,
-        right: canvasW - lineMargin,
-        bottom: lineY + Math.max(6, Math.round(canvasH * 0.006)),
-      };
+      // 4. Injeta as 7 camadas oficiais calibradas fielmente a partir do modelo_de_caixa.psd
+      const scaleX = canvasW / BOX_TEMPLATE_CANVAS.width;
+      const scaleY = canvasH / BOX_TEMPLATE_CANVAS.height;
 
-      // "CAIXA COM"
-      const caixaComLayer: Layer = {
-        name: 'CAIXA COM ',
-        text: {
-          text: 'CAIXA COM',
-          style: {
-            font: { name: 'ArialMT' },
-            fontSize: Math.round(canvasH * 0.028),
-            fillColor: { r: 0, g: 0, b: 0 },
-          },
-          transform: [1, 0, 0, 1, lineMargin + 10, lineY + Math.round(canvasH * 0.038)],
-        },
-      };
-
-      // "${boxQuantity} ${boxUnitLabel}"
-      const qtyStr = `${payload.boxQuantity ?? 12} ${(payload.boxUnitLabel ?? 'UND.').toUpperCase()}`;
-      const qtyLayer: Layer = {
-        name: '12 UND. ',
-        text: {
-          text: qtyStr,
-          style: {
-            font: { name: 'Impact' },
-            fontSize: Math.round(canvasH * 0.042),
-            fillColor: { r: 0, g: 0, b: 0 },
-          },
-          transform: [1, 0, 0, 1, lineMargin + 10, lineY + Math.round(canvasH * 0.088)],
-        },
-      };
-
-      // Preço atacado inteiro (32)
       const bWhole = payload.boxWhole ?? '0';
       const bFrac = payload.boxFraction ?? '00';
-      const priceStartX = Math.round(canvasW * 0.44);
+      const qtyStr = `${payload.boxQuantity ?? 12} ${(payload.boxUnitLabel ?? 'UND.').toUpperCase()} `;
 
-      const wholeBoxLayer: Layer = {
-        name: '32',
-        text: {
-          text: bWhole,
-          style: {
-            font: { name: 'Zullia' },
-            fontSize: Math.round(canvasH * 0.12),
-            fillColor: { r: 0, g: 0, b: 0 },
-          },
-          transform: [1, 0, 0, 1, priceStartX, lineY + Math.round(canvasH * 0.14)],
-        },
-      };
+      const newBoxLayers: Layer[] = [];
+      for (const templateLayer of OFFICIAL_BOX_LAYERS) {
+        const cloned: Layer = JSON.parse(JSON.stringify(templateLayer));
 
-      // Vírgula atacado (,  cópia 3)
-      const commaBoxLayer: Layer = {
-        name: ',  cópia 3',
-        text: {
-          text: ',',
-          style: {
-            font: { name: 'Zullia' },
-            fontSize: Math.round(canvasH * 0.045),
-            fillColor: { r: 0, g: 0, b: 0 },
-          },
-          transform: [1, 0, 0, 1, priceStartX + Math.round(canvasW * 0.15), lineY + Math.round(canvasH * 0.14)],
-        },
-      };
+        if (typeof cloned.left === 'number') cloned.left = Math.round(cloned.left * scaleX);
+        if (typeof cloned.right === 'number') cloned.right = Math.round(cloned.right * scaleX);
+        if (typeof cloned.top === 'number') cloned.top = Math.round(cloned.top * scaleY);
+        if (typeof cloned.bottom === 'number') cloned.bottom = Math.round(cloned.bottom * scaleY);
 
-      // Centavos atacado (28)
-      const fracBoxLayer: Layer = {
-        name: '28',
-        text: {
-          text: bFrac,
-          style: {
-            font: { name: 'Zullia' },
-            fontSize: Math.round(canvasH * 0.068),
-            fillColor: { r: 0, g: 0, b: 0 },
-          },
-          transform: [1, 0, 0, 1, priceStartX + Math.round(canvasW * 0.16), lineY + Math.round(canvasH * 0.08)],
-        },
-      };
+        if (cloned.text && cloned.text.transform) {
+          cloned.text.transform[0] *= scaleX;
+          cloned.text.transform[1] *= scaleX;
+          cloned.text.transform[2] *= scaleY;
+          cloned.text.transform[3] *= scaleY;
+          cloned.text.transform[4] *= scaleX;
+          cloned.text.transform[5] *= scaleY;
+        }
+
+        if (cloned.name === '46' || cloned.name === '32') {
+          cloned.name = '46';
+          if (cloned.text) cloned.text.text = bWhole;
+        } else if (cloned.name === '68' || cloned.name === '28') {
+          cloned.name = '68';
+          if (cloned.text) cloned.text.text = bFrac;
+        } else if (cloned.name && cloned.name.includes('UND.')) {
+          cloned.name = '12 UND. ';
+          if (cloned.text) cloned.text.text = qtyStr;
+        } else if (cloned.name && cloned.name.includes('CAIXA COM')) {
+          cloned.name = 'CAIXA COM ';
+          if (cloned.text) cloned.text.text = 'CAIXA COM ';
+        }
+
+        if (cloned.text) {
+          renderTextLayerToBitmap(cloned, cloned.text.text, psd.width, psd.height);
+        }
+
+        newBoxLayers.push(cloned);
+      }
 
       if (!psd.children) psd.children = [];
-      psd.children.push(dividerLayer, caixaComLayer, qtyLayer, wholeBoxLayer, commaBoxLayer, fracBoxLayer);
-      renderTextLayerToBitmap(caixaComLayer, 'CAIXA COM', psd.width, psd.height);
-      renderTextLayerToBitmap(qtyLayer, qtyStr, psd.width, psd.height);
-      renderTextLayerToBitmap(wholeBoxLayer, bWhole, psd.width, psd.height);
-      renderTextLayerToBitmap(commaBoxLayer, ',', psd.width, psd.height);
-      renderTextLayerToBitmap(fracBoxLayer, bFrac, psd.width, psd.height);
+      psd.children.push(...newBoxLayers);
       updatedAnyText = true;
     } else {
       if (payload.boxWhole && bWholeLayer && bWholeLayer.text) {

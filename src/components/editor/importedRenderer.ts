@@ -560,44 +560,74 @@ function drawBoxPriceSection(
   const canvasW = artwork.canvas.width;
   const canvasH = artwork.canvas.height;
 
-  const lineY = Math.round(canvasH * 0.75);
-  const lineMargin = Math.round(canvasW * 0.05);
-  const barThickness = Math.max(6, Math.round(canvasH * 0.006));
+  // Linha divisória oficial da caixa (Rectangle 2 cópia a 82.1% da altura do cartaz)
+  const lineY = Math.round(canvasH * 0.821);
+  const lineLeft = Math.round(canvasW * 0.065);
+  const lineRight = Math.round(canvasW * 0.903);
+  const barThickness = Math.max(8, Math.round(canvasH * 0.010));
 
   context.save();
   context.fillStyle = '#000000';
-  context.fillRect(lineMargin, lineY, canvasW - lineMargin * 2, barThickness);
+  context.fillRect(lineLeft, lineY, lineRight - lineLeft, barThickness);
 
-  const labelFontSize = Math.round(canvasH * 0.026);
+  // Rótulo "CAIXA COM" (ArialMT)
+  const labelFontSize = Math.round(canvasH * 0.038);
   context.font = `700 ${labelFontSize}px ArialMT, Arial, sans-serif`;
   context.textAlign = 'left';
   context.textBaseline = 'top';
-  context.fillText('CAIXA COM', lineMargin + 10, lineY + Math.round(canvasH * 0.016));
+  context.fillText('CAIXA COM', lineLeft + 14, lineY + Math.round(canvasH * 0.021));
 
-  const qtyFontSize = Math.round(canvasH * 0.040);
+  // Quantidade "12 UND." (Impact)
+  const qtyFontSize = Math.round(canvasH * 0.056);
   context.font = `900 ${qtyFontSize}px Impact, "Arial Black", sans-serif`;
-  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, lineMargin + 10, lineY + Math.round(canvasH * 0.052));
+  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, lineLeft + 14, lineY + Math.round(canvasH * 0.068));
 
-  const wholeFontSize = Math.round(canvasH * 0.115);
+  // Preço Inteiro da Caixa com sombra projetada e cor oficial do modelo (ex: 46 ou 95)
+  const wholeFontSize = Math.round(canvasH * 0.145);
   const priceStartX = Math.round(canvasW * 0.44);
-  context.fillStyle = '#000000';
+  const baselineY = lineY + Math.round(canvasH * 0.155);
+
+  context.save();
   context.font = `700 ${wholeFontSize}px Zullia, sans-serif`;
   context.textBaseline = 'alphabetic';
-  const wholeMetrics = context.measureText(whole);
-  const baselineY = lineY + Math.round(canvasH * 0.135);
+  context.textAlign = 'left';
+  context.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  context.shadowOffsetX = 3;
+  context.shadowOffsetY = 6;
+  context.shadowBlur = 3;
+  context.fillStyle = '#d72502';
   context.fillText(whole, priceStartX, baselineY);
+  context.restore();
 
-  const fracX = priceStartX + wholeMetrics.width + Math.round(canvasW * 0.012);
-  const fracFontSize = Math.round(canvasH * 0.065);
+  // Centavos da Caixa (ex: 68 ou 94)
+  context.save();
+  context.font = `700 ${wholeFontSize}px Zullia, sans-serif`;
+  const wholeMetrics = context.measureText(whole);
+  const fracX = priceStartX + wholeMetrics.width + Math.round(canvasW * 0.015);
+  const fracFontSize = Math.round(canvasH * 0.075);
+
   context.font = `700 ${fracFontSize}px Zullia, sans-serif`;
-  context.fillText(fraction, fracX, lineY + Math.round(canvasH * 0.070));
+  context.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  context.shadowOffsetX = 3;
+  context.shadowOffsetY = 6;
+  context.shadowBlur = 3;
+  context.fillStyle = '#d72502';
+  context.fillText(fraction, fracX, lineY + Math.round(canvasH * 0.085));
 
+  // Traço sublinhado dos centavos (Rectangle 3 cópia 2)
   const fracMetrics = context.measureText(fraction);
-  context.fillRect(fracX - 4, lineY + Math.round(canvasH * 0.083), Math.max(50, fracMetrics.width + 8), Math.max(4, Math.round(canvasH * 0.005)));
+  const ruleW = Math.max(70, fracMetrics.width + 12);
+  context.fillStyle = '#000000';
+  context.shadowColor = 'transparent';
+  context.fillRect(fracX - 4, lineY + Math.round(canvasH * 0.096), ruleW, Math.max(6, Math.round(canvasH * 0.008)));
 
-  const commaFontSize = Math.round(canvasH * 0.042);
+  // Vírgula (,  cópia 3)
+  const commaFontSize = Math.round(canvasH * 0.055);
   context.font = `700 ${commaFontSize}px Zullia, sans-serif`;
+  context.fillStyle = '#d72502';
   context.fillText(',', fracX + 4, baselineY);
+  context.restore();
+
   context.restore();
 }
 
@@ -628,9 +658,9 @@ function drawPart(
     const canvasW = artwork?.canvas.width ?? 886;
     const canvasH = artwork?.canvas.height ?? 1260;
     const centerX = canvasW / 2;
-    const shiftY = -Math.round(canvasH * 0.15);
+    const shiftY = -Math.round(canvasH * 0.16);
     context.translate(centerX, shiftY);
-    context.scale(0.60, 0.60);
+    context.scale(0.58, 0.58);
     context.translate(-centerX, 0);
   } else if (isCaixaAdapted && isTopPart) {
     const canvasW = artwork?.canvas.width ?? 886;
