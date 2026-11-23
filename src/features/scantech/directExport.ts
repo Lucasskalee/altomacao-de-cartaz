@@ -855,31 +855,66 @@ export async function exportDerivedPsdDirect(
       // Injeta cirurgicamente as camadas do formato de caixa no PSD para o Photoshop CS6
       const canvasW = psd.width;
       const canvasH = psd.height;
-      const lineY = Math.round(canvasH * 0.76);
+      const lineY = Math.round(canvasH * 0.75);
       const lineMargin = Math.round(canvasW * 0.05);
 
       // Reduz e sobe a camada de preço unitário para liberar espaço para a caixa
       const mainWhole = resolveLayerByPath(psd, mainWholeId);
       if (mainWhole && mainWhole.text) {
         if (mainWhole.text.transform) {
-          mainWhole.text.transform[0] *= 0.74;
-          mainWhole.text.transform[3] *= 0.74;
-          mainWhole.text.transform[5] -= canvasH * 0.11;
+          mainWhole.text.transform[0] *= 0.60;
+          mainWhole.text.transform[3] *= 0.60;
+          mainWhole.text.transform[5] -= canvasH * 0.15;
         } else if (mainWhole.text.style?.fontSize) {
-          mainWhole.text.style.fontSize = Math.round(mainWhole.text.style.fontSize * 0.74);
+          mainWhole.text.style.fontSize = Math.round(mainWhole.text.style.fontSize * 0.60);
         }
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
       const mainFrac = resolveLayerByPath(psd, mainFractionId);
       if (mainFrac && mainFrac.text) {
         if (mainFrac.text.transform) {
-          mainFrac.text.transform[0] *= 0.74;
-          mainFrac.text.transform[3] *= 0.74;
-          mainFrac.text.transform[5] -= canvasH * 0.11;
+          mainFrac.text.transform[0] *= 0.60;
+          mainFrac.text.transform[3] *= 0.60;
+          mainFrac.text.transform[5] -= canvasH * 0.15;
         } else if (mainFrac.text.style?.fontSize) {
-          mainFrac.text.style.fontSize = Math.round(mainFrac.text.style.fontSize * 0.74);
+          mainFrac.text.style.fontSize = Math.round(mainFrac.text.style.fontSize * 0.60);
         }
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
+      }
+
+      // Se houver camada de embalagem/unidade (ex: 5KG, UN), reduz e sobe junto
+      if (payload.roles.packagingLayerId) {
+        const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
+        if (packLayer && packLayer.text) {
+          if (packLayer.text.transform) {
+            packLayer.text.transform[0] *= 0.60;
+            packLayer.text.transform[3] *= 0.60;
+            packLayer.text.transform[5] -= canvasH * 0.15;
+          } else if (packLayer.text.style?.fontSize) {
+            packLayer.text.style.fontSize = Math.round(packLayer.text.style.fontSize * 0.60);
+          }
+          renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
+        }
+      }
+
+      // Ajusta um pouco no de cima (título e complemento) para afastar do preço
+      if (payload.roles.titleLayerId) {
+        const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
+        if (titleLayer && titleLayer.text && titleLayer.text.transform) {
+          titleLayer.text.transform[0] *= 0.92;
+          titleLayer.text.transform[3] *= 0.92;
+          titleLayer.text.transform[5] -= canvasH * 0.04;
+          renderTextLayerToBitmap(titleLayer, titleLayer.text.text, psd.width, psd.height);
+        }
+      }
+      if (payload.roles.complementLayerId) {
+        const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
+        if (compLayer && compLayer.text && compLayer.text.transform) {
+          compLayer.text.transform[0] *= 0.92;
+          compLayer.text.transform[3] *= 0.92;
+          compLayer.text.transform[5] -= canvasH * 0.04;
+          renderTextLayerToBitmap(compLayer, compLayer.text.text, psd.width, psd.height);
+        }
       }
 
       // Linha divisória preta
