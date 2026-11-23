@@ -406,9 +406,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
                 disabled={
                   busy ||
                   !artwork ||
-                  artwork.compatibility !== 'ready' ||
                   !validPrice ||
-                  Boolean(priceWarning) ||
                   !name.trim() ||
                   !unit.trim()
                 }

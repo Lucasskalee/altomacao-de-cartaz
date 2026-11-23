@@ -282,7 +282,9 @@ export function computeWholePriceAdjustment(
     estimatedUnscaledWidth = origBoxWidth;
   } else {
     // Para artes sem transform (ex.: mock nos testes unitários), estima a largura com base na altura da caixa
-    const charHeight = wholePart.transform ? fontSize * normXx : b.bottom - b.top;
+    const actualBoxHeight = Math.max(1, b.bottom - b.top);
+    const rawCharHeight = wholePart.transform ? fontSize * normXx : actualBoxHeight;
+    const charHeight = (rawCharHeight > actualBoxHeight * 1.5) ? actualBoxHeight * 1.25 : rawCharHeight;
     let localUnits = 0;
     for (const ch of wholeText) {
       localUnits += ch === '1' ? 0.36 : 0.52;
@@ -805,7 +807,15 @@ function drawPart(
 
   const value = part.role === 'whole' ? whole : part.role === 'fraction' ? fraction : ',';
   const resolvedFont = resolveFontFamily(part.fontFamily, 'Zullia, sans-serif');
-  const fontStr = `400 ${part.fontSize || height * 1.14}px ${resolvedFont}`;
+
+  let localFontSize = part.fontSize || height * 1.14;
+  if (part.transform && part.fontSize) {
+    const scaleY = Math.hypot(part.transform[2], part.transform[3]);
+    if (scaleY > 0.01 && part.fontSize * scaleY > height * 1.8) {
+      localFontSize = (height * 1.25) / scaleY;
+    }
+  }
+  const fontStr = `400 ${localFontSize}px ${resolvedFont}`;
 
   const isPriceNumber = part.role === 'whole' || part.role === 'fraction' || part.role === 'decimal' || part.role === 'fractionRule';
   const effectiveShadow = part.shadow || (isPriceNumber ? { dx: 6, dy: 10, blur: 0, color: '#000000' } : undefined);

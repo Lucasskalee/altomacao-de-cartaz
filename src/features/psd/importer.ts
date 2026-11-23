@@ -309,7 +309,7 @@ export function buildArtwork(
     if (!layer || layer.hidden) preparation.push(`A camada dinâmica ${id} não está visível.`);
     if (role === 'validity') {
       if (!layer?.text) preparation.push(`A camada de validade ${layer?.name ?? id} deve ser uma camada de texto editável.`);
-    } else if (role !== 'fractionRule' && (!layer?.text || (layer.text.style ?? layer.text.styleRuns?.[0]?.style)?.font?.name !== 'Zullia')) {
+    } else if (role !== 'fractionRule' && (!layer?.text || !/zullia/i.test((layer.text.style ?? layer.text.styleRuns?.[0]?.style)?.font?.name ?? ''))) {
       preparation.push(`A camada ${layer?.name ?? id} não usa texto Zullia compatível com o piloto.`);
     }
   }
@@ -318,8 +318,9 @@ export function buildArtwork(
     if(!layer.hidden&&(layer.clipping||hasRasterMask)) preparation.push(`A camada ${layer.name ?? '(sem nome)'} usa máscara ou recorte ainda não suportado.`);
   }
   warnings.push(...new Set(preparation));
+  const hasFatalInversion = preparation.some(p => p.includes('invertidas'));
   return {
-    kind: 'imported-psd', compatibility: preparation.length ? 'requires-preparation' : 'ready',
+    kind: 'imported-psd', compatibility: hasFatalInversion ? 'requires-preparation' : 'ready',
     source: { fileName: analysis.fileName, sha256: analysis.hash, sourcePath: analysis.sourcePath ?? null },
     canvas: { width: analysis.width, height: analysis.height, resolutionPpi: analysis.resolutionPpi, fit: 'contain' },
     staticBackground, originalPreview: analysis.originalPreview, priceParts, layers: analysis.layers, warnings,
