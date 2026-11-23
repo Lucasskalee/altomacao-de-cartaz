@@ -6,7 +6,7 @@ use crate::scantech::clean_windows_path;
 
 pub(crate) const MAX_CONDUCTOR_SCAN_FILES: usize = 500;
 pub(crate) const MAX_CARTAZ_BYTES: u64 = 12 * 1024 * 1024;
-pub(crate) const MAX_PSD_BYTES: u64 = 80 * 1024 * 1024;
+pub(crate) const MAX_PSD_BYTES: u64 = 120 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]

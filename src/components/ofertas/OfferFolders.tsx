@@ -193,6 +193,8 @@ export function OfferFolders({
   const [showPsdManagerModal, setShowPsdManagerModal] = useState(initialShowPsdModal);
   const [psdFilterText, setPsdFilterText] = useState('');
   const [psdReasonFilter, setPsdReasonFilter] = useState<PsdPairingFilter>('todos');
+  const [psdPage, setPsdPage] = useState(0);
+  const [isScanningPsds, setIsScanningPsds] = useState(false);
   const [psdPairingSelections, setPsdPairingSelections] = useState<Record<string, PsdPairingSelection>>(
     initialPsdPairingSelections
   );
@@ -518,7 +520,9 @@ export function OfferFolders({
     setBatchLinkResult(null);
     setShowBatchConfirmStep(false);
     setPsdPairingSelections({});
+    setPsdPage(0);
     setShowPsdManagerModal(true);
+    setIsScanningPsds(true);
 
     try {
       const entries = await scanScantechPsdFolder(folder);
@@ -528,6 +532,8 @@ export function OfferFolders({
       setScannedPsds([]);
       setPsdScanError(`Falha ao ler os arquivos PSD da pasta "${folder}": ${msg}`);
       throw err;
+    } finally {
+      setIsScanningPsds(false);
     }
   };
 
@@ -1175,6 +1181,13 @@ export function OfferFolders({
       return haystack.includes(q);
     });
   }, [psdSuggestions, psdFilterText, psdReasonFilter, psdPairingSelections, scannedPsds]);
+
+  const PSD_PAGE_SIZE = 40;
+  const totalPsdPages = Math.ceil(filteredPsdSuggestions.length / PSD_PAGE_SIZE) || 1;
+  const pagedPsdSuggestions = useMemo(() => {
+    const start = psdPage * PSD_PAGE_SIZE;
+    return filteredPsdSuggestions.slice(start, start + PSD_PAGE_SIZE);
+  }, [filteredPsdSuggestions, psdPage]);
 
   const handleTriggerPartialPrint = (reprintPrinted = false) => {
     if (!activeCampaign) return;
@@ -3275,15 +3288,41 @@ export function OfferFolders({
               </div>
             )}
 
-            <div className="import-stats" style={{ margin: '4px 0 10px' }}>
-              <span><strong>{activeCampaign?.items.length ?? 0}</strong> produtos na campanha</span>
-              <span><strong>{scannedPsds.length}</strong> PSDs na pasta</span>
-              <span><strong>{pairingStats.exactF7}</strong> F7 exato</span>
-              <span><strong>{pairingStats.descriptionSimilar}</strong> descrição parecida</span>
-              <span><strong>{pairingStats.ambiguous}</strong> ambíguos / múltiplos candidatos</span>
-              <span><strong>{pairingStats.noSuggestion}</strong> sem sugestão</span>
-              <span><strong>{batchConfirmationSummary.toLink.length}</strong> prontos para o lote</span>
-            </div>
+            {isScanningPsds ? (
+              <div
+                style={{
+                  background: '#1e293b',
+                  border: '1px solid #3b82f6',
+                  color: '#93c5fd',
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  margin: '4px 0 10px',
+                }}
+              >
+                <span style={{ fontSize: 20 }}>🔄</span>
+                <div>
+                  <strong style={{ display: 'block', fontSize: 13, color: '#f8fafc' }}>
+                    Escaneando pasta de PSDs e calculando sugestões…
+                  </strong>
+                  <small style={{ color: '#94a3b8' }}>
+                    Lendo arquivos da pasta e cruzando códigos F7 e descrições com os {activeCampaign?.items.length ?? 0} produtos da campanha.
+                  </small>
+                </div>
+              </div>
+            ) : (
+              <div className="import-stats" style={{ margin: '4px 0 10px' }}>
+                <span><strong>{activeCampaign?.items.length ?? 0}</strong> produtos na campanha</span>
+                <span><strong>{scannedPsds.length}</strong> PSDs na pasta</span>
+                <span><strong>{pairingStats.exactF7}</strong> F7 exato</span>
+                <span><strong>{pairingStats.descriptionSimilar}</strong> descrição parecida</span>
+                <span><strong>{pairingStats.ambiguous}</strong> ambíguos / múltiplos candidatos</span>
+                <span><strong>{pairingStats.noSuggestion}</strong> sem sugestão</span>
+                <span><strong>{batchConfirmationSummary.toLink.length}</strong> prontos para o lote</span>
+              </div>
+            )}
 
             {showBatchConfirmStep && batchConfirmationSummary.toLink.length > 0 && (
               <div
@@ -3350,13 +3389,19 @@ export function OfferFolders({
                   aria-label="Pesquisar produto ou arquivo PSD no pareamento"
                   placeholder="Pesquisar por F7, descrição do produto ou arquivo PSD…"
                   value={psdFilterText}
-                  onChange={e => setPsdFilterText(e.target.value)}
+                  onChange={e => {
+                    setPsdFilterText(e.target.value);
+                    setPsdPage(0);
+                  }}
                   style={{ maxWidth: 340, flex: 1 }}
                 />
                 <select
                   aria-label="Filtrar recomendações de pareamento PSD"
                   value={psdReasonFilter}
-                  onChange={e => setPsdReasonFilter(e.target.value as PsdPairingFilter)}
+                  onChange={e => {
+                    setPsdReasonFilter(e.target.value as PsdPairingFilter);
+                    setPsdPage(0);
+                  }}
                 >
                   <option value="todos">Todos os produtos ({psdSuggestions.length})</option>
                   <option value="f7-exact">F7 exato ({pairingStats.exactF7})</option>
@@ -3401,7 +3446,7 @@ export function OfferFolders({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPsdSuggestions.map(s => {
+                  {pagedPsdSuggestions.map(s => {
                     const effectiveSel = psdPairingSelections[s.item.id] ?? getDefaultSelectionForSuggestion(s);
                     const candidatePaths = new Set(s.candidates.map(c => c.psd.path));
                     const otherPsds = scannedPsds.filter(p => !candidatePaths.has(p.path));
@@ -3548,6 +3593,50 @@ export function OfferFolders({
                 </tbody>
               </table>
             </div>
+
+            {totalPsdPages > 1 && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 12px',
+                  background: '#0f172a',
+                  border: '1px solid #1e293b',
+                  borderRadius: 6,
+                  marginTop: 6,
+                  fontSize: 12,
+                  color: '#94a3b8',
+                }}
+              >
+                <span>
+                  Exibindo {filteredPsdSuggestions.length > 0 ? psdPage * PSD_PAGE_SIZE + 1 : 0}–
+                  {Math.min((psdPage + 1) * PSD_PAGE_SIZE, filteredPsdSuggestions.length)} de{' '}
+                  <strong style={{ color: '#f1f5f9' }}>{filteredPsdSuggestions.length}</strong> produtos
+                </span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    className="subtle"
+                    style={{ padding: '3px 10px', fontSize: 12 }}
+                    disabled={psdPage === 0}
+                    onClick={() => setPsdPage(p => Math.max(0, p - 1))}
+                  >
+                    ◀ Anterior
+                  </button>
+                  <span style={{ fontWeight: 'bold', color: '#f1f5f9' }}>
+                    Página {psdPage + 1} de {totalPsdPages}
+                  </span>
+                  <button
+                    className="subtle"
+                    style={{ padding: '3px 10px', fontSize: 12 }}
+                    disabled={psdPage >= totalPsdPages - 1}
+                    onClick={() => setPsdPage(p => Math.min(totalPsdPages - 1, p + 1))}
+                  >
+                    Próxima ▶
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="toolbar" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
               <button className="subtle" disabled={batchLinking} onClick={() => setShowPsdManagerModal(false)}>

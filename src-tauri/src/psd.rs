@@ -8,7 +8,7 @@ fn error(value: impl std::fmt::Display) -> String { format!("Não foi possível 
 pub(crate) fn validate_path(path: &std::path::Path) -> Result<(), String> {
     if path.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("psd")) != Some(true) { return Err("Selecione um arquivo .psd.".into()); }
     let size = fs::metadata(path).map_err(error)?.len();
-    if size < 26 || size > 25 * 1024 * 1024 { return Err("O PSD deve ter entre 26 bytes e 25 MB.".into()); }
+    if size < 26 || size > 120 * 1024 * 1024 { return Err("O PSD deve ter entre 26 bytes e 120 MB.".into()); }
     Ok(())
 }
 

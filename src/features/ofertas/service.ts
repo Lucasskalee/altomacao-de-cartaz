@@ -767,9 +767,7 @@ function extractMeasureTokens(text: string): string[] {
     .filter(token => /^\d+(?:kg|g|gr|mg|ml|l|lt)$/i.test(token));
 }
 
-export function matchesExactF7InFilename(f7: string, psdFileName: string): boolean {
-  const cleanF7 = f7.trim();
-  if (!cleanF7 || !/^\d+$/.test(cleanF7)) return false;
+export function extractF7TokensFromFilename(psdFileName: string): string[] {
   const withoutExt = psdFileName
     .replace(/\.psd$/i, '')
     .replace(/\bf7[-_\s]*(?=\d)/gi, ' ')
@@ -780,7 +778,13 @@ export function matchesExactF7InFilename(f7: string, psdFileName: string): boole
   while ((match = regex.exec(withoutExt)) !== null) {
     tokens.push(match[1]);
   }
-  return tokens.includes(cleanF7);
+  return tokens;
+}
+
+export function matchesExactF7InFilename(f7: string, psdFileName: string): boolean {
+  const cleanF7 = f7.trim();
+  if (!cleanF7 || !/^\d+$/.test(cleanF7)) return false;
+  return extractF7TokensFromFilename(psdFileName).includes(cleanF7);
 }
 
 export function buildCampaignPsdSuggestions(
@@ -789,13 +793,29 @@ export function buildCampaignPsdSuggestions(
 ): CampaignItemPsdSuggestion[] {
   const allCampaignF7s = new Set(campaign.items.map(i => i.f7.trim()).filter(Boolean));
 
+  // Pré-indexa os metadados dos PSDs uma única vez para performance instantânea em listas grandes (600+ produtos)
+  const psdIndex = scannedPsds.map(psd => {
+    const f7Tokens = extractF7TokensFromFilename(psd.name);
+    const f7Set = new Set(f7Tokens);
+    const psdTokens = extractMeaningfulDescriptionTokens(psd.name);
+    const psdMeasures = extractMeasureTokens(psd.name);
+    const upperPsdPath = (psd.path || psd.name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    return {
+      psd,
+      f7Set,
+      psdTokens,
+      psdMeasures,
+      upperPsdPath,
+    };
+  });
+
   const preliminary = campaign.items.map(item => {
     const alreadyLinked = item.posters.length > 0;
     const cleanF7 = item.f7.trim();
 
     // 1. Prioriza correspondência exata de F7 encontrado no nome do arquivo
     const exactF7Psds = cleanF7
-      ? scannedPsds.filter(psd => matchesExactF7InFilename(cleanF7, psd.name))
+      ? psdIndex.filter(entry => entry.f7Set.has(cleanF7)).map(entry => entry.psd)
       : [];
 
     if (exactF7Psds.length > 0) {
@@ -819,28 +839,49 @@ export function buildCampaignPsdSuggestions(
     const descCandidates: PsdCandidateMatch[] = [];
 
     if (descTokens.length > 0) {
-      for (const psd of scannedPsds) {
+      const upperDesc = item.description.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+      const isVacuoOrFreezerOrIlha =
+        upperDesc.includes('VACUO') ||
+        upperDesc.includes('FREEZER') ||
+        upperDesc.includes('FRIXER') ||
+        upperDesc.includes('ILHA') ||
+        upperDesc.includes('CONGELAD') ||
+        upperDesc.includes('PACOTE') ||
+        upperDesc.includes('PCT');
+      const isFrango = upperDesc.includes('FRANGO') || upperDesc.includes('AVE');
+      const isCarne = upperDesc.includes('BOVIN') || upperDesc.includes('SUIN') || upperDesc.includes('CARNE');
+      const isFlv =
+        upperDesc.includes('VERDURA') ||
+        upperDesc.includes('LEGUME') ||
+        upperDesc.includes('FRUTA') ||
+        upperDesc.includes('MACA') ||
+        upperDesc.includes('BANANA') ||
+        upperDesc.includes('TOMATE');
+
+      for (const entry of psdIndex) {
         // Se o PSD contém explicitamente o F7 exato de outro produto da campanha, não o sugere por descrição
-        const hasOtherCampaignF7 = [...allCampaignF7s].some(
-          otherF7 => otherF7 !== cleanF7 && matchesExactF7InFilename(otherF7, psd.name)
-        );
+        let hasOtherCampaignF7 = false;
+        for (const f of entry.f7Set) {
+          if (f !== cleanF7 && allCampaignF7s.has(f)) {
+            hasOtherCampaignF7 = true;
+            break;
+          }
+        }
         if (hasOtherCampaignF7) continue;
 
-        const psdTokens = extractMeaningfulDescriptionTokens(psd.name);
-        if (psdTokens.length === 0) continue;
-        const psdMeasures = extractMeasureTokens(psd.name);
+        if (entry.psdTokens.length === 0) continue;
 
         // Se o produto especifica medida (ex: 5kg) e o PSD especifica medida diferente da mesma grandeza (ex: 1kg), penaliza/evita
         const matchedCore = descTokens.filter(dt =>
-          psdTokens.some(
+          entry.psdTokens.some(
             pt => pt === dt || (dt.length >= 4 && pt.startsWith(dt)) || (pt.length >= 4 && dt.startsWith(pt))
           )
         );
         if (matchedCore.length === 0) continue;
 
-        const matchedMeasures = descMeasures.filter(dm => psdMeasures.includes(dm));
+        const matchedMeasures = descMeasures.filter(dm => entry.psdMeasures.includes(dm));
         const descCoverage = matchedCore.length / descTokens.length;
-        const psdPrecision = matchedCore.length / psdTokens.length;
+        const psdPrecision = matchedCore.length / entry.psdTokens.length;
 
         const qualifies =
           descTokens.length === 1
@@ -851,25 +892,15 @@ export function buildCampaignPsdSuggestions(
         if (qualifies) {
           // Bônus de contexto de pasta para açougue, freezer/vácuo, frango e FLV/feira
           let folderBonus = 0;
-          const upperPsdPath = (psd.path || psd.name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
-          const upperDesc = item.description.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
-
-          const isVacuoOrFreezerOrIlha =
-            upperDesc.includes('VACUO') ||
-            upperDesc.includes('FREEZER') ||
-            upperDesc.includes('FRIXER') ||
-            upperDesc.includes('ILHA') ||
-            upperDesc.includes('CONGELAD') ||
-            upperDesc.includes('PACOTE') ||
-            upperDesc.includes('PCT');
+          const upperPsdPath = entry.upperPsdPath;
 
           if (isVacuoOrFreezerOrIlha && (upperPsdPath.includes('CARTAZES MEDIOS ACOU') || upperPsdPath.includes('FRANGO MEDIOS') || upperPsdPath.includes('CARTAZES MEDIOS'))) {
             folderBonus += 0.08;
-          } else if ((upperDesc.includes('FRANGO') || upperDesc.includes('AVE')) && (upperPsdPath.includes('FRANGO') || upperPsdPath.includes('AVE'))) {
+          } else if (isFrango && (upperPsdPath.includes('FRANGO') || upperPsdPath.includes('AVE'))) {
             folderBonus += 0.06;
-          } else if ((upperDesc.includes('BOVIN') || upperDesc.includes('SUIN') || upperDesc.includes('CARNE')) && (upperPsdPath.includes('ACOU') || upperPsdPath.includes('CARNE'))) {
+          } else if (isCarne && (upperPsdPath.includes('ACOU') || upperPsdPath.includes('CARNE'))) {
             folderBonus += 0.05;
-          } else if ((upperDesc.includes('VERDURA') || upperDesc.includes('LEGUME') || upperDesc.includes('FRUTA') || upperDesc.includes('MACA') || upperDesc.includes('BANANA') || upperDesc.includes('TOMATE')) && (upperPsdPath.includes('FLV') || upperPsdPath.includes('FEIRA'))) {
+          } else if (isFlv && (upperPsdPath.includes('FLV') || upperPsdPath.includes('FEIRA'))) {
             folderBonus += 0.08;
           }
 
@@ -879,7 +910,7 @@ export function buildCampaignPsdSuggestions(
             (matchedMeasures.length > 0 ? 0.05 : 0) +
             folderBonus;
           descCandidates.push({
-            psd,
+            psd: entry.psd,
             reason: 'description-similar',
             score: Math.min(0.99, Number(score.toFixed(4))),
             matchedTerms: [...matchedCore, ...matchedMeasures],

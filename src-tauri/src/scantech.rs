@@ -365,7 +365,7 @@ pub(crate) fn scan_psd_folder_disk(folder: &Path) -> Result<Vec<ScannedPsdEntry>
                 == Some(true)
             {
                 let size = meta.len();
-                if (26..=25 * 1024 * 1024).contains(&size) {
+                if (26..=120 * 1024 * 1024).contains(&size) {
                     let modified_at = meta
                         .modified()
                         .ok()
@@ -1181,7 +1181,7 @@ pub fn write_scantech_psd(
         }
     }
 
-    if request.bytes.len() < 64 || request.bytes.len() > 50 * 1024 * 1024 {
+    if request.bytes.len() < 64 || request.bytes.len() > 120 * 1024 * 1024 {
         return Err("Conteúdo binário PSD inválido ou fora dos limites de tamanho.".into());
     }
 
