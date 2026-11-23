@@ -845,21 +845,24 @@ export async function exportDerivedPsdDirect(
     }
   }
 
-function scaleAndShiftPriceLayer(
+function scaleAndCenterPriceLayer(
   layer: Layer,
-  scale: number,
-  shiftY: number,
-  canvasW: number
+  canvasW: number,
+  canvasH: number
 ): void {
   const centerX = canvasW / 2;
+  const origCenterY = canvasH * 0.62;
+  const targetCenterY = canvasH * 0.57;
+  const scale = 0.66;
+
   if (layer.text?.transform) {
     const t = layer.text.transform;
     const a = t[0] * scale;
     const b = t[1] * scale;
     const c = t[2] * scale;
     const d = t[3] * scale;
-    const tx = centerX + scale * (t[4] - centerX);
-    const ty = t[5] + shiftY;
+    const tx = centerX + (t[4] - centerX) * scale;
+    const ty = targetCenterY + (t[5] - origCenterY) * scale;
     layer.text.transform = [a, b, c, d, tx, ty];
   } else if (layer.text?.style?.fontSize) {
     layer.text.style.fontSize = Math.round(layer.text.style.fontSize * scale);
@@ -867,13 +870,13 @@ function scaleAndShiftPriceLayer(
 
   if (typeof layer.left === 'number' && typeof layer.right === 'number') {
     const w = (layer.right - layer.left) * scale;
-    const midX = centerX + scale * ((layer.left + layer.right) / 2 - centerX);
+    const midX = centerX + ((layer.left + layer.right) / 2 - centerX) * scale;
     layer.left = Math.round(midX - w / 2);
     layer.right = Math.round(midX + w / 2);
   }
   if (typeof layer.top === 'number' && typeof layer.bottom === 'number') {
     const h = (layer.bottom - layer.top) * scale;
-    const midY = (layer.top + layer.bottom) / 2 + shiftY;
+    const midY = targetCenterY + ((layer.top + layer.bottom) / 2 - origCenterY) * scale;
     layer.top = Math.round(midY - h / 2);
     layer.bottom = Math.round(midY + h / 2);
   }
@@ -926,47 +929,31 @@ function scaleAndShiftPriceLayer(
         psd.children = psd.children.filter(l => !l.name || !BOX_LAYER_NAMES.has(l.name));
       }
 
-      // 2. Reduz e sobe a camada de preço unitário (vermelho) para liberar espaço no rodapé
+      // 2. Reduz e centraliza a camada de preço unitário (vermelho) no espaço entre o título e a caixa
       const mainWhole = resolveLayerByPath(psd, mainWholeId);
       if (mainWhole && mainWhole.text) {
-        scaleAndShiftPriceLayer(mainWhole, 0.58, -canvasH * 0.16, canvasW);
+        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH);
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
       const mainFrac = resolveLayerByPath(psd, mainFractionId);
       if (mainFrac && mainFrac.text) {
-        scaleAndShiftPriceLayer(mainFrac, 0.58, -canvasH * 0.16, canvasW);
+        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH);
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
       }
       if (payload.roles.packagingLayerId) {
         const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
         if (packLayer && packLayer.text) {
-          scaleAndShiftPriceLayer(packLayer, 0.58, -canvasH * 0.16, canvasW);
+          scaleAndCenterPriceLayer(packLayer, canvasW, canvasH);
           renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
         }
       }
       const commaUnitLayer = findFirstTextLayerMatching(psd, /^,\s*(?:c[oó]pia)?$/i);
       if (commaUnitLayer && commaUnitLayer.text && commaUnitLayer !== mainWhole && commaUnitLayer !== mainFrac) {
-        scaleAndShiftPriceLayer(commaUnitLayer, 0.58, -canvasH * 0.16, canvasW);
+        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH);
         renderTextLayerToBitmap(commaUnitLayer, commaUnitLayer.text.text, psd.width, psd.height);
       }
 
-      // 3. Ajusta suavemente o topo (título e complemento) para balanceamento visual perfeito
-      if (payload.roles.titleLayerId) {
-        const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
-        if (titleLayer && titleLayer.text) {
-          scaleAndShiftPriceLayer(titleLayer, 0.92, -canvasH * 0.04, canvasW);
-          renderTextLayerToBitmap(titleLayer, titleLayer.text.text, psd.width, psd.height);
-        }
-      }
-      if (payload.roles.complementLayerId) {
-        const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
-        if (compLayer && compLayer.text) {
-          scaleAndShiftPriceLayer(compLayer, 0.92, -canvasH * 0.04, canvasW);
-          renderTextLayerToBitmap(compLayer, compLayer.text.text, psd.width, psd.height);
-        }
-      }
-
-      // 4. Injeta as 7 camadas oficiais calibradas fielmente a partir do modelo_de_caixa.psd
+      // 3. Injeta as 7 camadas oficiais calibradas fielmente a partir do modelo_de_caixa.psd
       const scaleX = canvasW / BOX_TEMPLATE_CANVAS.width;
       const scaleY = canvasH / BOX_TEMPLATE_CANVAS.height;
 

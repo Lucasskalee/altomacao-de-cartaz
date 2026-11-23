@@ -658,18 +658,13 @@ function drawPart(
     const canvasW = artwork?.canvas.width ?? 886;
     const canvasH = artwork?.canvas.height ?? 1260;
     const centerX = canvasW / 2;
-    const shiftY = -Math.round(canvasH * 0.16);
-    context.translate(centerX, shiftY);
-    context.scale(0.58, 0.58);
-    context.translate(-centerX, 0);
-  } else if (isCaixaAdapted && isTopPart) {
-    const canvasW = artwork?.canvas.width ?? 886;
-    const canvasH = artwork?.canvas.height ?? 1260;
-    const centerX = canvasW / 2;
-    const shiftY = -Math.round(canvasH * 0.04);
-    context.translate(centerX, shiftY);
-    context.scale(0.92, 0.92);
-    context.translate(-centerX, 0);
+    const origCenterY = canvasH * 0.62;
+    const targetCenterY = canvasH * 0.57;
+    const scale = 0.66;
+
+    context.translate(centerX, targetCenterY);
+    context.scale(scale, scale);
+    context.translate(-centerX, -origCenterY);
   }
 
   context.fillStyle = part.color;
