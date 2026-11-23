@@ -113,11 +113,12 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
   const artWidth = dims.width;
   const artHeight = dims.height;
 
-  // Para A5 (148 x 210 mm) e outros formatos dedicados, a folha enviada ao driver é o próprio tamanho do papel,
-  // preenchendo a folha por completo sem margens brancas excessivas.
   const useSheetA4 =
-    config.printerSheetA4 === true &&
-    config.paper === 'A6';
+    config.printerSheetA4 !== false &&
+    config.paper !== 'expositor-a3-2x2' &&
+    config.paper !== 'A3' &&
+    artWidth <= 210 &&
+    artHeight <= 297;
 
   let sheetWidth: number;
   let sheetHeight: number;

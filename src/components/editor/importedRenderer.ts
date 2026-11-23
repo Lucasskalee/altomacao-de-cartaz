@@ -323,7 +323,7 @@ export function importedPriceWarning(artwork: ImportedArtwork, price: string): s
   const part = parts.find(item => item.role === 'whole');
   if (!part) return 'Mapeamento de reais ausente.';
   const origDigits = Math.max(1, (part.originalText ?? '').trim().length);
-  if (whole.length > origDigits) {
+  if (whole.length > 2 && whole.length > origDigits) {
     const available = Math.max(part.bounds.right - part.bounds.left, part.bounds.right - 24);
     const perDigitWidth = (part.bounds.bottom - part.bounds.top) * (0.62 / origDigits);
     const estimated = whole.length * perDigitWidth;
@@ -874,17 +874,30 @@ function drawPart(
   const value = part.role === 'whole' ? whole : part.role === 'fraction' ? fraction : ',';
   const resolvedFont = resolveFontFamily(part.fontFamily, 'Zullia, sans-serif');
 
-  // Ajuste de proporção e destaque (+10%) para manter o preço 4,99 bem visível, imponente e alinhado
-  const isWholeOrFraction = part.role === 'whole' || part.role === 'fraction';
-  const boost = isWholeOrFraction ? 1.10 : 1.0;
-
-  let localFontSize = (part.fontSize || height * 1.18) * boost;
+  // Mantém estritamente o tamanho nativo do PSD para evitar qualquer sobreposição vertical com categorias/sabores
+  let localFontSize = part.fontSize || height * 1.14;
   if (part.transform && part.fontSize) {
     const scaleY = Math.hypot(part.transform[2], part.transform[3]);
-    if (part.role !== 'decimal' && scaleY > 0.01 && part.fontSize * scaleY > height * 2.4) {
-      localFontSize = (height * 1.35) / scaleY;
+    if (part.role !== 'decimal' && scaleY > 0.01 && part.fontSize * scaleY > height * 1.6) {
+      localFontSize = (height * 1.14) / scaleY;
     }
   }
+
+  // Trava de segurança: impede que números subam sobre camadas de sabor (complement), tipo ou linha decorativa
+  if (part.role === 'whole' || part.role === 'fraction') {
+    const compPart = artwork?.templateParts?.find(p => p.role === 'complement') || artwork?.priceParts?.find(p => p.role === 'complement');
+    const titlePart = artwork?.templateParts?.find(p => p.role === 'title') || artwork?.priceParts?.find(p => p.role === 'title');
+    const maxObstacleBottom = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0);
+    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 10) {
+      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 10));
+      const currentH = Math.max(1, part.bounds.bottom - part.bounds.top);
+      if (availableH < currentH) {
+        const factor = availableH / currentH;
+        localFontSize = Math.max(20, Math.round(localFontSize * factor));
+      }
+    }
+  }
+
   const fontStr = `400 ${localFontSize}px ${resolvedFont}`;
 
   const isPriceNumber = part.role === 'whole' || part.role === 'fraction' || part.role === 'decimal' || part.role === 'fractionRule';
