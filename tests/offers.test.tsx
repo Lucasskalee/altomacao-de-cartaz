@@ -1339,3 +1339,19 @@ test('Reconhecimento de Cartaz A5 Médio com Caixa Fechada: papéis, camadas e m
   doc.layout.paper = 'A5';
   assert.equal(getPosterPaperFormat(doc), 'A5');
 });
+
+test('Carnes e Açougue (A3): cortes como SUINO, BOVINO nunca viram embalagem e preservam sabor no meio', () => {
+  const meatLayers: ImportedLayerInfo[] = [
+    { id: 't0', name: 'CARRE', type: 'text', visible: true, depth: 0, text: 'CARRÉ', font: 'BrushHandNew', bounds: { left: 100, top: 400, right: 600, bottom: 550 } },
+    { id: 't1', name: 'SUINO', type: 'text', visible: true, depth: 0, text: 'SUINO', font: 'BrushHandNew', bounds: { left: 200, top: 820, right: 500, bottom: 920 } },
+    { id: 'r0', name: 'Linha divisoria', type: 'vector', visible: true, depth: 0, bounds: { left: 50, top: 940, right: 750, bottom: 950 } },
+    { id: 'p0', name: '15', type: 'text', visible: true, depth: 0, text: '15', bounds: { left: 80, top: 960, right: 400, bottom: 1400 } },
+    { id: 'p1', name: '49', type: 'text', visible: true, depth: 0, text: '49', bounds: { left: 450, top: 960, right: 700, bottom: 1200 } },
+    { id: 'u0', name: 'KG', type: 'text', visible: true, depth: 0, text: 'KG', bounds: { left: 520, top: 1250, right: 680, bottom: 1350 } },
+  ];
+
+  const templateRoles = suggestTemplateLayers(meatLayers, { whole: 'p0', fraction: 'p1' });
+  assert.equal(templateRoles.title, 't0'); // CARRÉ
+  assert.equal(templateRoles.complement, 't1'); // SUINO (preserva corte/sabor no meio, NUNCA vira embalagem!)
+  assert.notEqual(templateRoles.packaging, 't1'); // SUINO não pode ser packaging!
+});

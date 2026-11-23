@@ -247,12 +247,18 @@ export function suggestTemplateLayers(
 
   const categoryId = categoryCandidate?.id;
 
-  const volumePattern = /^(?:\d+\s*(?:L|ML|KG|G)|PET|LATA|LONG\s*NECK|CX|PCT)$/i;
+  // Volume ou tipo de embalagem estrito (ex.: 1L, -1L, 350ML, 500G, 1KG, PET, LATA, etc.)
+  // NUNCA deve casar cortes de carne (SUÍNO, BOVINO, etc.) nem sabores/subtítulos do produto
+  const volumePattern = /^(?:-?\s*\d*\s*(?:L|ML|KG|G|GR)|PET|LATA|LONG\s*NECK|CX|PCT|UND?\.?)$/i;
+  const isMeatOrFoodComplement = (text: string) =>
+    /^(?:SU[IÍ]NO|BOVINO|FRANGO|AVE|PEIXE|COSTELA|ALCATRA|PICANHA|BISTECA|LOMBO|PERNIL|COXA|PEITO|FIL[EÉ]|AC[EÉ]M|PATINHO|PALETA|FRALDINHA|CUPIM|MO[IÍ]DA|LINGUI[CÇ]A|SALSICHA|INTEGRAL|DESNATADO|LIGHT|ZERO|TRADICIONAL)$/i.test(text);
+
   const packagingCandidate = visible.find(
     l =>
       l.id !== titleId &&
       l.id !== categoryId &&
-      (volumePattern.test((l.text ?? l.name).trim()) || (l.bounds.top > 800 && /brush/i.test(l.font ?? '')))
+      volumePattern.test((l.text ?? l.name).trim()) &&
+      !isMeatOrFoodComplement((l.text ?? l.name).trim())
   );
 
   const packagingId = packagingCandidate?.id;
@@ -262,8 +268,8 @@ export function suggestTemplateLayers(
       l.id !== titleId &&
       l.id !== categoryId &&
       l.id !== packagingId &&
-      (titleCandidate ? l.bounds.top > titleCandidate.bounds.top : l.bounds.top > 400) &&
-      l.bounds.top < 1000
+      (titleCandidate ? l.bounds.top > titleCandidate.bounds.top : l.bounds.top > 300) &&
+      l.bounds.top < 1200
   );
 
   const complementId = complementCandidate?.id;
