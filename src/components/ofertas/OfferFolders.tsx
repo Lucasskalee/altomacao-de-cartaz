@@ -2267,180 +2267,123 @@ export function OfferFolders({
                                               📦 Exportar PSD
                                             </button>
                                             {(() => {
+                                              if (!m.libraryCartaz) return null;
                                               const currentFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
-                                              const existingFmts = new Set(
-                                                v.matchedPosters.map(other =>
-                                                  getPosterPaperFormat(other.scheduledDocument || other.libraryCartaz?.document, other.state.cartazPath)
-                                                )
+                                              const isThisBox = Boolean(
+                                                (m.scheduledDocument?.product as any)?.hasBoxPrice ||
+                                                (m.libraryCartaz?.document.product as any)?.hasBoxPrice
                                               );
+
+                                              const hasA6 = v.matchedPosters.some(p => {
+                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                return fmt === 'A6';
+                                              });
+
+                                              const hasA5Normal = v.matchedPosters.some(p => {
+                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                return fmt === 'A5' && !box;
+                                              });
+
+                                              const hasA5Box = v.matchedPosters.some(p => {
+                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                return fmt === 'A5' && box;
+                                              });
+
+                                              const hasA4Normal = v.matchedPosters.some(p => {
+                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                return fmt === 'A4' && !box;
+                                              });
+
+                                              const hasA4Box = v.matchedPosters.some(p => {
+                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                return fmt === 'A4' && box;
+                                              });
+
                                               return (
                                                 <>
-                                                  {/* Opções a partir de A6 */}
-                                                  {m.libraryCartaz && currentFmt === 'A6' && (
-                                                    <>
-                                                      {!existingFmts.has('A5') && (
-                                                        <>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
-                                                            title="Criar também uma versão Médio (A5) deste cartaz mantendo a versão Pequeno (A6)"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', false);
-                                                              })
-                                                            }
-                                                          >
-                                                            📐 + Versão Médio (A5)
-                                                          </button>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
-                                                            title="Criar versão Médio (A5) com preço por caixa/fardo e adicionar na pasta de ofertas"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true);
-                                                              })
-                                                            }
-                                                          >
-                                                            📦 + A5 por Caixa
-                                                          </button>
-                                                        </>
-                                                      )}
-                                                      {!existingFmts.has('A4') && (
-                                                        <>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
-                                                            title="Criar também uma versão Cartaz A4 (Folha inteira) mantendo o A6"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', false);
-                                                              })
-                                                            }
-                                                          >
-                                                            📄 + Versão Cartaz A4
-                                                          </button>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
-                                                            title="Criar versão Cartaz A4 com preço por caixa/fardo e adicionar na pasta de ofertas"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true);
-                                                              })
-                                                            }
-                                                          >
-                                                            📦 + A4 por Caixa
-                                                          </button>
-                                                        </>
-                                                      )}
-                                                    </>
+                                                  {/* 1. Opções para A5 */}
+                                                  {!hasA5Normal && (currentFmt !== 'A5' || isThisBox) && (
+                                                    <button
+                                                      type="button"
+                                                      className="subtle"
+                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
+                                                      title="Criar versão Médio (A5) normal / unitário sem caixa e adicionar na pasta"
+                                                      onClick={() =>
+                                                        run(async () => {
+                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', false);
+                                                        })
+                                                      }
+                                                    >
+                                                      📐 + Versão Médio (A5)
+                                                    </button>
+                                                  )}
+                                                  {!hasA5Box && (currentFmt !== 'A5' || !isThisBox) && (
+                                                    <button
+                                                      type="button"
+                                                      className="subtle"
+                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                      title="Criar versão Médio (A5) com preço por caixa/fardo e adicionar na pasta"
+                                                      onClick={() =>
+                                                        run(async () => {
+                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true);
+                                                        })
+                                                      }
+                                                    >
+                                                      📦 + A5 por Caixa
+                                                    </button>
                                                   )}
 
-                                                  {/* Opções a partir de A5 */}
-                                                  {m.libraryCartaz && currentFmt === 'A5' && (
-                                                    <>
-                                                      {!existingFmts.has('A4') && (
-                                                        <>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
-                                                            title="Criar também uma versão Cartaz A4 (Folha inteira) mantendo o A5"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', false);
-                                                              })
-                                                            }
-                                                          >
-                                                            📄 + Versão Cartaz A4
-                                                          </button>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
-                                                            title="Criar versão Cartaz A4 com preço por caixa/fardo e adicionar na pasta de ofertas"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true);
-                                                              })
-                                                            }
-                                                          >
-                                                            📦 + A4 por Caixa
-                                                          </button>
-                                                        </>
-                                                      )}
-                                                      {!existingFmts.has('A6') && (
-                                                        <button
-                                                          type="button"
-                                                          className="subtle"
-                                                          style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
-                                                          title="Criar também uma versão Pequeno (A6) deste cartaz mantendo a versão Médio (A5)"
-                                                          onClick={() =>
-                                                            run(async () => {
-                                                              await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A6', false);
-                                                            })
-                                                          }
-                                                        >
-                                                          🏷️ + Versão Pequeno (A6)
-                                                        </button>
-                                                      )}
-                                                    </>
+                                                  {/* 2. Opções para A4 */}
+                                                  {!hasA4Normal && (currentFmt !== 'A4' || isThisBox) && (
+                                                    <button
+                                                      type="button"
+                                                      className="subtle"
+                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
+                                                      title="Criar versão Cartaz A4 (Folha inteira) normal / unitário e adicionar na pasta"
+                                                      onClick={() =>
+                                                        run(async () => {
+                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', false);
+                                                        })
+                                                      }
+                                                    >
+                                                      📄 + Versão Cartaz A4
+                                                    </button>
+                                                  )}
+                                                  {!hasA4Box && (currentFmt !== 'A4' || !isThisBox) && (
+                                                    <button
+                                                      type="button"
+                                                      className="subtle"
+                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                      title="Criar versão Cartaz A4 com preço por caixa/fardo e adicionar na pasta"
+                                                      onClick={() =>
+                                                        run(async () => {
+                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true);
+                                                        })
+                                                      }
+                                                    >
+                                                      📦 + A4 por Caixa
+                                                    </button>
                                                   )}
 
-                                                  {/* Opções a partir de A4 */}
-                                                  {m.libraryCartaz && currentFmt === 'A4' && (
-                                                    <>
-                                                      {!existingFmts.has('A5') && (
-                                                        <>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
-                                                            title="Criar também uma versão Médio (A5) deste cartaz mantendo a versão A4"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', false);
-                                                              })
-                                                            }
-                                                          >
-                                                            📐 + Versão Médio (A5)
-                                                          </button>
-                                                          <button
-                                                            type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
-                                                            title="Criar versão Médio (A5) com preço por caixa/fardo e adicionar na pasta de ofertas"
-                                                            onClick={() =>
-                                                              run(async () => {
-                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true);
-                                                              })
-                                                            }
-                                                          >
-                                                            📦 + A5 por Caixa
-                                                          </button>
-                                                        </>
-                                                      )}
-                                                      {!existingFmts.has('A6') && (
-                                                        <button
-                                                          type="button"
-                                                          className="subtle"
-                                                          style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
-                                                          title="Criar também uma versão Pequeno (A6) deste cartaz mantendo a versão A4"
-                                                          onClick={() =>
-                                                            run(async () => {
-                                                              await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A6', false);
-                                                            })
-                                                          }
-                                                        >
-                                                          🏷️ + Versão Pequeno (A6)
-                                                        </button>
-                                                      )}
-                                                    </>
+                                                  {/* 3. Opção para A6 */}
+                                                  {!hasA6 && currentFmt !== 'A6' && (
+                                                    <button
+                                                      type="button"
+                                                      className="subtle"
+                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
+                                                      title="Criar versão Pequeno (A6) deste cartaz para gôndola e adicionar na pasta"
+                                                      onClick={() =>
+                                                        run(async () => {
+                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A6', false);
+                                                        })
+                                                      }
+                                                    >
+                                                      🏷️ + Versão Pequeno (A6)
+                                                    </button>
                                                   )}
                                                 </>
                                               );
