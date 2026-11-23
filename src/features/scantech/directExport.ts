@@ -36,22 +36,24 @@ export function resolveLayerByPath(
   pathStr: string | null | undefined
 ): Layer | null {
   if (!pathStr || !container?.children) return null;
+
+  // 1. Tenta resolver como índice numérico (ex: "22" ou "0.2")
   const parts = pathStr.split('.');
   let current: any = container;
-  let isNumericPath = true;
+  let isNumeric = true;
   for (const part of parts) {
     const idx = parseInt(part, 10);
     if (isNaN(idx) || !current?.children || idx < 0 || idx >= current.children.length) {
-      isNumericPath = false;
+      isNumeric = false;
       break;
     }
     current = current.children[idx];
   }
-  if (isNumericPath && current && current !== container) {
+  if (isNumeric && current && current !== container) {
     return current;
   }
 
-  // Fallback: busca recursiva por nome de camada
+  // 2. Fallback: busca por nome exato da camada
   for (const child of container.children) {
     if (child.name === pathStr) return child;
     if (child.children) {
@@ -59,6 +61,7 @@ export function resolveLayerByPath(
       if (found) return found;
     }
   }
+
   return null;
 }
 
@@ -251,6 +254,15 @@ export function renderTextLayerToBitmap(
         const r = Math.min(255, Math.max(0, Math.round(color.r)));
         const g = Math.min(255, Math.max(0, Math.round(color.g)));
         const b = Math.min(255, Math.max(0, Math.round(color.b)));
+        fillStyle = `rgb(${r},${g},${b})`;
+      } else if (color && typeof color.c === 'number' && typeof color.m === 'number') {
+        const c = color.c / 255;
+        const m = color.m / 255;
+        const y = (color.y ?? 0) / 255;
+        const k = (color.k ?? 0) / 255;
+        const r = Math.round(255 * (1 - c) * (1 - k));
+        const g = Math.round(255 * (1 - m) * (1 - k));
+        const b = Math.round(255 * (1 - y) * (1 - k));
         fillStyle = `rgb(${r},${g},${b})`;
       }
       ctx.fillStyle = fillStyle;
@@ -691,6 +703,7 @@ export type DerivedPsdPayload = {
     packagingLayerId?: string;
     wholeLayerId?: string;
     fractionLayerId?: string;
+    fractionRuleLayerId?: string;
     validityLayerId?: string;
     boxQtyLayerId?: string;
     boxWholeLayerId?: string;
@@ -845,15 +858,28 @@ export async function exportDerivedPsdDirect(
     }
   }
 
+function removeBoxLayersRecursively(container: { children?: Layer[] }, names: Set<string>): void {
+  if (!container?.children) return;
+  container.children = container.children.filter(l => {
+    const cleanName = (l.name || '').trim();
+    return !names.has(cleanName) && !names.has(l.name || '');
+  });
+  for (const child of container.children) {
+    if (child.children) {
+      removeBoxLayersRecursively(child, names);
+    }
+  }
+}
+
 function scaleAndCenterPriceLayer(
   layer: Layer,
   canvasW: number,
-  canvasH: number
+  canvasH: number,
+  origCenterY = canvasH * 0.65,
+  targetCenterY = canvasH * 0.63,
+  scale = 0.64
 ): void {
   const centerX = canvasW / 2;
-  const origCenterY = canvasH * 0.62;
-  const targetCenterY = canvasH * 0.57;
-  const scale = 0.66;
 
   if (layer.text?.transform) {
     const t = layer.text.transform;
@@ -864,8 +890,18 @@ function scaleAndCenterPriceLayer(
     const tx = centerX + (t[4] - centerX) * scale;
     const ty = targetCenterY + (t[5] - origCenterY) * scale;
     layer.text.transform = [a, b, c, d, tx, ty];
-  } else if (layer.text?.style?.fontSize) {
+  }
+
+  // Reduz explicitamente o fontSize do texto e styleRuns para renderização nativa no Photoshop CS6
+  if (layer.text?.style?.fontSize) {
     layer.text.style.fontSize = Math.round(layer.text.style.fontSize * scale);
+  }
+  if (layer.text?.styleRuns) {
+    for (const run of layer.text.styleRuns) {
+      if (run.style?.fontSize) {
+        run.style.fontSize = Math.round(run.style.fontSize * scale);
+      }
+    }
   }
 
   if (typeof layer.left === 'number' && typeof layer.right === 'number') {
@@ -879,6 +915,23 @@ function scaleAndCenterPriceLayer(
     const midY = targetCenterY + ((layer.top + layer.bottom) / 2 - origCenterY) * scale;
     layer.top = Math.round(midY - h / 2);
     layer.bottom = Math.round(midY + h / 2);
+  }
+
+  if (layer.vectorMask?.paths) {
+    for (const path of layer.vectorMask.paths) {
+      if (path.knots) {
+        for (const knot of path.knots) {
+          if (Array.isArray(knot.points)) {
+            for (let i = 0; i < knot.points.length; i += 2) {
+              const realX = knot.points[i];
+              const realY = knot.points[i + 1];
+              knot.points[i] = centerX + (realX - centerX) * scale;
+              knot.points[i + 1] = targetCenterY + (realY - origCenterY) * scale;
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -924,32 +977,52 @@ function scaleAndCenterPriceLayer(
         '28',
         ',  cópia 3',
         ', cópia 3',
+        ',  cópia 1',
+        ', cópia 1',
       ]);
-      if (psd.children) {
-        psd.children = psd.children.filter(l => !l.name || !BOX_LAYER_NAMES.has(l.name));
-      }
+      removeBoxLayersRecursively(psd, BOX_LAYER_NAMES);
 
       // 2. Reduz e centraliza a camada de preço unitário (vermelho) no espaço entre o título e a caixa
       const mainWhole = resolveLayerByPath(psd, mainWholeId);
+      const mainFrac = resolveLayerByPath(psd, mainFractionId);
+      let origPriceCenterY = canvasH * 0.65;
+      if (mainWhole && typeof mainWhole.top === 'number' && typeof mainWhole.bottom === 'number') {
+        origPriceCenterY = (mainWhole.top + mainWhole.bottom) / 2;
+      } else if (mainWhole?.text?.transform && mainWhole.text.transform[5]) {
+        origPriceCenterY = mainWhole.text.transform[5] - canvasH * 0.12;
+      }
+      const targetCenterY = canvasH * 0.63;
+      const scale = 0.64;
+
       if (mainWhole && mainWhole.text) {
-        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH);
+        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
-      const mainFrac = resolveLayerByPath(psd, mainFractionId);
       if (mainFrac && mainFrac.text) {
-        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH);
+        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
       }
       if (payload.roles.packagingLayerId) {
         const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
-        if (packLayer && packLayer.text) {
-          scaleAndCenterPriceLayer(packLayer, canvasW, canvasH);
-          renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
+        if (packLayer) {
+          scaleAndCenterPriceLayer(packLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+          if (packLayer.text) renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
+        }
+      }
+      if (payload.roles.fractionRuleLayerId) {
+        const ruleLayer = resolveLayerByPath(psd, payload.roles.fractionRuleLayerId);
+        if (ruleLayer) {
+          scaleAndCenterPriceLayer(ruleLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+        }
+      } else {
+        const fallbackRule = psd.children?.find(l => l.name === 'Rectangle 3');
+        if (fallbackRule && fallbackRule.name !== 'Rectangle 3 cópia 2') {
+          scaleAndCenterPriceLayer(fallbackRule, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
         }
       }
       const commaUnitLayer = findFirstTextLayerMatching(psd, /^,\s*(?:c[oó]pia)?$/i);
       if (commaUnitLayer && commaUnitLayer.text && commaUnitLayer !== mainWhole && commaUnitLayer !== mainFrac) {
-        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH);
+        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
         renderTextLayerToBitmap(commaUnitLayer, commaUnitLayer.text.text, psd.width, psd.height);
       }
 
@@ -962,6 +1035,7 @@ function scaleAndCenterPriceLayer(
       const qtyStr = `${payload.boxQuantity ?? 12} ${(payload.boxUnitLabel ?? 'UND.').toUpperCase()} `;
 
       const newBoxLayers: Layer[] = [];
+      const redColor = { r: 215, g: 37, b: 2 };
       for (const templateLayer of OFFICIAL_BOX_LAYERS) {
         const cloned: Layer = JSON.parse(JSON.stringify(templateLayer));
 
@@ -979,12 +1053,51 @@ function scaleAndCenterPriceLayer(
           cloned.text.transform[5] *= scaleY;
         }
 
+        // Escala knots do vectorMask para o canvas destino
+        if (cloned.vectorMask?.paths) {
+          for (const path of cloned.vectorMask.paths) {
+            if (path.knots) {
+              for (const knot of path.knots) {
+                if (Array.isArray(knot.points)) {
+                  for (let i = 0; i < knot.points.length; i += 2) {
+                    knot.points[i] *= scaleX;
+                    knot.points[i + 1] *= scaleY;
+                  }
+                }
+              }
+            }
+          }
+        }
+
         if (cloned.name === '46' || cloned.name === '32') {
           cloned.name = '46';
-          if (cloned.text) cloned.text.text = bWhole;
+          if (cloned.text) {
+            cloned.text.text = bWhole;
+            if (cloned.text.style) cloned.text.style.fillColor = redColor;
+            if (cloned.text.styleRuns) {
+              for (const run of cloned.text.styleRuns) {
+                if (run.style) run.style.fillColor = redColor;
+              }
+            }
+          }
         } else if (cloned.name === '68' || cloned.name === '28') {
           cloned.name = '68';
-          if (cloned.text) cloned.text.text = bFrac;
+          if (cloned.text) {
+            cloned.text.text = bFrac;
+            if (cloned.text.style) cloned.text.style.fillColor = redColor;
+            if (cloned.text.styleRuns) {
+              for (const run of cloned.text.styleRuns) {
+                if (run.style) run.style.fillColor = redColor;
+              }
+            }
+          }
+        } else if (cloned.name === ',  cópia 3' || cloned.name === ', cópia 3') {
+          if (cloned.text?.style) cloned.text.style.fillColor = redColor;
+          if (cloned.text?.styleRuns) {
+            for (const run of cloned.text.styleRuns) {
+              if (run.style) run.style.fillColor = redColor;
+            }
+          }
         } else if (cloned.name && cloned.name.includes('UND.')) {
           cloned.name = '12 UND. ';
           if (cloned.text) cloned.text.text = qtyStr;

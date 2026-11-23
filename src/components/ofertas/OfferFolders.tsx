@@ -785,6 +785,7 @@ export function OfferFolders({
                   roles: {
                     wholeLayerId: wholePart.layerId,
                     fractionLayerId: fractionPart.layerId,
+                    fractionRuleLayerId: artwork.priceParts?.find(p => p.role === 'fractionRule')?.layerId,
                     validityLayerId: validityPart?.layerId,
                     titleLayerId: titlePart?.layerId,
                     complementLayerId: compPart?.layerId,
@@ -1242,6 +1243,7 @@ export function OfferFolders({
       roles: {
         wholeLayerId: wholePart.layerId,
         fractionLayerId: fractionPart.layerId,
+        fractionRuleLayerId: artwork.priceParts?.find(p => p.role === 'fractionRule')?.layerId,
         validityLayerId: artwork.priceParts?.find(p => p.role === 'validity')?.layerId,
         titleLayerId: titlePart?.layerId,
         complementLayerId: compPart?.layerId,

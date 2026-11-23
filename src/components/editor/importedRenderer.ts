@@ -371,11 +371,13 @@ export async function drawImported(
   context.drawImage(background, offsetX, offsetY, artwork.canvas.width * scale, artwork.canvas.height * scale);
   if ('fonts' in document) {
     await Promise.all([
-      document.fonts.load(`${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
-      document.fonts.load(`${Math.max(12, 200 * scale)}px "Brush Hand New"`).catch(() => []),
-      document.fonts.load(`${Math.max(12, 200 * scale)}px BrushHandNew`).catch(() => []),
-      document.fonts.load(`${Math.max(12, 100 * scale)}px Arial`).catch(() => []),
-      document.fonts.load(`${Math.max(12, 100 * scale)}px ArialMT`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, 200 * scale)}px "Brush Hand New"`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, 200 * scale)}px BrushHandNew`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, 100 * scale)}px Arial`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, 100 * scale)}px ArialMT`).catch(() => []),
+      document.fonts.load(`900 ${Math.max(12, 100 * scale)}px Impact`).catch(() => []),
     ]);
   }
   const { whole, fraction } = sanitizePrice(price);
@@ -534,11 +536,26 @@ function drawSurgicalGuides(
   context.strokeStyle = '#22c55e';
   context.lineWidth = 3;
   context.setLineDash([8, 6]);
-  context.strokeRect(priceLeft, priceTop, priceRight - priceLeft, priceBottom - priceTop);
+
+  const hasNativeBox = Boolean(
+    artwork?.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name))
+  );
+  if (dynamicTexts?.hasBoxPrice && !hasNativeBox) {
+    const s = 0.64;
+    const targetY = canvasH * 0.63;
+    const h = (priceBottom - priceTop) * s;
+    const w = (priceRight - priceLeft) * s;
+    const midX = (priceLeft + priceRight) / 2;
+    const adaptedTop = targetY - h / 2;
+    const adaptedLeft = canvasW / 2 + (midX - canvasW / 2) * s - w / 2;
+    context.strokeRect(adaptedLeft, adaptedTop, w, h);
+  } else {
+    context.strokeRect(priceLeft, priceTop, priceRight - priceLeft, priceBottom - priceTop);
+  }
 
   // 5. ZONA VERDE - EDIT_Caixa_Atacado (se ativo)
   if (dynamicTexts?.hasBoxPrice) {
-    const boxY = Math.round(canvasH * 0.80);
+    const boxY = Math.round(canvasH * 0.81);
     const boxZone = { left: Math.round(canvasW * 0.06), top: boxY, right: Math.round(canvasW * 0.94), bottom: canvasH - 20 };
     context.strokeStyle = '#22c55e';
     context.lineWidth = 3;
@@ -578,7 +595,7 @@ function drawBoxPriceSection(
   context.textAlign = 'left';
   context.textBaseline = 'alphabetic';
   context.fillStyle = '#000000';
-  context.fillText('CAIXA COM', labelX, lineY + Math.round(canvasH * 0.066));
+  context.fillText('CAIXA COM', labelX, lineY + Math.round(canvasH * 0.058));
   context.restore();
 
   // Quantidade "12 UND." (Impact)
@@ -588,7 +605,7 @@ function drawBoxPriceSection(
   context.textAlign = 'left';
   context.textBaseline = 'alphabetic';
   context.fillStyle = '#000000';
-  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, labelX, lineY + Math.round(canvasH * 0.134));
+  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, labelX, lineY + Math.round(canvasH * 0.125));
   context.restore();
 
   // Preço Inteiro da Caixa com sombra projetada e cor oficial do modelo (ex: 46 ou 83)
@@ -683,9 +700,13 @@ function drawPart(
     const canvasW = artwork?.canvas.width ?? 886;
     const canvasH = artwork?.canvas.height ?? 1260;
     const centerX = canvasW / 2;
-    const origCenterY = canvasH * 0.62;
-    const targetCenterY = canvasH * 0.57;
-    const scale = 0.66;
+    const wholePart = artwork?.priceParts?.find(p => p.role === 'whole');
+    const fracPart = artwork?.priceParts?.find(p => p.role === 'fraction');
+    const origTop = wholePart ? Math.min(wholePart.bounds.top, fracPart?.bounds.top ?? wholePart.bounds.top) : canvasH * 0.50;
+    const origBottom = wholePart ? Math.max(wholePart.bounds.bottom, fracPart?.bounds.bottom ?? wholePart.bounds.bottom) : canvasH * 0.80;
+    const origCenterY = (origTop + origBottom) / 2;
+    const targetCenterY = canvasH * 0.63;
+    const scale = 0.64;
 
     context.translate(centerX, targetCenterY);
     context.scale(scale, scale);
