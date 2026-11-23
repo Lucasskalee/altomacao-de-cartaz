@@ -877,7 +877,7 @@ function drawPart(
   let localFontSize = part.fontSize || height * 1.14;
   if (part.transform && part.fontSize) {
     const scaleY = Math.hypot(part.transform[2], part.transform[3]);
-    if (scaleY > 0.01 && part.fontSize * scaleY > height * 1.8) {
+    if (part.role !== 'decimal' && scaleY > 0.01 && part.fontSize * scaleY > height * 1.8) {
       localFontSize = (height * 1.25) / scaleY;
     }
   }
@@ -935,7 +935,11 @@ function drawPart(
     return;
   }
 
-  const fontSize = height * (part.role === 'decimal' ? 1.18 : 1.14);
+  const fracPart = artwork?.priceParts?.find(p => p.role === 'fraction');
+  const wholePart = artwork?.priceParts?.find(p => p.role === 'whole');
+  const refPart = fracPart || wholePart;
+  const refHeight = refPart ? (refPart.bounds.bottom - refPart.bounds.top) : height;
+  const fontSize = part.role === 'decimal' ? refHeight * 0.95 : height * 1.14;
   context.font = `400 ${fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
   context.textBaseline = 'alphabetic';
   if (part.role === 'whole') {
