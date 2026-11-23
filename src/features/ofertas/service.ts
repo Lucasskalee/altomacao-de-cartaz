@@ -849,10 +849,35 @@ export function buildCampaignPsdSuggestions(
               (matchedCore.length >= 1 && descCoverage >= 0.5 && psdPrecision >= 0.5);
 
         if (qualifies) {
+          // Bônus de contexto de pasta para açougue, freezer/vácuo, frango e FLV/feira
+          let folderBonus = 0;
+          const upperPsdPath = (psd.path || psd.name).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+          const upperDesc = item.description.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+
+          const isVacuoOrFreezerOrIlha =
+            upperDesc.includes('VACUO') ||
+            upperDesc.includes('FREEZER') ||
+            upperDesc.includes('FRIXER') ||
+            upperDesc.includes('ILHA') ||
+            upperDesc.includes('CONGELAD') ||
+            upperDesc.includes('PACOTE') ||
+            upperDesc.includes('PCT');
+
+          if (isVacuoOrFreezerOrIlha && (upperPsdPath.includes('CARTAZES MEDIOS ACOU') || upperPsdPath.includes('FRANGO MEDIOS') || upperPsdPath.includes('CARTAZES MEDIOS'))) {
+            folderBonus += 0.08;
+          } else if ((upperDesc.includes('FRANGO') || upperDesc.includes('AVE')) && (upperPsdPath.includes('FRANGO') || upperPsdPath.includes('AVE'))) {
+            folderBonus += 0.06;
+          } else if ((upperDesc.includes('BOVIN') || upperDesc.includes('SUIN') || upperDesc.includes('CARNE')) && (upperPsdPath.includes('ACOU') || upperPsdPath.includes('CARNE'))) {
+            folderBonus += 0.05;
+          } else if ((upperDesc.includes('VERDURA') || upperDesc.includes('LEGUME') || upperDesc.includes('FRUTA') || upperDesc.includes('MACA') || upperDesc.includes('BANANA') || upperDesc.includes('TOMATE')) && (upperPsdPath.includes('FLV') || upperPsdPath.includes('FEIRA'))) {
+            folderBonus += 0.08;
+          }
+
           const score =
             descCoverage * 0.8 +
             psdPrecision * 0.15 +
-            (matchedMeasures.length > 0 ? 0.05 : 0);
+            (matchedMeasures.length > 0 ? 0.05 : 0) +
+            folderBonus;
           descCandidates.push({
             psd,
             reason: 'description-similar',
@@ -1123,6 +1148,111 @@ export function buildOfferPsdCartazTargetPath(
   return `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug || 'cartaz'}${sizeTag}.skcartaz`;
 }
 
+/**
+ * Detecta inteligentemente o formato de papel adequado para um arquivo PSD
+ * aproveitando as pastas de artes prontas (Médios A5, Açougue Balcão A3, FLV Feira, Pequenos A6, etc.)
+ * e características de produtos como carnes a vácuo, freezer/frixer, frangos de ilha e congelados.
+ */
+export function detectPsdPaperFormat(
+  psdPathOrName: string,
+  itemDescription?: string
+): PaperFormat {
+  const normalized = (psdPathOrName || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  const descNorm = (itemDescription || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+
+  // 1. Externos 2x2
+  if (normalized.includes('EXTERNO') || normalized.includes('2X2') || normalized.includes('EXPOSITOR')) {
+    return 'expositor-a3-2x2';
+  }
+
+  // 2. Carnes de freezer / frixer, carnes a vácuo, frango de pacotes de ilhas, congelados e pontas -> Médios (A5)
+  const isMedioFolder =
+    normalized.includes('CARTAZES MEDIOS ACOU') ||
+    normalized.includes('FRANGO MEDIOS') ||
+    normalized.includes('CARTAZES MEDIOS') ||
+    normalized.includes('MEDIO');
+
+  const isFreezerOrVacuoOrIlha =
+    normalized.includes('VACUO') ||
+    normalized.includes('FREEZER') ||
+    normalized.includes('FRIXER') ||
+    normalized.includes('ILHA') ||
+    normalized.includes('PACOTE') ||
+    normalized.includes('CONGELAD') ||
+    normalized.includes('PONTA') ||
+    normalized.includes('JERKED') ||
+    normalized.includes('CHARQUE') ||
+    normalized.includes('BANANINHA') ||
+    normalized.includes('TILAPIA') ||
+    normalized.includes('PEIXE') ||
+    normalized.includes('PESCAD') ||
+    normalized.includes('CAMARAO') ||
+    normalized.includes('EMPANAD') ||
+    normalized.includes('HAMBURGUER') ||
+    normalized.includes('POSTA') ||
+    descNorm.includes('VACUO') ||
+    descNorm.includes('FREEZER') ||
+    descNorm.includes('FRIXER') ||
+    descNorm.includes('ILHA') ||
+    descNorm.includes('CONGELAD') ||
+    descNorm.includes('PACOTE');
+
+  if (isMedioFolder || isFreezerOrVacuoOrIlha) {
+    return 'A5';
+  }
+
+  // 3. Açougue Balcão (A3)
+  const isAcougue = normalized.includes('ACOU') || normalized.includes('CARNE') || descNorm.includes('ACOU');
+  if (isAcougue) {
+    if (normalized.includes('CARTAZES ACOU') || normalized.includes('BALCAO') || normalized.includes('A3')) {
+      return 'A3';
+    }
+  }
+
+  // 4. FLV / Feira
+  if (
+    normalized.includes('FLV') ||
+    normalized.includes('FEIRA') ||
+    normalized.includes('HORTIFRUTI') ||
+    descNorm.includes('FLV') ||
+    descNorm.includes('FEIRA')
+  ) {
+    if (normalized.includes('A5') || normalized.includes('MEDIO')) return 'A5';
+    if (normalized.includes('A6') || normalized.includes('PEQUENO')) return 'A6';
+    if (normalized.includes('A3')) return 'A3';
+    return 'A4';
+  }
+
+  // 5. Cartazes A4
+  if (
+    normalized.includes('CARTAZES A4') ||
+    normalized.includes('[A4]') ||
+    normalized.includes('(A4)') ||
+    normalized.includes(' A4 ') ||
+    normalized.endsWith(' A4')
+  ) {
+    return 'A4';
+  }
+
+  // 6. Pequenos A6
+  if (
+    normalized.includes('PEQUENO') ||
+    normalized.includes('A6') ||
+    normalized.includes('GONDOLA')
+  ) {
+    return 'A6';
+  }
+
+  // Padrão de gôndola
+  return 'A6';
+}
+
 export type PsdLinkingIo = {
   readPsd: (psdPath: string) => Promise<{ name: string; path: string; buffer: ArrayBuffer }>;
   buildCartazFromPsd: (
@@ -1138,7 +1268,7 @@ export type PsdLinkingIo = {
 export async function executePsdBatchLinking(
   campaign: OfferCampaign,
   itemsToLink: { item: CampaignItem; psd: ScannedPsdEntry }[],
-  paperSize: PaperFormat,
+  paperSize: PaperFormat | 'auto',
   libraryRoot: string,
   io: PsdLinkingIo
 ): Promise<PsdBatchLinkResult> {
@@ -1158,12 +1288,15 @@ export async function executePsdBatchLinking(
 
   for (const { item, psd } of itemsToLink) {
     try {
+      const resolvedFormat = paperSize === 'auto'
+        ? detectPsdPaperFormat(psd.path || psd.name, item.description)
+        : paperSize;
       const psdData = await io.readPsd(psd.path);
-      const cartazDoc = await io.buildCartazFromPsd(psdData, item, paperSize);
+      const cartazDoc = await io.buildCartazFromPsd(psdData, item, resolvedFormat);
       const targetPath = buildCartazPathFromPsd(
         libraryRoot,
         psd.path || psd.name,
-        paperSize
+        resolvedFormat
       );
       await io.saveCartazDocument(targetPath, cartazDoc);
       currentCampaign = linkSavedPosterToCampaignItem(
@@ -1197,7 +1330,8 @@ export async function executePsdBatchLinking(
   const success = errors.length === 0 && linkedCount > 0;
   let message: string;
   if (success) {
-    message = `Vinculação concluída com sucesso: ${linkedCount} cartaz(es) ${paperSize} criados e vinculados à campanha.`;
+    const formatDisplay = paperSize === 'auto' ? 'detectados automaticamente' : paperSize;
+    message = `Vinculação concluída com sucesso: ${linkedCount} cartaz(es) ${formatDisplay} criados e vinculados à campanha.`;
   } else if (linkedCount > 0 && errors.length > 0) {
     message = `Atenção: operação concluída com falhas. ${linkedCount} cartaz(es) vinculado(s), mas ${errors.length} falha(s) ocorreram.`;
   } else {

@@ -26,6 +26,7 @@ import {
   confirmBatchPrinted,
   createCampaign,
   deleteCampaign,
+  detectPsdPaperFormat,
   duplicateCampaign,
   executePsdBatchLinking,
   formatCampaignDateToValidity,
@@ -172,6 +173,8 @@ export function OfferFolders({
   const [statusFilter, setStatusFilter] = useState<'todos' | 'com-cartaz' | 'sem-cartaz' | PrintStatus>('todos');
   const [formatTab, setFormatTab] = useState<FormatTab>('todos');
   const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const [compactViewMode, setCompactViewMode] = useState(true);
+  const [expandedActionsKeys, setExpandedActionsKeys] = useState<Set<string>>(new Set());
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
   const [editingPriceValue, setEditingPriceValue] = useState('');
   const [editingDescriptionId, setEditingDescriptionId] = useState<string | null>(null);
@@ -181,10 +184,10 @@ export function OfferFolders({
   const [batchSize, setBatchSize] = useState(10);
   const [awaitingPrintConfirm, setAwaitingPrintConfirm] = useState<{ keys: Set<string>; count: number } | null>(null);
 
-  // Pasta de PSDs de referência e pareamento revisável por produto da campanha (A6 por padrão)
+  // Pasta de PSDs de referência e pareamento revisável por produto da campanha (detecção automática por padrão)
   const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>(initialScannedPsds);
   const [psdFolder, setPsdFolder] = useState<string | null>(initialPsdFolder);
-  const [psdPaperSize, setPsdPaperSize] = useState<PaperFormat>('A6');
+  const [psdPaperSize, setPsdPaperSize] = useState<PaperFormat | 'auto'>('auto');
   const [showPsdManagerModal, setShowPsdManagerModal] = useState(initialShowPsdModal);
   const [psdFilterText, setPsdFilterText] = useState('');
   const [psdReasonFilter, setPsdReasonFilter] = useState<PsdPairingFilter>('todos');
@@ -428,8 +431,12 @@ export function OfferFolders({
   const buildCartazFromPsd = async (
     psdData: { name: string; path: string; buffer: ArrayBuffer },
     item: CampaignItem,
-    paperSize: PaperFormat
+    paperSize: PaperFormat | 'auto'
   ): Promise<Cartaz> => {
+    const resolvedPaper: PaperFormat = paperSize === 'auto'
+      ? detectPsdPaperFormat(psdData.path || psdData.name, item.description)
+      : paperSize;
+
     const analysis = await analyzePsd(psdData.buffer, psdData.name, psdData.path);
     const roles = analysis.suggested;
     if (!roles.whole || !roles.fraction) {
@@ -463,7 +470,7 @@ export function OfferFolders({
       },
       layout: {
         template: 'imported-psd',
-        paper: paperSize,
+        paper: resolvedPaper,
         orientation: 'portrait',
         artwork,
       },
@@ -496,9 +503,15 @@ export function OfferFolders({
     } else if (/a4/i.test(normFolder)) {
       setPsdPaperSize('A4');
     } else if (/a[cç]ougue|a3/i.test(normFolder)) {
-      setPsdPaperSize('A3');
+      if (/m[eé]dio/i.test(normFolder)) {
+        setPsdPaperSize('A5');
+      } else {
+        setPsdPaperSize('A3');
+      }
     } else if (/externo|expositor/i.test(normFolder)) {
       setPsdPaperSize('expositor-a3-2x2');
+    } else {
+      setPsdPaperSize('auto');
     }
     setBatchLinkResult(null);
     setShowBatchConfirmStep(false);
@@ -519,7 +532,7 @@ export function OfferFolders({
   const handleAssignPsdToOfferItem = async (
     itemId: string,
     psdPath: string,
-    paperSize: PaperFormat = psdPaperSize
+    paperSize: PaperFormat | 'auto' = psdPaperSize
   ) => {
     if (!activeCampaign) return;
     const item = activeCampaign.items.find(i => i.id === itemId);
@@ -532,10 +545,14 @@ export function OfferFolders({
       throw new Error('Produto da campanha não encontrado para vincular a arte PSD.');
     }
 
+    const resolvedPaper: PaperFormat = paperSize === 'auto'
+      ? detectPsdPaperFormat(psdEntry.path || psdEntry.name, item.description)
+      : paperSize;
+
     const targetPath = buildCartazPathFromPsd(
       libraryData?.root || '',
       psdEntry.path || psdEntry.name,
-      paperSize
+      resolvedPaper
     );
 
     const alreadyExists = libraryData?.entries.some(
@@ -579,10 +596,13 @@ export function OfferFolders({
     if (!activeCampaign || itemsToLink.length === 0) return;
 
     const existingCount = itemsToLink.filter(entry => {
+      const resolvedFormat = psdPaperSize === 'auto'
+        ? detectPsdPaperFormat(entry.psd.path || entry.psd.name, entry.item.description)
+        : psdPaperSize;
       const tPath = buildCartazPathFromPsd(
         libraryData?.root || '',
         entry.psd.path || entry.psd.name,
-        psdPaperSize
+        resolvedFormat
       );
       return libraryData?.entries.some(e => !e.folder && e.path.toLowerCase() === tPath.toLowerCase());
     }).length;
@@ -1025,6 +1045,59 @@ export function OfferFolders({
     }
     return null;
   }, [matchViews, previewKey]);
+
+  // Lista de chaves de cartazes navegáveis na visualização atual (respeitando busca e filtros de formato)
+  const navigablePosterKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const v of filteredViews) {
+      const posters = formatTab === 'todos'
+        ? v.matchedPosters
+        : v.matchedPosters.filter(m => {
+            if (!m.libraryCartaz) return true;
+            const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+            return fmt === formatTab;
+          });
+      for (const m of posters) {
+        keys.push(`${v.item.id}::${m.state.cartazPath}`);
+      }
+    }
+    return keys;
+  }, [filteredViews, formatTab]);
+
+  // Navegação intuitiva com setas do teclado (Cima / Baixo) para navegar e atualizar a prévia futura
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+        return;
+      }
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (navigablePosterKeys.length === 0) return;
+        e.preventDefault();
+
+        const currentIndex = previewKey ? navigablePosterKeys.indexOf(previewKey) : -1;
+        let nextIndex = 0;
+        if (e.key === 'ArrowDown') {
+          nextIndex = currentIndex < navigablePosterKeys.length - 1 ? currentIndex + 1 : 0;
+        } else {
+          nextIndex = currentIndex > 0 ? currentIndex - 1 : navigablePosterKeys.length - 1;
+        }
+
+        const nextKey = navigablePosterKeys[nextIndex];
+        if (nextKey) {
+          setPreviewKey(nextKey);
+          const safeId = `poster-row-${nextKey.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          const el = document.getElementById(safeId);
+          el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [navigablePosterKeys, previewKey]);
 
   const campaignStats = useMemo(() => {
     let totalItems = matchViews.length;
@@ -1486,6 +1559,20 @@ export function OfferFolders({
                   </button>
                   <button className="subtle" onClick={() => run(handleSyncLibrary)}>
                     Localizar cartazes na biblioteca
+                  </button>
+                  <button
+                    type="button"
+                    className="subtle"
+                    style={{
+                      background: compactViewMode ? '#eff6ff' : '#f8fafc',
+                      color: compactViewMode ? '#2563eb' : '#475569',
+                      fontWeight: 700,
+                      border: compactViewMode ? '1px solid #bfdbfe' : '1px solid #cbd5e1',
+                    }}
+                    onClick={() => setCompactViewMode(prev => !prev)}
+                    title="Alternar entre visual limpo (ações no item clicado) ou expandido (todas as ações abertas)"
+                  >
+                    {compactViewMode ? '✨ Modo Limpo' : '📋 Modo Expandido'}
                   </button>
                   <button
                     className="subtle"
@@ -2047,107 +2134,192 @@ export function OfferFolders({
                                         })
                                     ).map(m => {
                                       const key = `${v.item.id}::${m.state.cartazPath}`;
-                                      const isPreviewActive = key === previewKey;
+                                      const isFirstPoster = navigablePosterKeys[0] === key;
+                                      const isPreviewActive = key === previewKey || (previewKey === null && isFirstPoster);
+                                      const safeId = `poster-row-${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+                                      const isExpanded = !compactViewMode || isPreviewActive || expandedActionsKeys.has(key);
+                                      const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+                                      const badge = getFormatBadge(fmt);
+                                      const hasBox = Boolean((m.scheduledDocument?.product as any)?.hasBoxPrice);
+                                      const boxPackageType = (m.scheduledDocument?.product as any)?.boxPackageType === 'fardo' ? 'Fardo' : 'Caixa';
+                                      const boxQuantity = (m.scheduledDocument?.product as any)?.boxQuantity || 12;
+                                      const boxUnitLabel = (m.scheduledDocument?.product as any)?.boxUnitLabel || 'UND.';
+
                                       return (
                                         <div
                                           key={key}
+                                          id={safeId}
                                           className="offer-poster-row"
+                                          onClick={() => setPreviewKey(key)}
                                           style={{
                                             border: isPreviewActive ? '2px solid #2563eb' : '1px solid #dfe5ee',
                                             background: isPreviewActive ? '#f0f7ff' : '#f8fafd',
+                                            boxShadow: isPreviewActive ? '0 2px 8px rgba(37,99,235,0.12)' : 'none',
                                             transition: 'all 0.15s ease',
+                                            cursor: 'pointer',
+                                            borderRadius: 8,
+                                            padding: isExpanded ? '10px 14px' : '6px 12px',
+                                            marginBottom: 6,
                                           }}
                                         >
-                                          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                            <input
-                                              type="checkbox"
-                                              checked={m.state.selected}
-                                              disabled={!m.libraryCartaz}
-                                              onChange={e => handleTogglePosterSelection(v.item.id, m.state.cartazPath, e.target.checked)}
-                                            />
-                                            <span>
-                                              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-                                                <strong>
-                                                  {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
-                                                  {m.libraryCartaz?.document.product.complement ?? ''}
-                                                </strong>
-                                                {(() => {
-                                                  const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
-                                                  const badge = getFormatBadge(fmt);
-                                                  return (
-                                                    <select
-                                                      value={fmt}
-                                                      style={{
-                                                        fontSize: 10.5,
-                                                        fontWeight: 700,
-                                                        padding: '1px 5px',
-                                                        borderRadius: 6,
-                                                        background: badge.bg,
-                                                        color: badge.text,
-                                                        border: `1px solid ${badge.text}`,
-                                                        cursor: 'pointer',
-                                                      }}
-                                                      title="Alterar formato deste cartaz (A6, A5, A4, etc.)"
-                                                      onChange={e => {
-                                                        const newFormat = e.target.value as PaperFormat;
-                                                        if (m.libraryCartaz) {
-                                                          run(async () => {
-                                                            const updatedDoc: Cartaz = {
-                                                              ...m.libraryCartaz!.document,
-                                                              layout: {
-                                                                ...m.libraryCartaz!.document.layout,
-                                                                paper: newFormat,
-                                                             },
-                                                             metadata: {
-                                                               ...m.libraryCartaz!.document.metadata,
-                                                               updatedAt: new Date().toISOString(),
-                                                             },
-                                                           };
-                                                           const savePath = m.libraryCartaz!.path || m.state.cartazPath;
-                                                           await saveDocument(savePath, updatedDoc, true);
-                                                           if (onRefreshLibrary) await onRefreshLibrary();
-                                                         });
-                                                       }
-                                                     }}
-                                                   >
-                                                     <option value="A6">🏷️ Pequeno (A6)</option>
-                                                     <option value="A5">📐 Médio (A5)</option>
-                                                     <option value="A4">📄 Cartaz A4</option>
-                                                     <option value="A3">🥩 Açougue (A3)</option>
-                                                     <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
-                                                   </select>
-                                                 );
-                                                })()}
-                                                {Boolean((m.scheduledDocument?.product as any)?.hasBoxPrice) && (
-                                                  <span
-                                                    style={{
-                                                      fontSize: 10.5,
-                                                      fontWeight: 700,
-                                                      padding: '2px 7px',
-                                                      borderRadius: 6,
-                                                      background: '#dcfce7',
-                                                      color: '#166534',
-                                                      display: 'inline-flex',
-                                                      alignItems: 'center',
-                                                      gap: 4,
-                                                    }}
-                                                  >
-                                                    📦 {(m.scheduledDocument?.product as any).boxPackageType === 'fardo' ? 'Fardo' : 'Caixa'} {(m.scheduledDocument?.product as any).boxQuantity || 12} {(m.scheduledDocument?.product as any).boxUnitLabel || 'UND.'}
-                                                  </span>
-                                                )}
-                                              </div>
-                                              <div style={{ fontSize: 13, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                                <span>
-                                                  Preço no cartaz:{' '}
-                                                  <strong style={{ color: '#10b981', fontSize: 14 }}>{money(v.item.scheduledPriceCents)}</strong>
+                                          {/* LINHA RESUMIDA (Sempre visível, limpa e fina por padrão) */}
+                                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 240 }}>
+                                              <input
+                                                type="checkbox"
+                                                checked={m.state.selected}
+                                                disabled={!m.libraryCartaz}
+                                                onClick={e => e.stopPropagation()}
+                                                onChange={e => handleTogglePosterSelection(v.item.id, m.state.cartazPath, e.target.checked)}
+                                              />
+                                              <strong style={{ fontSize: 13, color: '#0f172a' }}>
+                                                {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
+                                                {m.libraryCartaz?.document.product.complement ?? ''}
+                                              </strong>
+                                              <select
+                                                value={fmt}
+                                                onClick={e => e.stopPropagation()}
+                                                style={{
+                                                  fontSize: 10.5,
+                                                  fontWeight: 700,
+                                                  padding: '1px 5px',
+                                                  borderRadius: 6,
+                                                  background: badge.bg,
+                                                  color: badge.text,
+                                                  border: `1px solid ${badge.text}`,
+                                                  cursor: 'pointer',
+                                                }}
+                                                title="Alterar formato deste cartaz (A6, A5, A4, etc.)"
+                                                onChange={e => {
+                                                  const newFormat = e.target.value as PaperFormat;
+                                                  if (m.libraryCartaz) {
+                                                    run(async () => {
+                                                      const updatedDoc: Cartaz = {
+                                                        ...m.libraryCartaz!.document,
+                                                        layout: {
+                                                          ...m.libraryCartaz!.document.layout,
+                                                          paper: newFormat,
+                                                        },
+                                                        metadata: {
+                                                          ...m.libraryCartaz!.document.metadata,
+                                                          updatedAt: new Date().toISOString(),
+                                                        },
+                                                      };
+                                                      const savePath = m.libraryCartaz!.path || m.state.cartazPath;
+                                                      await saveDocument(savePath, updatedDoc, true);
+                                                      if (onRefreshLibrary) await onRefreshLibrary();
+                                                    });
+                                                  }
+                                                }}
+                                              >
+                                                <option value="A6">🏷️ Pequeno (A6)</option>
+                                                <option value="A5">📐 Médio (A5)</option>
+                                                <option value="A4">📄 Cartaz A4</option>
+                                                <option value="A3">🥩 Açougue (A3)</option>
+                                                <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
+                                              </select>
+                                              {hasBox && (
+                                                <span
+                                                  style={{
+                                                    fontSize: 10.5,
+                                                    fontWeight: 700,
+                                                    padding: '2px 7px',
+                                                    borderRadius: 6,
+                                                    background: '#dcfce7',
+                                                    color: '#166534',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: 4,
+                                                  }}
+                                                >
+                                                  📦 {boxPackageType} {boxQuantity} {boxUnitLabel}
                                                 </span>
-                                                {m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
-                                                  <span style={{ color: '#94a3b8', fontSize: 11 }}>
-                                                    (Preço base na biblioteca: {money(m.currentPriceCents)})
-                                                  </span>
-                                                )}
-                                              </div>
-                                              <small style={{ color: '#64748b', display: 'block', marginTop: 3 }}>
+                                              )}
+                                            </div>
+
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                              <span style={{ fontSize: 13, color: '#334155' }}>
+                                                Preço:{' '}
+                                                <strong style={{ color: '#10b981', fontSize: 14 }}>{money(v.item.scheduledPriceCents)}</strong>
+                                              </span>
+                                              <button
+                                                type="button"
+                                                className="subtle"
+                                                style={{
+                                                  padding: '4px 8px',
+                                                  fontSize: 11.5,
+                                                  color: isPreviewActive ? '#1d4ed8' : '#2563eb',
+                                                  fontWeight: isPreviewActive ? 700 : 600,
+                                                  background: isPreviewActive ? '#dbeafe' : 'transparent',
+                                                }}
+                                                onClick={e => {
+                                                  e.stopPropagation();
+                                                  setPreviewKey(key);
+                                                }}
+                                                title="Ver prévia deste cartaz no painel lateral"
+                                              >
+                                                👁️ Prévia
+                                              </button>
+                                              <button
+                                                type="button"
+                                                style={{
+                                                  padding: '4px 9px',
+                                                  fontSize: 11.5,
+                                                  fontWeight: 700,
+                                                  background: '#16a34a',
+                                                  color: '#ffffff',
+                                                  borderRadius: 6,
+                                                  cursor: 'pointer',
+                                                  border: 'none',
+                                                  boxShadow: '0 1px 3px rgba(22,163,74,0.3)',
+                                                }}
+                                                title="Imprimir 1 teste deste cartaz agora na impressora"
+                                                onClick={e => {
+                                                  e.stopPropagation();
+                                                  setPreviewKey(key);
+                                                  if (m.scheduledDocument) {
+                                                    handlePrintSinglePoster(m.scheduledDocument, m.state.cartazPath, 1);
+                                                  }
+                                                }}
+                                              >
+                                                🖨️ Imprimir
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="subtle"
+                                                style={{
+                                                  padding: '4px 8px',
+                                                  fontSize: 11.5,
+                                                  color: isExpanded ? '#2563eb' : '#475569',
+                                                  fontWeight: 600,
+                                                  background: isExpanded ? '#eff6ff' : 'transparent',
+                                                }}
+                                                onClick={e => {
+                                                  e.stopPropagation();
+                                                  setExpandedActionsKeys(prev => {
+                                                    const next = new Set(prev);
+                                                    if (next.has(key)) next.delete(key);
+                                                    else next.add(key);
+                                                    return next;
+                                                  });
+                                                  setPreviewKey(key);
+                                                }}
+                                                title={isExpanded ? 'Recolher ferramentas deste cartaz' : 'Exibir ferramentas e ações deste cartaz'}
+                                              >
+                                                {isExpanded ? '⚙️ Recolher ▲' : '⚙️ Ações ▼'}
+                                              </button>
+                                            </div>
+                                          </div>
+
+                                          {/* DETALHES E FERRAMENTAS EXPANDIDAS */}
+                                          {isExpanded && (
+                                            <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}>
+                                              {m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
+                                                <div style={{ fontSize: 11.5, color: '#64748b', marginBottom: 4 }}>
+                                                  (Preço base registrado na biblioteca: {money(m.currentPriceCents)})
+                                                </div>
+                                              )}
+                                              <small style={{ color: '#64748b', display: 'block', marginBottom: 6 }}>
                                                 📄 Cartaz: <strong>{m.state.cartazPath.split(/[\\/]/).pop()}</strong>
                                                 {m.libraryCartaz?.document.layout.template === 'imported-psd' && m.libraryCartaz.document.layout.artwork.source.sourcePath && (
                                                   <span style={{ color: '#2563eb', fontWeight: 600, marginLeft: 8 }}>
@@ -2155,340 +2327,326 @@ export function OfferFolders({
                                                   </span>
                                                 )}
                                               </small>
-                                            </span>
-                                          </label>
-                                          {m.priceMismatchReason && (
-                                            <div
-                                              className="import-warning"
-                                              role="alert"
-                                              style={{ marginTop: 6, fontSize: 12 }}
-                                            >
-                                              <strong>Impressão bloqueada:</strong> {m.priceMismatchReason}
-                                              {m.hasInvertedLayers && m.libraryCartaz && (
-                                                <div style={{ marginTop: 6 }}>
-                                                  <button
-                                                    className="subtle"
-                                                    style={{ padding: '4px 10px', fontSize: 12 }}
-                                                    onClick={() =>
-                                                      run(() =>
-                                                        handleRepairInvertedPoster(
-                                                          m.libraryCartaz!.path,
-                                                          m.libraryCartaz!.document
-                                                        )
-                                                      )
-                                                    }
-                                                  >
-                                                    Corrigir inversão Reais/Centavos neste cartaz
-                                                  </button>
+
+                                              {m.priceMismatchReason && (
+                                                <div
+                                                  className="import-warning"
+                                                  role="alert"
+                                                  style={{ marginTop: 6, marginBottom: 6, fontSize: 12 }}
+                                                >
+                                                  <strong>Impressão bloqueada:</strong> {m.priceMismatchReason}
+                                                  {m.hasInvertedLayers && m.libraryCartaz && (
+                                                    <div style={{ marginTop: 6 }}>
+                                                      <button
+                                                        className="subtle"
+                                                        style={{ padding: '4px 10px', fontSize: 12 }}
+                                                        onClick={e => {
+                                                          e.stopPropagation();
+                                                          run(() =>
+                                                            handleRepairInvertedPoster(
+                                                              m.libraryCartaz!.path,
+                                                              m.libraryCartaz!.document
+                                                            )
+                                                          );
+                                                        }}
+                                                      >
+                                                        Corrigir inversão Reais/Centavos neste cartaz
+                                                      </button>
+                                                    </div>
+                                                  )}
                                                 </div>
                                               )}
+
+                                              <div className="toolbar" style={{ alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>
+                                                <label style={{ fontSize: 12 }}>
+                                                  Cópias:{' '}
+                                                  <input
+                                                    type="number"
+                                                    min={1}
+                                                    max={999}
+                                                    value={m.state.copies}
+                                                    onClick={e => e.stopPropagation()}
+                                                    onChange={e => handleCopiesChange(v.item.id, m.state.cartazPath, parseInt(e.target.value, 10) || 1)}
+                                                    style={{ width: 60, padding: '4px 6px' }}
+                                                  />
+                                                </label>
+                                                <select
+                                                  aria-label="Status de impressão"
+                                                  value={m.state.status}
+                                                  onClick={e => e.stopPropagation()}
+                                                  onChange={e => handleStatusChange(v.item.id, m.state.cartazPath, e.target.value as PrintStatus)}
+                                                  style={{ padding: '4px 8px', fontSize: 12 }}
+                                                >
+                                                  <option value="pendente">Pendente</option>
+                                                  <option value="preparado">Preparado</option>
+                                                  <option value="impresso">Impresso</option>
+                                                </select>
+                                                <button
+                                                  type="button"
+                                                  style={{
+                                                    padding: '5px 10px',
+                                                    fontSize: 12,
+                                                    fontWeight: 600,
+                                                    background: '#0284c7',
+                                                    color: '#ffffff',
+                                                    borderRadius: 6,
+                                                    cursor: 'pointer',
+                                                    display: 'inline-flex',
+                                                    alignItems: 'center',
+                                                    gap: 4,
+                                                    border: 'none',
+                                                    boxShadow: '0 1px 3px rgba(2,132,199,0.3)',
+                                                  }}
+                                                  title="Exportar arquivo PSD deste cartaz para uma pasta à sua escolha"
+                                                  onClick={e => {
+                                                    e.stopPropagation();
+                                                    setPreviewKey(key);
+                                                    run(async () => {
+                                                      if (m.scheduledDocument) {
+                                                        await handleExportSinglePosterPsd(
+                                                          m.scheduledDocument,
+                                                          v.item,
+                                                          m.state.cartazPath
+                                                        );
+                                                      }
+                                                    });
+                                                  }}
+                                                >
+                                                  📦 Exportar PSD
+                                                </button>
+                                                {(() => {
+                                                  if (!m.libraryCartaz) return null;
+                                                  const currentFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+                                                  const isThisBox = Boolean(
+                                                    (m.scheduledDocument?.product as any)?.hasBoxPrice ||
+                                                    (m.libraryCartaz?.document.product as any)?.hasBoxPrice
+                                                  );
+
+                                                  const hasA6 = v.matchedPosters.some(p => {
+                                                    const pFmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                    return pFmt === 'A6';
+                                                  });
+
+                                                  const hasA5Normal = v.matchedPosters.some(p => {
+                                                    const pFmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                    const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                    return pFmt === 'A5' && !box;
+                                                  });
+
+                                                  const hasA5Box = v.matchedPosters.some(p => {
+                                                    const pFmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                    const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                    return pFmt === 'A5' && box;
+                                                  });
+
+                                                  const hasA4Normal = v.matchedPosters.some(p => {
+                                                    const pFmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                    const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                    return pFmt === 'A4' && !box;
+                                                  });
+
+                                                  const hasA4Box = v.matchedPosters.some(p => {
+                                                    const pFmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
+                                                    const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
+                                                    return pFmt === 'A4' && box;
+                                                  });
+
+                                                  return (
+                                                    <>
+                                                      {/* 1. Opções para A5 */}
+                                                      {!hasA5Normal && (currentFmt !== 'A5' || isThisBox) && (
+                                                        <button
+                                                          type="button"
+                                                          className="subtle"
+                                                          style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
+                                                          title="Criar versão Médio (A5) normal / unitário sem caixa e adicionar na pasta"
+                                                          onClick={e => {
+                                                            e.stopPropagation();
+                                                            run(async () => {
+                                                              await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', false);
+                                                            });
+                                                          }}
+                                                        >
+                                                          📐 + Versão Médio (A5)
+                                                        </button>
+                                                      )}
+                                                      {!hasA5Box && (currentFmt !== 'A5' || !isThisBox) && (
+                                                        <>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                            title="Criar versão Médio (A5) com preço por caixa e adicionar na pasta"
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              run(async () => {
+                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'caixa');
+                                                              });
+                                                            }}
+                                                          >
+                                                            📦 + A5 por Caixa
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                            title="Criar versão Médio (A5) com preço por fardo e adicionar na pasta"
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              run(async () => {
+                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'fardo');
+                                                              });
+                                                            }}
+                                                          >
+                                                            📦 + A5 por Fardo
+                                                          </button>
+                                                        </>
+                                                      )}
+
+                                                      {/* 2. Opções para A4 */}
+                                                      {!hasA4Normal && (currentFmt !== 'A4' || isThisBox) && (
+                                                        <button
+                                                          type="button"
+                                                          className="subtle"
+                                                          style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
+                                                          title="Criar versão Cartaz A4 (Folha inteira) normal / unitário e adicionar na pasta"
+                                                          onClick={e => {
+                                                            e.stopPropagation();
+                                                            run(async () => {
+                                                              await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', false);
+                                                            });
+                                                          }}
+                                                        >
+                                                          📄 + Versão Cartaz A4
+                                                        </button>
+                                                      )}
+                                                      {!hasA4Box && (currentFmt !== 'A4' || !isThisBox) && (
+                                                        <>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                            title="Criar versão Cartaz A4 com preço por caixa e adicionar na pasta"
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              run(async () => {
+                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'caixa');
+                                                              });
+                                                            }}
+                                                          >
+                                                            📦 + A4 por Caixa
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                            title="Criar versão Cartaz A4 com preço por fardo e adicionar na pasta"
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              run(async () => {
+                                                                await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'fardo');
+                                                              });
+                                                            }}
+                                                          >
+                                                            📦 + A4 por Fardo
+                                                          </button>
+                                                        </>
+                                                      )}
+
+                                                      {/* 3. Opção para A6 */}
+                                                      {!hasA6 && currentFmt !== 'A6' && (
+                                                        <button
+                                                          type="button"
+                                                          className="subtle"
+                                                          style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
+                                                          title="Criar versão Pequeno (A6) deste cartaz para gôndola e adicionar na pasta"
+                                                          onClick={e => {
+                                                            e.stopPropagation();
+                                                            run(async () => {
+                                                              await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A6', false);
+                                                            });
+                                                          }}
+                                                        >
+                                                          🏷️ + Versão Pequeno (A6)
+                                                        </button>
+                                                      )}
+                                                    </>
+                                                  );
+                                                })()}
+                                                <button
+                                                  type="button"
+                                                  className="subtle"
+                                                  style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600 }}
+                                                  title="Trocar a imagem / arte de referência deste produto por outro PSD"
+                                                  onClick={e => {
+                                                    e.stopPropagation();
+                                                    setPsdOfferContext({
+                                                      folderId: activeCampaign.id,
+                                                      offerItemId: v.item.id,
+                                                      productCode: v.item.f7,
+                                                      description: v.item.description,
+                                                      futurePriceCents: v.item.scheduledPriceCents,
+                                                    });
+                                                  }}
+                                                >
+                                                  🔄 Trocar referência PSD
+                                                </button>
+                                                {onEditPoster && m.libraryCartaz && (
+                                                  <button
+                                                    className="subtle"
+                                                    style={{ padding: '5px 10px', fontSize: 12 }}
+                                                    title="Abrir este cartaz no editor com o preço desta oferta"
+                                                    onClick={e => {
+                                                      e.stopPropagation();
+                                                      run(() => onEditPoster(m.libraryCartaz!.path, v.item.scheduledPriceCents));
+                                                    }}
+                                                  >
+                                                    Editar cartaz
+                                                  </button>
+                                                )}
+                                                {m.libraryCartaz && m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
+                                                  <button
+                                                    type="button"
+                                                    className="subtle"
+                                                    style={{ padding: '5px 10px', fontSize: 12 }}
+                                                    title="Atualizar o arquivo original da biblioteca para este novo preço"
+                                                    onClick={e => {
+                                                      e.stopPropagation();
+                                                      if (window.confirm(`Deseja atualizar o preço original na biblioteca de "${m.libraryCartaz!.document.product.name}" de ${money(m.currentPriceCents)} para ${money(v.item.scheduledPriceCents)}?`)) {
+                                                        run(async () => {
+                                                          await handleApplyPriceToLibrary(m.libraryCartaz!.path, m.libraryCartaz!.document, v.item.scheduledPriceCents);
+                                                        });
+                                                      }
+                                                    }}
+                                                  >
+                                                    Aplicar na biblioteca
+                                                  </button>
+                                                )}
+                                                <button
+                                                  type="button"
+                                                  className="subtle"
+                                                  style={{ padding: '5px 10px', fontSize: 12, color: '#ef4444' }}
+                                                  title="Desvincular este cartaz deste produto na pasta de ofertas"
+                                                  onClick={e => {
+                                                    e.stopPropagation();
+                                                    if (window.confirm(`Desvincular o cartaz de "${v.item.description}"?`)) {
+                                                      run(async () => {
+                                                        await persistUpdate(
+                                                          unlinkPosterFromCampaignItem(
+                                                            activeCampaign,
+                                                            v.item.id,
+                                                            m.state.cartazPath
+                                                          )
+                                                        );
+                                                      });
+                                                    }
+                                                  }}
+                                                >
+                                                  ❌ Desvincular
+                                                </button>
+                                              </div>
                                             </div>
                                           )}
-                                          <div className="toolbar" style={{ alignItems: 'center', marginTop: 6 }}>
-                                            <label style={{ fontSize: 12 }}>
-                                              Cópias:{' '}
-                                              <input
-                                                type="number"
-                                                min={1}
-                                                max={999}
-                                                value={m.state.copies}
-                                                onChange={e => handleCopiesChange(v.item.id, m.state.cartazPath, parseInt(e.target.value, 10) || 1)}
-                                                style={{ width: 60, padding: '4px 6px' }}
-                                              />
-                                            </label>
-                                            <select
-                                              aria-label="Status de impressão"
-                                              value={m.state.status}
-                                              onChange={e => handleStatusChange(v.item.id, m.state.cartazPath, e.target.value as PrintStatus)}
-                                              style={{ padding: '4px 8px', fontSize: 12 }}
-                                            >
-                                              <option value="pendente">Pendente</option>
-                                              <option value="preparado">Preparado</option>
-                                              <option value="impresso">Impresso</option>
-                                            </select>
-                                            <button
-                                              className="subtle"
-                                              style={{ padding: '5px 10px', fontSize: 12 }}
-                                              onClick={() => setPreviewKey(key)}
-                                            >
-                                              Ver prévia futura
-                                            </button>
-                                            <button
-                                              type="button"
-                                              style={{
-                                                padding: '5px 10px',
-                                                fontSize: 12,
-                                                fontWeight: 700,
-                                                background: '#16a34a',
-                                                color: '#ffffff',
-                                                borderRadius: 6,
-                                                cursor: 'pointer',
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: 4,
-                                                border: 'none',
-                                                boxShadow: '0 1px 3px rgba(22,163,74,0.3)',
-                                              }}
-                                              title="Imprimir 1 teste deste cartaz agora na impressora"
-                                              onClick={() => {
-                                                setPreviewKey(key);
-                                                if (m.scheduledDocument) {
-                                                  handlePrintSinglePoster(m.scheduledDocument, m.state.cartazPath, 1);
-                                                }
-                                              }}
-                                            >
-                                              🖨️ Imprimir
-                                            </button>
-                                            <button
-                                              type="button"
-                                              style={{
-                                                padding: '5px 10px',
-                                                fontSize: 12,
-                                                fontWeight: 600,
-                                                background: '#0284c7',
-                                                color: '#ffffff',
-                                                borderRadius: 6,
-                                                cursor: 'pointer',
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: 4,
-                                                border: 'none',
-                                                boxShadow: '0 1px 3px rgba(2,132,199,0.3)',
-                                              }}
-                                              title="Exportar arquivo PSD deste cartaz para uma pasta à sua escolha"
-                                              onClick={() => {
-                                                setPreviewKey(key);
-                                                run(async () => {
-                                                  if (m.scheduledDocument) {
-                                                    await handleExportSinglePosterPsd(
-                                                      m.scheduledDocument,
-                                                      v.item,
-                                                      m.state.cartazPath
-                                                    );
-                                                  }
-                                                });
-                                              }}
-                                            >
-                                              📦 Exportar PSD
-                                            </button>
-                                            {(() => {
-                                              if (!m.libraryCartaz) return null;
-                                              const currentFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
-                                              const isThisBox = Boolean(
-                                                (m.scheduledDocument?.product as any)?.hasBoxPrice ||
-                                                (m.libraryCartaz?.document.product as any)?.hasBoxPrice
-                                              );
-
-                                              const hasA6 = v.matchedPosters.some(p => {
-                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
-                                                return fmt === 'A6';
-                                              });
-
-                                              const hasA5Normal = v.matchedPosters.some(p => {
-                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
-                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
-                                                return fmt === 'A5' && !box;
-                                              });
-
-                                              const hasA5Box = v.matchedPosters.some(p => {
-                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
-                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
-                                                return fmt === 'A5' && box;
-                                              });
-
-                                              const hasA4Normal = v.matchedPosters.some(p => {
-                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
-                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
-                                                return fmt === 'A4' && !box;
-                                              });
-
-                                              const hasA4Box = v.matchedPosters.some(p => {
-                                                const fmt = getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath);
-                                                const box = Boolean((p.scheduledDocument?.product as any)?.hasBoxPrice || (p.libraryCartaz?.document.product as any)?.hasBoxPrice);
-                                                return fmt === 'A4' && box;
-                                              });
-
-                                              return (
-                                                <>
-                                                  {/* 1. Opções para A5 */}
-                                                  {!hasA5Normal && (currentFmt !== 'A5' || isThisBox) && (
-                                                    <button
-                                                      type="button"
-                                                      className="subtle"
-                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
-                                                      title="Criar versão Médio (A5) normal / unitário sem caixa e adicionar na pasta"
-                                                      onClick={() =>
-                                                        run(async () => {
-                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', false);
-                                                        })
-                                                      }
-                                                    >
-                                                      📐 + Versão Médio (A5)
-                                                    </button>
-                                                  )}
-                                                  {!hasA5Box && (currentFmt !== 'A5' || !isThisBox) && (
-                                                    <>
-                                                      <button
-                                                        type="button"
-                                                        className="subtle"
-                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
-                                                        title="Criar versão Médio (A5) com preço por caixa e adicionar na pasta"
-                                                        onClick={() =>
-                                                          run(async () => {
-                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'caixa');
-                                                          })
-                                                        }
-                                                      >
-                                                        📦 + A5 por Caixa
-                                                      </button>
-                                                      <button
-                                                        type="button"
-                                                        className="subtle"
-                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
-                                                        title="Criar versão Médio (A5) com preço por fardo e adicionar na pasta"
-                                                        onClick={() =>
-                                                          run(async () => {
-                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'fardo');
-                                                          })
-                                                        }
-                                                      >
-                                                        📦 + A5 por Fardo
-                                                      </button>
-                                                    </>
-                                                  )}
-
-                                                  {/* 2. Opções para A4 */}
-                                                  {!hasA4Normal && (currentFmt !== 'A4' || isThisBox) && (
-                                                    <button
-                                                      type="button"
-                                                      className="subtle"
-                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
-                                                      title="Criar versão Cartaz A4 (Folha inteira) normal / unitário e adicionar na pasta"
-                                                      onClick={() =>
-                                                        run(async () => {
-                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', false);
-                                                        })
-                                                      }
-                                                    >
-                                                      📄 + Versão Cartaz A4
-                                                    </button>
-                                                  )}
-                                                  {!hasA4Box && (currentFmt !== 'A4' || !isThisBox) && (
-                                                    <>
-                                                      <button
-                                                        type="button"
-                                                        className="subtle"
-                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
-                                                        title="Criar versão Cartaz A4 com preço por caixa e adicionar na pasta"
-                                                        onClick={() =>
-                                                          run(async () => {
-                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'caixa');
-                                                          })
-                                                        }
-                                                      >
-                                                        📦 + A4 por Caixa
-                                                      </button>
-                                                      <button
-                                                        type="button"
-                                                        className="subtle"
-                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
-                                                        title="Criar versão Cartaz A4 com preço por fardo e adicionar na pasta"
-                                                        onClick={() =>
-                                                          run(async () => {
-                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'fardo');
-                                                          })
-                                                        }
-                                                      >
-                                                        📦 + A4 por Fardo
-                                                      </button>
-                                                    </>
-                                                  )}
-
-                                                  {/* 3. Opção para A6 */}
-                                                  {!hasA6 && currentFmt !== 'A6' && (
-                                                    <button
-                                                      type="button"
-                                                      className="subtle"
-                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
-                                                      title="Criar versão Pequeno (A6) deste cartaz para gôndola e adicionar na pasta"
-                                                      onClick={() =>
-                                                        run(async () => {
-                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A6', false);
-                                                        })
-                                                      }
-                                                    >
-                                                      🏷️ + Versão Pequeno (A6)
-                                                    </button>
-                                                  )}
-                                                </>
-                                              );
-                                            })()}
-                                            <button
-                                              type="button"
-                                              className="subtle"
-                                              style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600 }}
-                                              title="Trocar a imagem / arte de referência deste produto por outro PSD"
-                                              onClick={() =>
-                                                setPsdOfferContext({
-                                                  folderId: activeCampaign.id,
-                                                  offerItemId: v.item.id,
-                                                  productCode: v.item.f7,
-                                                  description: v.item.description,
-                                                  futurePriceCents: v.item.scheduledPriceCents,
-                                                })
-                                              }
-                                            >
-                                              🔄 Trocar referência PSD
-                                            </button>
-                                            {onEditPoster && m.libraryCartaz && (
-                                              <button
-                                                className="subtle"
-                                                style={{ padding: '5px 10px', fontSize: 12 }}
-                                                title="Abrir este cartaz no editor com o preço desta oferta"
-                                                onClick={() => run(() => onEditPoster(m.libraryCartaz!.path, v.item.scheduledPriceCents))}
-                                              >
-                                                Editar cartaz
-                                              </button>
-                                            )}
-                                            {m.libraryCartaz && m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
-                                              <button
-                                                type="button"
-                                                className="subtle"
-                                                style={{ padding: '5px 10px', fontSize: 12 }}
-                                                title="Atualizar o arquivo original da biblioteca para este novo preço"
-                                                onClick={() => {
-                                                  if (window.confirm(`Deseja atualizar o preço original na biblioteca de "${m.libraryCartaz!.document.product.name}" de ${money(m.currentPriceCents)} para ${money(v.item.scheduledPriceCents)}?`)) {
-                                                    run(async () => {
-                                                      await handleApplyPriceToLibrary(m.libraryCartaz!.path, m.libraryCartaz!.document, v.item.scheduledPriceCents);
-                                                    });
-                                                  }
-                                                }}
-                                              >
-                                                Aplicar na biblioteca
-                                              </button>
-                                            )}
-                                            <button
-                                              type="button"
-                                              className="subtle"
-                                              style={{ padding: '5px 10px', fontSize: 12, color: '#ef4444' }}
-                                              title="Desvincular este cartaz deste produto na pasta de ofertas"
-                                              onClick={() => {
-                                                if (window.confirm(`Desvincular o cartaz de "${v.item.description}"?`)) {
-                                                  run(async () => {
-                                                    await persistUpdate(
-                                                      unlinkPosterFromCampaignItem(
-                                                        activeCampaign,
-                                                        v.item.id,
-                                                        m.state.cartazPath
-                                                      )
-                                                    );
-                                                  });
-                                                }
-                                              }}
-                                            >
-                                              ❌ Desvincular
-                                            </button>
-                                          </div>
                                         </div>
                                       );
                                     })}
@@ -2832,9 +2990,10 @@ export function OfferFolders({
                   Formato do Cartaz:
                   <select
                     value={psdPaperSize}
-                    onChange={e => setPsdPaperSize(e.target.value as PaperFormat)}
+                    onChange={e => setPsdPaperSize(e.target.value as PaperFormat | 'auto')}
                     style={{ padding: '4px 8px', fontWeight: 'bold', color: '#0f172a' }}
                   >
+                    <option value="auto">✨ Automático (Pastas: Médios A5, Balcão A3, Pequenos A6, etc.)</option>
                     <option value="A6">A6 — Pequeno (105 × 148 mm)</option>
                     <option value="A5">A5 — Médio (148 × 210 mm)</option>
                     <option value="A4">A4 — Grande (210 × 297 mm)</option>
@@ -2900,7 +3059,7 @@ export function OfferFolders({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
                   <div>
                     <strong style={{ fontSize: 14, color: '#0f172a' }}>
-                      Confirmar aplicação de vínculos em lote ({batchConfirmationSummary.toLink.length} produto(s) · Formato {psdPaperSize})
+                      Confirmar aplicação de vínculos em lote ({batchConfirmationSummary.toLink.length} produto(s) · Formato {psdPaperSize === 'auto' ? 'Automático' : psdPaperSize})
                     </strong>
                     <div style={{ fontSize: 12, color: '#334155', marginTop: 4 }}>
                       Resumo do lote:{' '}
@@ -3133,7 +3292,7 @@ export function OfferFolders({
                                   run(() => handleAssignPsdToOfferItem(s.item.id, selectedPsd.path, psdPaperSize))
                                 }
                               >
-                                ⚡ Vincular agora ({psdPaperSize})
+                                ⚡ Vincular agora ({psdPaperSize === 'auto' ? 'Auto' : psdPaperSize})
                               </button>
                             )}
                           </div>
