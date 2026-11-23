@@ -874,11 +874,15 @@ function drawPart(
   const value = part.role === 'whole' ? whole : part.role === 'fraction' ? fraction : ',';
   const resolvedFont = resolveFontFamily(part.fontFamily, 'Zullia, sans-serif');
 
-  let localFontSize = part.fontSize || height * 1.14;
+  // Ajuste de proporção e destaque (+10%) para manter o preço 4,99 bem visível, imponente e alinhado
+  const isWholeOrFraction = part.role === 'whole' || part.role === 'fraction';
+  const boost = isWholeOrFraction ? 1.10 : 1.0;
+
+  let localFontSize = (part.fontSize || height * 1.18) * boost;
   if (part.transform && part.fontSize) {
     const scaleY = Math.hypot(part.transform[2], part.transform[3]);
-    if (part.role !== 'decimal' && scaleY > 0.01 && part.fontSize * scaleY > height * 1.8) {
-      localFontSize = (height * 1.25) / scaleY;
+    if (part.role !== 'decimal' && scaleY > 0.01 && part.fontSize * scaleY > height * 2.4) {
+      localFontSize = (height * 1.35) / scaleY;
     }
   }
   const fontStr = `400 ${localFontSize}px ${resolvedFont}`;
@@ -910,7 +914,7 @@ function drawPart(
         ? Math.max(MIN_SAFE_HORIZONTAL_SCALE, available / unscaledPxWidth)
         : 1.0;
 
-      // Alinhamento à direita preservando a proximidade da vírgula
+      // Alinhamento à direita preservando a proximidade da vírgula e centavos
       const deltaU = (origLocal - measuredLocal * hScale) / 2;
       const targetTx = e + deltaU * a;
       const targetTy = f + deltaU * bm;
@@ -939,7 +943,7 @@ function drawPart(
   const wholePart = artwork?.priceParts?.find(p => p.role === 'whole');
   const refPart = fracPart || wholePart;
   const refHeight = refPart ? (refPart.bounds.bottom - refPart.bounds.top) : height;
-  const fontSize = part.role === 'decimal' ? refHeight * 0.95 : height * 1.14;
+  const fontSize = part.role === 'decimal' ? refHeight * 0.48 : (part.role === 'whole' ? height * 1.25 : height * 1.18);
   context.font = `400 ${fontSize}px ${quoteFont(font)}, Zullia, sans-serif`;
   context.textBaseline = 'alphabetic';
   if (part.role === 'whole') {

@@ -28,7 +28,12 @@ export function detectPosterModel(layers: ImportedLayerInfo[]): PosterTemplateMo
   const hasVencimento = layers.some(l =>
     l.visible && /vencimento|pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca/i.test(l.text ?? l.name)
   );
-  return hasVencimento ? 'vencimento' : 'oferta';
+  if (hasVencimento) return 'vencimento';
+  const hasCaixa = layers.some(l =>
+    l.visible && /caixa\s+com|fardo\s+com|und\b/i.test(l.text ?? l.name)
+  );
+  if (hasCaixa) return 'caixa';
+  return 'oferta';
 }
 
 function canvasWithWhiteBackground(sourceCanvas: HTMLCanvasElement): string {
@@ -125,22 +130,47 @@ function flatten(source: Layer[], depth: number, prefix: string, parentVisible: 
 function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
   const visible = layers.filter(layer => layer.visible);
   const byText = (pattern: RegExp) => visible.find(layer => pattern.test(layer.text?.trim() ?? ''))?.id;
-  const decimalId = byText(/^,$/);
-  const fractionRuleId = visible.find(layer => /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id;
+
+  // Detecta se existe divisória ou seção de caixa fechada / atacado
+  const boxLayer = visible.find(l => /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name));
+  const boxDivider = visible.find(l => /rectangle\s*2\s*c[oó]pia/i.test(l.name));
+  const boxCutoffY = boxDivider ? boxDivider.bounds.top : boxLayer ? boxLayer.bounds.top : Infinity;
+
+  const fractionRuleId =
+    visible.find(layer => layer.bounds.top < boxCutoffY && /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id ??
+    visible.find(layer => /rectangle\s*3|linha.*cent|cent.*linha/i.test(layer.name))?.id;
+
+  const decimalCandidates = visible.filter(layer => layer.text?.trim() === ',' || /^,\s*c[oó]pia/i.test(layer.name) || /^\.\s*c[oó]pia/i.test(layer.name));
+  const decimalId =
+    decimalCandidates.find(l => l.bounds.top < boxCutoffY)?.id ??
+    byText(/^,$/);
+
   const validityPattern = /(oferta\s+v[aá]lida|v[aá]lid[ao]\s+at[eé]|v[aá]lid[ao]\s+de\b|promo[cç][aã]o\s+v[aá]lida)/i;
   const validityId =
     visible.find(layer => layer.type === 'text' && validityPattern.test(layer.text ?? layer.name))?.id ??
     visible.find(layer => layer.type === 'text' && /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/.test(layer.text ?? '') && layer.bounds.top > 900)?.id;
 
-  const numericCandidates = visible.filter(layer => {
+  const allNumeric = visible.filter(layer => {
     if (layer.id === decimalId || layer.id === fractionRuleId || layer.id === validityId) return false;
     const text = (layer.text ?? layer.name ?? '').trim();
     return /^\d{1,3}$/.test(text);
   });
 
-  if (numericCandidates.length >= 2) {
-    // Em cartazes A5, os Reais (parte inteira) ficam à esquerda e os Centavos (2 dígitos) ficam à direita
-    const sortedByLeft = [...numericCandidates].sort((a, b) => {
+  // Filtra candidatos numéricos do Preço Unitário Principal (ficam acima da linha/seção da caixa)
+  let unitNumeric = allNumeric.filter(l => l.bounds.top < boxCutoffY);
+  if (unitNumeric.length < 2 && allNumeric.length >= 2) {
+    const sortedByTop = [...allNumeric].sort((a, b) => a.bounds.top - b.bounds.top);
+    const medianTop = (sortedByTop[0].bounds.top + sortedByTop[sortedByTop.length - 1].bounds.top) / 2;
+    if (allNumeric.length >= 4) {
+      unitNumeric = allNumeric.filter(l => l.bounds.top <= medianTop + 50);
+    } else {
+      unitNumeric = allNumeric;
+    }
+  }
+
+  if (unitNumeric.length >= 2) {
+    // Em cartazes, os Reais (parte inteira) ficam à esquerda e os Centavos (2 dígitos) ficam à direita
+    const sortedByLeft = [...unitNumeric].sort((a, b) => {
       const centerA = (a.bounds.left + a.bounds.right) / 2;
       const centerB = (b.bounds.left + b.bounds.right) / 2;
       if (Math.abs(centerA - centerB) > 10) return centerA - centerB;
@@ -150,8 +180,14 @@ function suggest(layers: ImportedLayerInfo[]): PsdRoleMap {
     });
     const wholeCandidate = sortedByLeft[0];
     const fractionCandidate =
+      sortedByLeft.slice(1).find(layer => {
+        const text = (layer.text ?? layer.name ?? '').trim();
+        const sameBand = Math.abs(layer.bounds.top - wholeCandidate.bounds.top) < 350;
+        return /^\d{2}$/.test(text) && sameBand;
+      }) ??
       sortedByLeft.slice(1).find(layer => /^\d{2}$/.test((layer.text ?? layer.name ?? '').trim())) ??
       sortedByLeft[1];
+
     return {
       whole: wholeCandidate?.id,
       fraction: fractionCandidate?.id,
@@ -177,7 +213,19 @@ export function suggestTemplateLayers(
   priceRoles: PsdRoleMap
 ): PsdTemplateRoleMap {
   const excluded = new Set(Object.values(priceRoles).filter(Boolean) as string[]);
-  const visible = layers.filter(layer => layer.visible && layer.type === 'text' && !excluded.has(layer.id));
+
+  // Filtra camadas que NÃO devem ser sugeridas como títulos textuais (números, vírgulas, caixas)
+  const isExcludedText = (l: ImportedLayerInfo) => {
+    const raw = (l.text ?? l.name ?? '').trim();
+    if (!raw) return true;
+    if (/^\d{1,4}$/.test(raw)) return true; // Números puros (centavos, inteiros soltos)
+    if (/^,\s*c[oó]pia/i.test(l.name) || /^\.\s*c[oó]pia/i.test(l.name) || raw === ',') return true; // Vírgulas
+    if (/caixa\s+com|fardo\s+com|^\d+\s*und\.?$/i.test(raw)) return true; // Termos de caixa/fardo
+    if (/rectangle|shape|camada\s*\d+/i.test(l.name) && !l.text) return true;
+    return false;
+  };
+
+  const visible = layers.filter(layer => layer.visible && layer.type === 'text' && !excluded.has(layer.id) && !isExcludedText(layer));
 
   const brushLayers = visible.filter(l => /brush/i.test(l.font ?? ''));
   const titleCandidate =

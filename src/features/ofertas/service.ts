@@ -1202,12 +1202,18 @@ export function detectPsdPaperFormat(
     return 'expositor-a3-2x2';
   }
 
-  // 2. Carnes de freezer / frixer, carnes a vácuo, frango de pacotes de ilhas, congelados e pontas -> Médios (A5)
-  const isMedioFolder =
-    normalized.includes('CARTAZES MEDIOS ACOU') ||
-    normalized.includes('FRANGO MEDIOS') ||
+  // 2. Reconhecimento explícito de tags de formato no nome do arquivo ou pasta
+  const hasA5Tag =
+    normalized.includes('[A5]') ||
+    normalized.includes('(A5)') ||
+    normalized.includes('-A5-') ||
+    normalized.includes('_A5_') ||
+    normalized.includes(' A5 ') ||
+    normalized.includes(' A5.') ||
+    normalized.endsWith(' A5') ||
     normalized.includes('CARTAZES MEDIOS') ||
-    normalized.includes('MEDIO');
+    normalized.includes('MEDIO') ||
+    normalized.includes('MÉDIO');
 
   const isFreezerOrVacuoOrIlha =
     normalized.includes('VACUO') ||
@@ -1234,7 +1240,7 @@ export function detectPsdPaperFormat(
     descNorm.includes('CONGELAD') ||
     descNorm.includes('PACOTE');
 
-  if (isMedioFolder || isFreezerOrVacuoOrIlha) {
+  if (hasA5Tag || isFreezerOrVacuoOrIlha) {
     return 'A5';
   }
 

@@ -791,28 +791,32 @@ export async function exportDerivedPsdDirect(
   }
 
   let updatedAnyText = false;
+  let resolvedWholeLayer: Layer | null = null;
+  let resolvedFractionLayer: Layer | null = null;
 
   if (payload.roles.wholeLayerId) {
-    const wholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
-    if (wholeLayer && wholeLayer.text) {
+    resolvedWholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
+    if (resolvedWholeLayer && resolvedWholeLayer.text) {
       const fractionLayer = payload.roles.fractionLayerId
         ? resolveLayerByPath(psd, payload.roles.fractionLayerId)
         : null;
-      const adj = computeAdjustedWholeTransform(wholeLayer, payload.whole, fractionLayer, psd.width);
+      resolvedFractionLayer = fractionLayer;
+      const adj = computeAdjustedWholeTransform(resolvedWholeLayer, payload.whole, fractionLayer, psd.width);
       if (adj) {
-        wholeLayer.text.transform = adj.transform;
-        if (adj.horizontalScale < 1 && wholeLayer.text.style) {
-          wholeLayer.text.style.horizontalScale = adj.horizontalScale;
+        resolvedWholeLayer.text.transform = adj.transform;
+        if (adj.horizontalScale < 1 && resolvedWholeLayer.text.style) {
+          resolvedWholeLayer.text.style.horizontalScale = adj.horizontalScale;
         }
       }
-      wholeLayer.text.text = payload.whole.trim();
-      renderTextLayerToBitmap(wholeLayer, payload.whole, psd.width, psd.height);
+      resolvedWholeLayer.text.text = payload.whole.trim();
+      renderTextLayerToBitmap(resolvedWholeLayer, payload.whole, psd.width, psd.height);
       updatedAnyText = true;
     }
   }
 
   if (payload.roles.fractionLayerId) {
     const fractionLayer = resolveLayerByPath(psd, payload.roles.fractionLayerId);
+    resolvedFractionLayer = fractionLayer;
     if (fractionLayer && fractionLayer.text) {
       fractionLayer.text.text = payload.fraction.trim();
       renderTextLayerToBitmap(fractionLayer, payload.fraction, psd.width, psd.height);
@@ -988,14 +992,41 @@ function scaleAndCenterPriceLayer(
       findFirstTextLayerMatching(psd, /caixa\s+com|fardo\s+com/i)
     );
 
+    const boxDivider = psd.children?.find(l => /rectangle\s*2\s*c[oó]pia/i.test(l.name || ''));
+    const boxLabel = findFirstTextLayerMatching(psd, /caixa\s+com|fardo\s+com/i);
+    const boxCutoffY = boxDivider?.top ?? boxLabel?.top ?? (psd.height * 0.70);
+
     let bWholeLayer: Layer | null = null;
+    let bFracLayer: Layer | null = null;
+
     if (hasNativeBoxStructure) {
       bWholeLayer = resolveLayerByPath(psd, payload.roles.boxWholeLayerId);
-      if (!bWholeLayer || !bWholeLayer.text) {
-        bWholeLayer = findFirstTextLayerMatching(psd, /^(?:32|47|105|\d{1,4})$/);
-        if (bWholeLayer && (bWholeLayer.name === mainWholeId || bWholeLayer.name === mainFractionId)) {
-          bWholeLayer = null;
+      bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
+
+      const boxAreaNumericLayers: Layer[] = [];
+      const collectBoxNumeric = (container: { children?: Layer[] }) => {
+        if (!container?.children) return;
+        for (const child of container.children) {
+          if (!child.hidden && child.text && typeof child.top === 'number' && child.top >= boxCutoffY - 60) {
+            if (child !== resolvedWholeLayer && child !== resolvedFractionLayer) {
+              const txt = (child.text.text || child.name || '').trim();
+              if (/^\d{1,4}$/.test(txt)) {
+                boxAreaNumericLayers.push(child);
+              }
+            }
+          }
+          if (child.children) collectBoxNumeric(child);
         }
+      };
+      collectBoxNumeric(psd);
+
+      boxAreaNumericLayers.sort((a, b) => (a.left ?? 0) - (b.left ?? 0));
+
+      if (!bWholeLayer && boxAreaNumericLayers.length > 0) {
+        bWholeLayer = boxAreaNumericLayers[0];
+      }
+      if (!bFracLayer && boxAreaNumericLayers.length > 1) {
+        bFracLayer = boxAreaNumericLayers.slice(1).find(l => /^\d{2}$/.test((l.text?.text || l.name || '').trim())) ?? boxAreaNumericLayers[1];
       }
     }
 
@@ -1223,12 +1254,8 @@ function scaleAndCenterPriceLayer(
       }
 
       if (payload.boxFraction) {
-        let bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
         if (!bFracLayer || !bFracLayer.text) {
-          bFracLayer = findFirstTextLayerMatching(psd, /^(?:28|88|48|\d{2})$/);
-          if (bFracLayer && (bFracLayer.name === mainWholeId || bFracLayer.name === mainFractionId)) {
-            bFracLayer = null;
-          }
+          bFracLayer = resolveLayerByPath(psd, payload.roles.boxFractionLayerId);
         }
         if (bFracLayer && bFracLayer.text) {
           bFracLayer.text.text = payload.boxFraction.trim();

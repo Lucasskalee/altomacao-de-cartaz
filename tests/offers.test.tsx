@@ -43,6 +43,7 @@ import {
   updateCampaignItemDescription,
   updatePosterSelection,
   updateScheduledPrice,
+  detectPsdPaperFormat,
 } from '../src/features/ofertas/service';
 import type { OfferCampaign, PsdImportOfferContext } from '../src/features/ofertas/types';
 import type { ScannedPsdEntry } from '../src/features/scantech/types';
@@ -51,6 +52,9 @@ import { PsdImport } from '../src/components/library/PsdImport';
 import { formatCentsBr, splitCentsToParts } from '../src/features/cartazes/presentation';
 import { hasInvertedPsdPriceParts, normalizePsdPriceParts, repairInvertedPsdArtwork } from '../src/components/editor/importedRenderer';
 import type { ImportedArtwork } from '../src/features/cartazes/types';
+
+import { detectPosterModel, suggestTemplateLayers, type ImportedLayerInfo } from '../src/features/psd/importer';
+import { getPosterPaperFormat } from '../src/components/ofertas/OfferFolders';
 
 function buildZip(files: Record<string, string>): ArrayBuffer {
   const encoder = new TextEncoder();
@@ -1295,4 +1299,43 @@ test('Pareamento PSD: revisão, confirmação em lote, separação de preços (b
   assert.ok(errorMarkup.includes('Atenção: operação concluída com falhas'));
   assert.ok(errorMarkup.includes('Arquivo PSD corrompido ou inacessível.'));
   assert.ok(errorMarkup.includes('Camadas de preço Reais/Centavos não encontradas no PSD.'));
+});
+
+test('Reconhecimento de Cartaz A5 Médio com Caixa Fechada: papéis, camadas e modelo', () => {
+  // 1. Detecção do formato de papel A5 a partir do nome do arquivo
+  const filename = '18722-leite-l-vida-lider-1l-int-[A5]-CAIXA-oferta.psd';
+  assert.equal(detectPsdPaperFormat(filename, 'LEITE LONGA VIDA LIDER 1L INTEGRAL'), 'A5');
+  assert.equal(detectPsdPaperFormat('cartaz-leite-[A5].psd'), 'A5');
+  assert.equal(detectPsdPaperFormat('cartazes medios\\leite.psd'), 'A5');
+
+  // 2. Simula as camadas do PSD real do Leite Líder com Caixa (4 camadas numéricas)
+  const mockLayers: ImportedLayerInfo[] = [
+    { id: '0', name: 'LEITE LONGA VIDA', type: 'text', visible: true, depth: 0, text: 'LEITE LONGA VIDA', bounds: { left: 100, top: 250, right: 600, bottom: 350 }, font: 'Arial' },
+    { id: '1', name: 'LIDER', type: 'text', visible: true, depth: 0, text: 'LIDER', bounds: { left: 120, top: 400, right: 580, bottom: 580 }, font: 'BrushHandNew' },
+    { id: '2', name: 'INTEGRAL', type: 'text', visible: true, depth: 0, text: 'INTEGRAL', bounds: { left: 150, top: 620, right: 550, bottom: 700 }, font: 'Arial Black' },
+    // Preço unitário (parte superior)
+    { id: '3', name: '5', type: 'text', visible: true, depth: 0, text: '4', bounds: { left: 200, top: 780, right: 450, bottom: 1080 } }, // Reais unitário
+    { id: '4', name: '19', type: 'text', visible: true, depth: 0, text: '99', bounds: { left: 470, top: 780, right: 620, bottom: 950 } }, // Centavos unitário
+    { id: '5', name: ', cópia 2', type: 'text', visible: true, depth: 0, text: ',', bounds: { left: 450, top: 960, right: 470, bottom: 1000 } },
+    { id: '6', name: 'Rectangle 3 cópia', type: 'vector', visible: true, depth: 0, bounds: { left: 470, top: 950, right: 620, bottom: 960 } },
+    // Divisória da caixa e área de caixa
+    { id: '7', name: 'Rectangle 2 cópia', type: 'vector', visible: true, depth: 0, bounds: { left: 50, top: 1120, right: 800, bottom: 1130 } },
+    { id: '8', name: 'CAIXA COM 12 UND.', type: 'text', visible: true, depth: 0, text: 'CAIXA COM 12 UND.', bounds: { left: 60, top: 1150, right: 350, bottom: 1250 } },
+    { id: '9', name: '46', type: 'text', visible: true, depth: 0, text: '59', bounds: { left: 380, top: 1150, right: 540, bottom: 1300 } }, // Reais caixa
+    { id: '10', name: '68', type: 'text', visible: true, depth: 0, text: '88', bounds: { left: 560, top: 1150, right: 680, bottom: 1250 } }, // Centavos caixa
+  ];
+
+  // 3. Modelo Caixa detectado com sucesso
+  assert.equal(detectPosterModel(mockLayers), 'caixa');
+
+  // 4. Papéis textuais não devem sugerir números (ex.: 99, 88, 59) como complemento
+  const templateRoles = suggestTemplateLayers(mockLayers, { whole: '3', fraction: '4' });
+  assert.equal(templateRoles.title, '1'); // LIDER
+  assert.equal(templateRoles.category, '0'); // LEITE LONGA VIDA
+  assert.equal(templateRoles.complement, '2'); // INTEGRAL (NÃO 99!)
+
+  // 5. Formato de papel do documento A5
+  const doc = createDocument();
+  doc.layout.paper = 'A5';
+  assert.equal(getPosterPaperFormat(doc), 'A5');
 });

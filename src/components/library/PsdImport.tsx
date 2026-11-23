@@ -7,7 +7,8 @@ import { digitsOnly } from '../../features/cartazes/f7';
 import { fileName, priceToCents } from '../../features/cartazes/validation';
 import { PosterView } from '../editor/PosterView';
 import { importedPriceWarning } from '../editor/importedRenderer';
-import type { Cartaz, ImportedPriceRole } from '../../features/cartazes/types';
+import type { Cartaz, ImportedPriceRole, PaperFormat } from '../../features/cartazes/types';
+import { detectPsdPaperFormat } from '../../features/ofertas/service';
 import type { PsdImportOfferContext } from '../../features/ofertas/types';
 import { suggestFromExcelDescription, psdFileNameToCartazFileName } from '../../features/ofertas/service';
 
@@ -38,6 +39,7 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
   const [name, setName] = useState(excelSuggestion?.name ?? '');
   const [complement, setComplement] = useState(excelSuggestion?.complement ?? '');
   const [unit, setUnit] = useState(excelSuggestion?.unit ?? '');
+  const [paper, setPaper] = useState<PaperFormat>('A6');
   const [f7, setF7] = useState(offerContext ? offerContext.productCode : '');
   const [price, setPrice] = useState(offerContext ? centsToBr(offerContext.futurePriceCents) : '');
   const [psdBasePrice, setPsdBasePrice] = useState('');
@@ -79,6 +81,8 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
       const result = await analyzePsd(selected.buffer, selected.name, selected.path ?? null);
       setAnalysis(result);
       setRoles(result.suggested);
+      const detectedPaper = detectPsdPaperFormat(selected.name, excelSuggestion?.name || offerContext?.description);
+      setPaper(detectedPaper);
       // Preserva textos artísticos reais do PSD; usa descrição do Excel apenas como fallback se o PSD não tiver camada reconhecida
       setName(result.metadata.name || excelSuggestion?.name || '');
       setComplement(
@@ -139,7 +143,11 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
           libraryPriceCents = priceToCents(price);
         }
       }
-        document.product = {
+      const isCaixa = artwork?.posterModel === 'caixa';
+      const boxQtyMatch = analysis?.layers?.find(l => /^\d+\s*und/i.test(l.text || l.name))?.text?.match(/\d+/);
+      const boxQty = boxQtyMatch ? parseInt(boxQtyMatch[0], 10) : 12;
+
+      document.product = {
         ...document.product,
         name: name.trim().toUpperCase(),
         complement: complement.trim().toUpperCase(),
@@ -147,8 +155,10 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
         productCode: f7.trim() || null,
         priceCents: libraryPriceCents,
         category: artwork?.templateParts?.find(p => p.role === 'category')?.originalText || (document.product as any).category || '',
+        hasBoxPrice: isCaixa || Boolean((document.product as any).hasBoxPrice),
+        boxQuantity: isCaixa ? boxQty : (document.product as any).boxQuantity,
       };
-      document.layout = { template: 'imported-psd', paper: 'A6', orientation: 'portrait', artwork };
+      document.layout = { template: 'imported-psd', paper, orientation: 'portrait', artwork };
       document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
 
       const suggestedName = analysis?.fileName
@@ -337,6 +347,16 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
                     setConfirmF7Override(false);
                   }}
                 />
+              </label>
+              <label>
+                Formato do cartaz
+                <select value={paper} onChange={event => setPaper(event.target.value as PaperFormat)}>
+                  <option value="A5">📐 Médios (A5)</option>
+                  <option value="A6">🏷️ Pequenos (A6)</option>
+                  <option value="A4">📄 Cartaz A4</option>
+                  <option value="A3">🥩 Açougue (A3)</option>
+                  <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
+                </select>
               </label>
             </fieldset>
 
