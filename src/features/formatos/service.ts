@@ -229,6 +229,10 @@ export function applyDynamicPrintStyles(config: PosterFormatConfig = DEFAULT_FOR
       }
       .print-only .poster-detail {
         font-size: ${(12.7 * scale).toFixed(2)}mm !important;
+        margin-bottom: ${(2.5 * scale).toFixed(2)}mm !important;
+      }
+      .print-only .poster-price {
+        margin-top: ${(2.0 * scale).toFixed(2)}mm !important;
       }
       .print-only .price-whole {
         font-size: ${(76.7 * scale).toFixed(2)}mm !important;

@@ -883,13 +883,17 @@ function drawPart(
     }
   }
 
-  // Trava de segurança: impede que números subam sobre camadas de sabor (complement), tipo ou linha decorativa
+  // Trava de segurança rigorosa: impede que números subam sobre sabor (complement), título, linha ou outras camadas
   if (part.role === 'whole' || part.role === 'fraction') {
     const compPart = artwork?.templateParts?.find(p => p.role === 'complement') || artwork?.priceParts?.find(p => p.role === 'complement');
     const titlePart = artwork?.templateParts?.find(p => p.role === 'title') || artwork?.priceParts?.find(p => p.role === 'title');
-    const maxObstacleBottom = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0);
-    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 10) {
-      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 10));
+    const upperLayers = (artwork?.layers || [])
+      .filter(l => l.visible && l.bounds.bottom < part.bounds.bottom - 40 && l.bounds.bottom > 80);
+    const maxLayerBottom = upperLayers.length > 0 ? Math.max(...upperLayers.map(l => l.bounds.bottom)) : 0;
+    const maxObstacleBottom = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0, maxLayerBottom);
+
+    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 16) {
+      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 16));
       const currentH = Math.max(1, part.bounds.bottom - part.bounds.top);
       if (availableH < currentH) {
         const factor = availableH / currentH;
@@ -930,7 +934,8 @@ function drawPart(
       // Alinhamento à direita preservando a proximidade da vírgula e centavos
       const deltaU = (origLocal - measuredLocal * hScale) / 2;
       const targetTx = e + deltaU * a;
-      const targetTy = f + deltaU * bm;
+      // Trava de baseline vertical: para textos horizontais, preserva exatamente f sem oscilar para cima
+      const targetTy = Math.abs(wholeAdjustment.originalRotDeg) > 1.2 ? f + deltaU * bm : f;
 
       const finalTransform: [number, number, number, number, number, number] = [
         a * hScale,
