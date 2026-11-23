@@ -347,6 +347,9 @@ export type DynamicPosterTexts = {
   boxQuantity?: number;
   boxUnitLabel?: string;
   boxPrice?: string;
+  boxPackageType?: 'caixa' | 'fardo';
+  boxPackageLabel?: string;
+  unitBadgeMode?: 'auto' | 'un' | 'text';
   productImage?: { dataUrl: string; fileName?: string; bounds?: { left: number; top: number; right: number; bottom: number } };
   showSurgicalGuides?: boolean;
 };
@@ -416,7 +419,9 @@ export async function drawImported(
       artwork,
       dynamicTexts.boxPrice,
       dynamicTexts.boxQuantity ?? 12,
-      dynamicTexts.boxUnitLabel ?? 'UND.'
+      dynamicTexts.boxUnitLabel ?? 'UND.',
+      dynamicTexts.boxPackageType ?? 'caixa',
+      dynamicTexts.boxPackageLabel
     );
   }
   if (dynamicTexts?.showSurgicalGuides) {
@@ -573,7 +578,9 @@ function drawBoxPriceSection(
   artwork: ImportedArtwork,
   boxPrice: string,
   boxQty = 12,
-  boxUnit = 'UND.'
+  boxUnit = 'UND.',
+  boxPackageType: 'caixa' | 'fardo' = 'caixa',
+  boxPackageLabel?: string
 ) {
   const { whole, fraction } = sanitizePrice(boxPrice);
   const canvasW = artwork.canvas.width;
@@ -589,7 +596,9 @@ function drawBoxPriceSection(
   context.fillStyle = '#000000';
   context.fillRect(lineLeft, lineY, lineRight - lineLeft, barThickness);
 
-  // Rótulo "CAIXA COM" (ArialMT)
+  // Rótulo "CAIXA COM" ou "FARDO COM" (ArialMT)
+  const isFardo = boxPackageType === 'fardo' || /fardo/i.test(boxPackageLabel ?? '');
+  const pkgLabel = boxPackageLabel?.trim() || (isFardo ? 'FARDO COM' : 'CAIXA COM');
   const labelFontSize = Math.round(canvasH * 0.046);
   const labelX = lineLeft + Math.round(canvasW * 0.038);
   context.save();
@@ -597,7 +606,7 @@ function drawBoxPriceSection(
   context.textAlign = 'left';
   context.textBaseline = 'alphabetic';
   context.fillStyle = '#000000';
-  context.fillText('CAIXA COM', labelX, lineY + Math.round(canvasH * 0.058));
+  context.fillText(pkgLabel, labelX, lineY + Math.round(canvasH * 0.058));
   context.restore();
 
   // Quantidade "12 UND." (Impact)
@@ -675,6 +684,35 @@ function drawBoxPriceSection(
   context.restore();
 }
 
+function drawUnBadge(context: CanvasRenderingContext2D, bounds: { left: number; top: number; right: number; bottom: number }) {
+  context.save();
+  const width = Math.max(1, bounds.right - bounds.left);
+  const height = Math.max(1, bounds.bottom - bounds.top);
+  const cx = (bounds.left + bounds.right) / 2;
+  const cy = (bounds.top + bounds.bottom) / 2;
+
+  const rx = Math.max(32, width * 0.48);
+  const ry = Math.max(24, height * 0.42);
+
+  context.translate(cx, cy);
+  context.rotate(-0.06);
+  context.beginPath();
+  context.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  context.fillStyle = '#ffffff';
+  context.fill();
+  context.lineWidth = Math.max(6, Math.round(ry * 0.18));
+  context.strokeStyle = '#000000';
+  context.stroke();
+
+  const fontPx = Math.round(ry * 1.25);
+  context.font = `900 ${fontPx}px "Arial Black", ArialMT, Impact, sans-serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillStyle = '#000000';
+  context.fillText('UN', 0, 2);
+  context.restore();
+}
+
 function drawPart(
   context: CanvasRenderingContext2D,
   part: ImportedPricePart,
@@ -710,7 +748,14 @@ function drawPart(
     const targetCenterY = canvasH * 0.63;
     const scale = 0.64;
 
-    context.translate(centerX, targetCenterY);
+    const compPart = artwork?.templateParts?.find(p => p.role === 'complement') || artwork?.priceParts?.find(p => p.role === 'complement');
+    const titlePart = artwork?.templateParts?.find(p => p.role === 'title') || artwork?.priceParts?.find(p => p.role === 'title');
+    const maxTopObstacle = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0);
+    const scaledHalfH = ((origBottom - origTop) * scale) / 2;
+    const safeMinCenterY = maxTopObstacle > 0 ? maxTopObstacle + scaledHalfH + 15 : canvasH * 0.60;
+    const effectiveCenterY = Math.max(targetCenterY, safeMinCenterY);
+
+    context.translate(centerX, effectiveCenterY);
     context.scale(scale, scale);
     context.translate(-centerX, -origCenterY);
   }
@@ -741,6 +786,27 @@ function drawPart(
     return;
   }
   if (part.role === 'packaging') {
+    const isUnUnit = /^(?:UN|UND|UND\.)$/i.test(dynamicTexts?.unit || part.originalText || '');
+    const hasVolInComplement = Boolean(
+      dynamicTexts?.complement && (
+        dynamicTexts.complement.includes('-') ||
+        /\b\d+\s*(?:ML|L|KG|G|GR)\b/i.test(dynamicTexts.complement)
+      )
+    );
+    const hasVolInTitle = Boolean(
+      dynamicTexts?.name && /\b\d+\s*(?:ML|L|KG|G|GR)\b/i.test(dynamicTexts.name)
+    );
+    const shouldRenderUnBadge = (
+      dynamicTexts?.unitBadgeMode === 'un' ||
+      (dynamicTexts?.unitBadgeMode !== 'text' && isCaixaAdapted && (isUnUnit || hasVolInComplement || hasVolInTitle))
+    );
+
+    if (shouldRenderUnBadge) {
+      drawUnBadge(context, b);
+      context.restore();
+      return;
+    }
+
     const text = (dynamicTexts?.unit || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';

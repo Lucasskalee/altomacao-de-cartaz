@@ -307,6 +307,9 @@ export function useCartaz() {
               boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
               boxWhole: boxWholeVal,
               boxFraction: boxFractionVal,
+              boxPackageType: (d.product as any).boxPackageType,
+              boxPackageLabel: (d.product as any).boxPackageLabel,
+              unitBadgeMode: (d.product as any).unitBadgeMode,
               roles: {
                 wholeLayerId: wholePart?.layerId,
                 fractionLayerId: fractionPart?.layerId,

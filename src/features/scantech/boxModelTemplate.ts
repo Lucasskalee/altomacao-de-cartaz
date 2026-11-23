@@ -1,4 +1,5 @@
 import type { Layer } from 'ag-psd';
+export { OFFICIAL_UN_LAYER_META, OFFICIAL_UN_LAYER_DEFLATED_BASE64 } from './unLayerData';
 
 export const BOX_TEMPLATE_CANVAS = { width: 886, height: 1240 };
 

@@ -212,16 +212,37 @@ export function suggestFromExcelDescription(description: string): {
     .trim()
     .toUpperCase()
     .replace(/^[A-Z]{2,5}\.\s*/, '');
+
+  const volumeMatch = cleaned.match(/\b(\d+(?:[.,]\d+)?\s*(?:ML|L|KG|G|GR|PCT|CX|LT|DZ))\b/i);
+  const detectedVolume = volumeMatch ? volumeMatch[1].replace(/\s+/g, '').toUpperCase() : '';
+
+  // Se já contém hífen no texto, usa o hífen como separador de especificação
+  if (cleaned.includes('-')) {
+    const parts = cleaned.split('-').map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      const name = parts[0].slice(0, 32);
+      const complement = parts.slice(1).join(' - ').slice(0, 60);
+      const unit = detectedVolume || 'UN';
+      return { name, complement, unit };
+    }
+  }
+
   const unitRegex = /\b(KG|UN|PCT|CX|LT|BDJ|MACO|MAÇO|DZ|GR|G|ML)\b/i;
   const unitMatch = cleaned.match(unitRegex);
-  const unit = unitMatch ? unitMatch[1].toUpperCase() : 'UN';
+  const unit = detectedVolume || (unitMatch ? unitMatch[1].toUpperCase() : 'UN');
   const withoutUnit = cleaned
     .replace(unitRegex, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   const tokens = withoutUnit.split(' ').filter(Boolean);
   const name = (tokens[0] ?? cleaned).slice(0, 32);
-  const complement = tokens.slice(1).join(' ').slice(0, 28);
+  let complement = tokens.slice(1).join(' ').slice(0, 50);
+
+  // Formata especificação com hífen se houver volume/gramagem explícito
+  if (detectedVolume && complement && !complement.includes(detectedVolume)) {
+    complement = `${complement} - ${detectedVolume}`;
+  }
+
   return { name, complement, unit };
 }
 

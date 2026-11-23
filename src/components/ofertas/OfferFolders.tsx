@@ -1263,7 +1263,8 @@ export function OfferFolders({
     offerItemId: string,
     sourcePoster: IndexedCartaz,
     targetFormat: PaperFormat,
-    isBox = false
+    isBox = false,
+    boxPackageType: 'caixa' | 'fardo' = 'caixa'
   ) => {
     if (!activeCampaign) return;
     const sourceDoc = sourcePoster.document;
@@ -1274,9 +1275,9 @@ export function OfferFolders({
       .substring(dir.length + 1)
       .replace(/\.skcartaz$/i, '')
       .replace(/-\[(A6|A5|A4|A3|expositor-a3-2x2)\]/gi, '')
-      .replace(/-CAIXA/gi, '');
+      .replace(/-(CAIXA|FARDO)/gi, '');
     const sep = originalPath.includes('/') ? '/' : '\\';
-    const boxTag = isBox ? '-CAIXA' : '';
+    const boxTag = isBox ? (boxPackageType === 'fardo' ? '-FARDO' : '-CAIXA') : '';
     const newFileName = `${baseName}-[${targetFormat}]${boxTag}.skcartaz`;
     const newPath = dir ? `${dir}${sep}${newFileName}` : newFileName;
 
@@ -1286,8 +1287,9 @@ export function OfferFolders({
     let boxPriceCents = unitPriceCents * 12;
 
     if (isBox) {
+      const typeLabel = boxPackageType === 'fardo' ? 'Fardo' : 'Caixa';
       const qtyStr = window.prompt(
-        `Configurar Preço por Caixa no cartaz ${targetFormat} de "${sourceDoc.product.name}":\n\nQuantas unidades vêm na caixa?`,
+        `Configurar Preço por ${typeLabel} no cartaz ${targetFormat} de "${sourceDoc.product.name}":\n\nQuantas unidades vêm no ${typeLabel.toLowerCase()}?`,
         '12'
       );
       if (qtyStr === null) return;
@@ -1295,7 +1297,7 @@ export function OfferFolders({
 
       const defaultPriceFormatted = formatCentsBr(unitPriceCents * boxQty);
       const priceStr = window.prompt(
-        `Qual o preço total da caixa com ${boxQty} unidades? (em R$)`,
+        `Qual o preço total do ${typeLabel.toLowerCase()} com ${boxQty} unidades? (em R$)`,
         defaultPriceFormatted
       );
       if (priceStr === null) return;
@@ -1317,6 +1319,7 @@ export function OfferFolders({
         ...(isBox
           ? {
               hasBoxPrice: true,
+              boxPackageType,
               boxQuantity: boxQty,
               boxUnitLabel: ((sourceDoc.product as any).boxUnitLabel as string) || 'UND.',
               boxPriceCents,
@@ -2129,7 +2132,7 @@ export function OfferFolders({
                                                       gap: 4,
                                                     }}
                                                   >
-                                                    📦 Caixa {(m.scheduledDocument?.product as any).boxQuantity || 12} {(m.scheduledDocument?.product as any).boxUnitLabel || 'UND.'}
+                                                    📦 {(m.scheduledDocument?.product as any).boxPackageType === 'fardo' ? 'Fardo' : 'Caixa'} {(m.scheduledDocument?.product as any).boxQuantity || 12} {(m.scheduledDocument?.product as any).boxUnitLabel || 'UND.'}
                                                   </span>
                                                 )}
                                               </div>
@@ -2324,19 +2327,34 @@ export function OfferFolders({
                                                     </button>
                                                   )}
                                                   {!hasA5Box && (currentFmt !== 'A5' || !isThisBox) && (
-                                                    <button
-                                                      type="button"
-                                                      className="subtle"
-                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
-                                                      title="Criar versão Médio (A5) com preço por caixa/fardo e adicionar na pasta"
-                                                      onClick={() =>
-                                                        run(async () => {
-                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true);
-                                                        })
-                                                      }
-                                                    >
-                                                      📦 + A5 por Caixa
-                                                    </button>
+                                                    <>
+                                                      <button
+                                                        type="button"
+                                                        className="subtle"
+                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                        title="Criar versão Médio (A5) com preço por caixa e adicionar na pasta"
+                                                        onClick={() =>
+                                                          run(async () => {
+                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'caixa');
+                                                          })
+                                                        }
+                                                      >
+                                                        📦 + A5 por Caixa
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        className="subtle"
+                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                        title="Criar versão Médio (A5) com preço por fardo e adicionar na pasta"
+                                                        onClick={() =>
+                                                          run(async () => {
+                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A5', true, 'fardo');
+                                                          })
+                                                        }
+                                                      >
+                                                        📦 + A5 por Fardo
+                                                      </button>
+                                                    </>
                                                   )}
 
                                                   {/* 2. Opções para A4 */}
@@ -2356,19 +2374,34 @@ export function OfferFolders({
                                                     </button>
                                                   )}
                                                   {!hasA4Box && (currentFmt !== 'A4' || !isThisBox) && (
-                                                    <button
-                                                      type="button"
-                                                      className="subtle"
-                                                      style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
-                                                      title="Criar versão Cartaz A4 com preço por caixa/fardo e adicionar na pasta"
-                                                      onClick={() =>
-                                                        run(async () => {
-                                                          await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true);
-                                                        })
-                                                      }
-                                                    >
-                                                      📦 + A4 por Caixa
-                                                    </button>
+                                                    <>
+                                                      <button
+                                                        type="button"
+                                                        className="subtle"
+                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                        title="Criar versão Cartaz A4 com preço por caixa e adicionar na pasta"
+                                                        onClick={() =>
+                                                          run(async () => {
+                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'caixa');
+                                                          })
+                                                        }
+                                                      >
+                                                        📦 + A4 por Caixa
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        className="subtle"
+                                                        style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                        title="Criar versão Cartaz A4 com preço por fardo e adicionar na pasta"
+                                                        onClick={() =>
+                                                          run(async () => {
+                                                            await handleAddPosterVersion(v.item.id, m.libraryCartaz!, 'A4', true, 'fardo');
+                                                          })
+                                                        }
+                                                      >
+                                                        📦 + A4 por Fardo
+                                                      </button>
+                                                    </>
                                                   )}
 
                                                   {/* 3. Opção para A6 */}

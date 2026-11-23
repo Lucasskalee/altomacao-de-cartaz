@@ -41,10 +41,13 @@ export function SurgicalLayerEditor({
     hasBoxPrice: Boolean(product.hasBoxPrice),
     boxQuantity: Number(product.boxQuantity) || 12,
     boxUnitLabel: product.boxUnitLabel || 'UND.',
+    boxPackageType: (product.boxPackageType as 'caixa' | 'fardo') || 'caixa',
+    boxPackageLabel: product.boxPackageLabel,
+    unitBadgeMode: product.unitBadgeMode,
     boxPrice: product.hasBoxPrice && product.boxPriceCents
       ? (product.boxPriceCents / 100).toFixed(2).replace('.', ',')
       : undefined,
-  }), [basePoster, showGuides, product.productImage, product.hasBoxPrice, product.boxQuantity, product.boxUnitLabel, product.boxPriceCents]);
+  }), [basePoster, showGuides, product.productImage, product.hasBoxPrice, product.boxQuantity, product.boxUnitLabel, product.boxPriceCents, product.boxPackageType, product.boxPackageLabel, product.unitBadgeMode]);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -313,6 +316,42 @@ export function SurgicalLayerEditor({
 
             {Boolean(product.hasBoxPrice) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Tipo:</span>
+                  <label style={{ fontSize: 11, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="boxPackageType"
+                      checked={product.boxPackageType !== 'fardo'}
+                      onChange={() => onChangeField('boxPackageType', 'caixa')}
+                    />
+                    📦 Caixa
+                  </label>
+                  <label style={{ fontSize: 11, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="boxPackageType"
+                      checked={product.boxPackageType === 'fardo'}
+                      onChange={() => onChangeField('boxPackageType', 'fardo')}
+                    />
+                    📦 Fardo
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Selo Unitário:</span>
+                  <select
+                    className="sk-surgical-input"
+                    style={{ padding: '4px 8px', fontSize: 11 }}
+                    value={product.unitBadgeMode || 'auto'}
+                    onChange={e => onChangeField('unitBadgeMode', e.target.value)}
+                  >
+                    <option value="auto">Automático (UN quando houver gramagem no topo)</option>
+                    <option value="un">Forçar Selo (UN) Oval</option>
+                    <option value="text">Forçar Gramagem / Texto (ex: 500G, UN)</option>
+                  </select>
+                </div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '80px 80px 1fr', gap: 8 }}>
                   <div>
                     <label style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>Quantidade</label>

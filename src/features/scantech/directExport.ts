@@ -2,7 +2,7 @@ import { readPsd, writePsd, initializeCanvas, type Layer, type Psd } from 'ag-ps
 import type { ScantechExportJob, ScantechExportJobResult, ScantechExportBatchResult } from './types';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { readPsdByPath } from '../psd/service';
-import { OFFICIAL_BOX_LAYERS, BOX_TEMPLATE_CANVAS } from './boxModelTemplate';
+import { OFFICIAL_BOX_LAYERS, BOX_TEMPLATE_CANVAS, OFFICIAL_UN_LAYER_META, OFFICIAL_UN_LAYER_DEFLATED_BASE64 } from './boxModelTemplate';
 
 let canvasReady = false;
 export function ensureCanvasInitialized(): void {
@@ -91,8 +91,48 @@ function createLayerCanvas(w: number, h: number): any {
       restore: () => {},
       setTransform: () => {},
       measureText: (txt: string) => ({ width: txt.length * 10 }),
+      translate: () => {},
+      rotate: () => {},
+      beginPath: () => {},
+      ellipse: () => {},
+      fill: () => {},
+      stroke: () => {},
     }),
   };
+}
+
+function renderUnBadgeToCanvas(width: number, height: number): any {
+  const canvas = createLayerCanvas(width, height);
+  const ctx = canvas.getContext?.('2d');
+  if (!ctx) return canvas;
+
+  ctx.save?.();
+  ctx.clearRect?.(0, 0, width, height);
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const rx = Math.max(25, width * 0.46);
+  const ry = Math.max(18, height * 0.40);
+
+  ctx.translate?.(cx, cy);
+  ctx.rotate?.(-0.06);
+  ctx.beginPath?.();
+  ctx.ellipse?.(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill?.();
+  ctx.lineWidth = Math.max(5, Math.round(ry * 0.18));
+  ctx.strokeStyle = '#000000';
+  ctx.stroke?.();
+
+  const fontPx = Math.round(ry * 1.25);
+  ctx.font = `900 ${fontPx}px "Arial Black", ArialMT, Impact, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#000000';
+  ctx.fillText?.('UN', 0, 2);
+  ctx.restore?.();
+
+  return canvas;
 }
 
 /**
@@ -695,6 +735,9 @@ export type DerivedPsdPayload = {
   boxUnitLabel?: string;
   boxWhole?: string;
   boxFraction?: string;
+  boxPackageType?: 'caixa' | 'fardo';
+  boxPackageLabel?: string;
+  unitBadgeMode?: 'auto' | 'un' | 'text';
   productImage?: { dataUrl: string; fileName?: string };
   roles: {
     categoryLayerId?: string;
@@ -968,6 +1011,8 @@ function scaleAndCenterPriceLayer(
         'Rectangle 3 cópia 2',
         'CAIXA COM ',
         'CAIXA COM',
+        'FARDO COM ',
+        'FARDO COM',
         '12 UND. ',
         '12 UND.',
         '46',
@@ -979,6 +1024,7 @@ function scaleAndCenterPriceLayer(
         ', cópia 3',
         ',  cópia 1',
         ', cópia 1',
+        'UN',
       ]);
       removeBoxLayersRecursively(psd, BOX_LAYER_NAMES);
 
@@ -986,43 +1032,76 @@ function scaleAndCenterPriceLayer(
       const mainWhole = resolveLayerByPath(psd, mainWholeId);
       const mainFrac = resolveLayerByPath(psd, mainFractionId);
       let origPriceCenterY = canvasH * 0.65;
+      let origPriceH = canvasH * 0.35;
       if (mainWhole && typeof mainWhole.top === 'number' && typeof mainWhole.bottom === 'number') {
         origPriceCenterY = (mainWhole.top + mainWhole.bottom) / 2;
+        origPriceH = mainWhole.bottom - mainWhole.top;
       } else if (mainWhole?.text?.transform && mainWhole.text.transform[5]) {
         origPriceCenterY = mainWhole.text.transform[5] - canvasH * 0.12;
       }
+
+      const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
+      const titleLayer = resolveLayerByPath(psd, payload.roles.titleLayerId);
+      const maxObstacleBottom = Math.max(
+        (compLayer && typeof compLayer.bottom === 'number') ? compLayer.bottom : 0,
+        (titleLayer && typeof titleLayer.bottom === 'number') ? titleLayer.bottom : 0
+      );
+
       const targetCenterY = canvasH * 0.63;
       const scale = 0.64;
+      const scaledHalfH = (origPriceH * scale) / 2;
+      const safeMinCenterY = maxObstacleBottom > 0 ? maxObstacleBottom + scaledHalfH + 15 : canvasH * 0.60;
+      const effectiveCenterY = Math.max(targetCenterY, safeMinCenterY);
 
       if (mainWhole && mainWhole.text) {
-        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+        scaleAndCenterPriceLayer(mainWhole, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
         renderTextLayerToBitmap(mainWhole, mainWhole.text.text, psd.width, psd.height);
       }
       if (mainFrac && mainFrac.text) {
-        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+        scaleAndCenterPriceLayer(mainFrac, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
         renderTextLayerToBitmap(mainFrac, mainFrac.text.text, psd.width, psd.height);
       }
+
+      const isUnUnit = /^(?:UN|UND|UND\.)$/i.test(payload.packaging ?? '');
+      const hasVolInComplement = Boolean(
+        payload.complement && (
+          payload.complement.includes('-') ||
+          /\b\d+\s*(?:ML|L|KG|G|GR)\b/i.test(payload.complement)
+        )
+      );
+      const hasVolInTitle = Boolean(
+        payload.title && /\b\d+\s*(?:ML|L|KG|G|GR)\b/i.test(payload.title)
+      );
+      const shouldUseUnBadge = (
+        payload.unitBadgeMode === 'un' ||
+        (payload.unitBadgeMode !== 'text' && (isUnUnit || hasVolInComplement || hasVolInTitle))
+      );
+
       if (payload.roles.packagingLayerId) {
         const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
         if (packLayer) {
-          scaleAndCenterPriceLayer(packLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
-          if (packLayer.text) renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
+          if (shouldUseUnBadge) {
+            packLayer.hidden = true;
+          } else {
+            scaleAndCenterPriceLayer(packLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
+            if (packLayer.text) renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
+          }
         }
       }
       if (payload.roles.fractionRuleLayerId) {
         const ruleLayer = resolveLayerByPath(psd, payload.roles.fractionRuleLayerId);
         if (ruleLayer) {
-          scaleAndCenterPriceLayer(ruleLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+          scaleAndCenterPriceLayer(ruleLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
         }
       } else {
         const fallbackRule = psd.children?.find(l => l.name === 'Rectangle 3');
         if (fallbackRule && fallbackRule.name !== 'Rectangle 3 cópia 2') {
-          scaleAndCenterPriceLayer(fallbackRule, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+          scaleAndCenterPriceLayer(fallbackRule, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
         }
       }
       const commaUnitLayer = findFirstTextLayerMatching(psd, /^,\s*(?:c[oó]pia)?$/i);
       if (commaUnitLayer && commaUnitLayer.text && commaUnitLayer !== mainWhole && commaUnitLayer !== mainFrac) {
-        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH, origPriceCenterY, targetCenterY, scale);
+        scaleAndCenterPriceLayer(commaUnitLayer, canvasW, canvasH, origPriceCenterY, effectiveCenterY, scale);
         renderTextLayerToBitmap(commaUnitLayer, commaUnitLayer.text.text, psd.width, psd.height);
       }
 
@@ -1036,6 +1115,24 @@ function scaleAndCenterPriceLayer(
 
       const newBoxLayers: Layer[] = [];
       const redColor = { r: 215, g: 37, b: 2 };
+
+      // Injeta selo oval UN oficial se ativado
+      if (shouldUseUnBadge) {
+        const unLayerCloned: Layer = {
+          name: 'UN',
+          top: Math.round(OFFICIAL_UN_LAYER_META.top * scaleY),
+          left: Math.round(OFFICIAL_UN_LAYER_META.left * scaleX),
+          bottom: Math.round(OFFICIAL_UN_LAYER_META.bottom * scaleY),
+          right: Math.round(OFFICIAL_UN_LAYER_META.right * scaleX),
+          blendMode: 'normal',
+          opacity: 1,
+          hidden: false,
+        };
+        const unW = Math.max(1, (unLayerCloned.right ?? 0) - (unLayerCloned.left ?? 0));
+        const unH = Math.max(1, (unLayerCloned.bottom ?? 0) - (unLayerCloned.top ?? 0));
+        unLayerCloned.canvas = renderUnBadgeToCanvas(unW, unH);
+        newBoxLayers.push(unLayerCloned);
+      }
       for (const templateLayer of OFFICIAL_BOX_LAYERS) {
         const cloned: Layer = JSON.parse(JSON.stringify(templateLayer));
 
@@ -1101,9 +1198,11 @@ function scaleAndCenterPriceLayer(
         } else if (cloned.name && cloned.name.includes('UND.')) {
           cloned.name = '12 UND. ';
           if (cloned.text) cloned.text.text = qtyStr;
-        } else if (cloned.name && cloned.name.includes('CAIXA COM')) {
-          cloned.name = 'CAIXA COM ';
-          if (cloned.text) cloned.text.text = 'CAIXA COM ';
+        } else if (cloned.name && (cloned.name.includes('CAIXA COM') || cloned.name.includes('FARDO COM'))) {
+          const isFardo = payload.boxPackageType === 'fardo' || /fardo/i.test(payload.boxPackageLabel ?? '');
+          const labelText = isFardo ? 'FARDO COM ' : 'CAIXA COM ';
+          cloned.name = labelText;
+          if (cloned.text) cloned.text.text = labelText;
         }
 
         if (cloned.text) {

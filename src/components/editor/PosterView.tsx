@@ -28,6 +28,9 @@ export type Poster = {
   boxQuantity?: number;
   boxUnitLabel?: string;
   boxPrice?: string;
+  boxPackageType?: 'caixa' | 'fardo';
+  boxPackageLabel?: string;
+  unitBadgeMode?: 'auto' | 'un' | 'text';
   productImage?: { dataUrl: string; fileName?: string; bounds?: { left: number; top: number; right: number; bottom: number } };
   showSurgicalGuides?: boolean;
 };
@@ -238,6 +241,9 @@ function ImportedPosterView({
             boxQuantity: poster.boxQuantity,
             boxUnitLabel: poster.boxUnitLabel,
             boxPrice: poster.boxPrice,
+            boxPackageType: poster.boxPackageType,
+            boxPackageLabel: poster.boxPackageLabel,
+            unitBadgeMode: poster.unitBadgeMode,
             productImage: poster.productImage,
             showSurgicalGuides: poster.showSurgicalGuides,
           }
@@ -285,6 +291,9 @@ function ImportedPosterView({
             boxQuantity: poster.boxQuantity,
             boxUnitLabel: poster.boxUnitLabel,
             boxPrice: poster.boxPrice,
+            boxPackageType: poster.boxPackageType,
+            boxPackageLabel: poster.boxPackageLabel,
+            unitBadgeMode: poster.unitBadgeMode,
             productImage: poster.productImage,
             showSurgicalGuides: poster.showSurgicalGuides,
           }
