@@ -571,21 +571,30 @@ function drawBoxPriceSection(
   context.fillRect(lineLeft, lineY, lineRight - lineLeft, barThickness);
 
   // Rótulo "CAIXA COM" (ArialMT)
-  const labelFontSize = Math.round(canvasH * 0.038);
+  const labelFontSize = Math.round(canvasH * 0.046);
+  const labelX = lineLeft + Math.round(canvasW * 0.038);
+  context.save();
   context.font = `700 ${labelFontSize}px ArialMT, Arial, sans-serif`;
   context.textAlign = 'left';
-  context.textBaseline = 'top';
-  context.fillText('CAIXA COM', lineLeft + 14, lineY + Math.round(canvasH * 0.021));
+  context.textBaseline = 'alphabetic';
+  context.fillStyle = '#000000';
+  context.fillText('CAIXA COM', labelX, lineY + Math.round(canvasH * 0.066));
+  context.restore();
 
   // Quantidade "12 UND." (Impact)
-  const qtyFontSize = Math.round(canvasH * 0.056);
+  const qtyFontSize = Math.round(canvasH * 0.063);
+  context.save();
   context.font = `900 ${qtyFontSize}px Impact, "Arial Black", sans-serif`;
-  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, lineLeft + 14, lineY + Math.round(canvasH * 0.068));
+  context.textAlign = 'left';
+  context.textBaseline = 'alphabetic';
+  context.fillStyle = '#000000';
+  context.fillText(`${boxQty} ${boxUnit.toUpperCase()}`, labelX, lineY + Math.round(canvasH * 0.134));
+  context.restore();
 
-  // Preço Inteiro da Caixa com sombra projetada e cor oficial do modelo (ex: 46 ou 95)
+  // Preço Inteiro da Caixa com sombra projetada e cor oficial do modelo (ex: 46 ou 83)
   const wholeFontSize = Math.round(canvasH * 0.145);
   const priceStartX = Math.round(canvasW * 0.44);
-  const baselineY = lineY + Math.round(canvasH * 0.155);
+  const wholeBaselineY = lineY + Math.round(canvasH * 0.155);
 
   context.save();
   context.font = `700 ${wholeFontSize}px Zullia, sans-serif`;
@@ -596,38 +605,54 @@ function drawBoxPriceSection(
   context.shadowOffsetY = 6;
   context.shadowBlur = 3;
   context.fillStyle = '#d72502';
-  context.fillText(whole, priceStartX, baselineY);
+  context.fillText(whole, priceStartX, wholeBaselineY);
   context.restore();
 
-  // Centavos da Caixa (ex: 68 ou 94)
+  // Centavos da Caixa (ex: 68 ou 40)
   context.save();
   context.font = `700 ${wholeFontSize}px Zullia, sans-serif`;
   const wholeMetrics = context.measureText(whole);
   const fracX = priceStartX + wholeMetrics.width + Math.round(canvasW * 0.015);
   const fracFontSize = Math.round(canvasH * 0.075);
+  const fracBaselineY = lineY + Math.round(canvasH * 0.0872);
 
   context.font = `700 ${fracFontSize}px Zullia, sans-serif`;
+  context.textBaseline = 'alphabetic';
+  context.textAlign = 'left';
   context.shadowColor = 'rgba(0, 0, 0, 0.45)';
   context.shadowOffsetX = 3;
   context.shadowOffsetY = 6;
   context.shadowBlur = 3;
   context.fillStyle = '#d72502';
-  context.fillText(fraction, fracX, lineY + Math.round(canvasH * 0.085));
+  context.fillText(fraction, fracX, fracBaselineY);
 
-  // Traço sublinhado dos centavos (Rectangle 3 cópia 2)
+  // Traço sublinhado dos centavos (Rectangle 3 cópia 2) - calibrado exatamente abaixo dos centavos
   const fracMetrics = context.measureText(fraction);
   const ruleW = Math.max(70, fracMetrics.width + 12);
-  context.fillStyle = '#000000';
+  const ruleX = fracX - 4;
+  const ruleTopY = lineY + Math.round(canvasH * 0.0960);
+  const ruleHeight = Math.max(8, Math.round(canvasH * 0.009));
+
   context.shadowColor = 'transparent';
-  context.fillRect(fracX - 4, lineY + Math.round(canvasH * 0.096), ruleW, Math.max(6, Math.round(canvasH * 0.008)));
+  context.fillStyle = '#000000';
+  context.fillRect(ruleX, ruleTopY, ruleW, ruleHeight);
 
-  // Vírgula (,  cópia 3)
+  // Vírgula (,  cópia 3) - abaixo do traço sublinhado
   const commaFontSize = Math.round(canvasH * 0.055);
-  context.font = `700 ${commaFontSize}px Zullia, sans-serif`;
-  context.fillStyle = '#d72502';
-  context.fillText(',', fracX + 4, baselineY);
-  context.restore();
+  const commaBaselineY = lineY + Math.round(canvasH * 0.1307);
+  const commaX = ruleX + 8;
 
+  context.font = `700 ${commaFontSize}px Zullia, sans-serif`;
+  context.textBaseline = 'alphabetic';
+  context.textAlign = 'left';
+  context.shadowColor = 'rgba(0, 0, 0, 0.45)';
+  context.shadowOffsetX = 2;
+  context.shadowOffsetY = 4;
+  context.shadowBlur = 2;
+  context.fillStyle = '#d72502';
+  context.fillText(',', commaX, commaBaselineY);
+
+  context.restore();
   context.restore();
 }
 
