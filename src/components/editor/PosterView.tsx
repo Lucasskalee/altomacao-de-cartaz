@@ -201,13 +201,18 @@ function ImportedPosterView({
   const heightMm = isExpositorPanel ? 420 : dims.height;
   const isLandscape = heightMm < widthMm;
 
+  // Preserva proporção exata nativa da arte PSD caso disponível para evitar bordas vazias
+  const nativeAspect = poster.artwork?.canvas?.width && poster.artwork?.canvas?.height
+    ? `${poster.artwork.canvas.width} / ${poster.artwork.canvas.height}`
+    : `${widthMm} / ${heightMm}`;
+
   const posterStyle: React.CSSProperties = isPrint
     ? {
         width: `${widthMm}mm`,
         height: `${heightMm}mm`,
       }
     : {
-        aspectRatio: `${widthMm} / ${heightMm}`,
+        aspectRatio: nativeAspect,
         width: isLandscape ? 560 : 444,
         height: isLandscape ? Math.round(560 * (heightMm / widthMm)) : Math.round(444 * (heightMm / widthMm)),
         maxWidth: '100%',
@@ -268,12 +273,21 @@ function ImportedPosterView({
           });
       } else {
         // Modo Padrão: gera a 300 DPI proporcional ao formato
-        const targetW = isPrint
-          ? Math.round((widthMm / 25.4) * 300)
-          : Math.round(widthMm * 6);
-        const targetH = isPrint
-          ? Math.round((heightMm / 25.4) * 300)
-          : Math.round(heightMm * 6);
+        // Para artes importadas na prévia, se a arte tiver proporção própria, renderiza nas dimensões nativas
+        let targetW: number;
+        let targetH: number;
+        if (isPrint) {
+          targetW = Math.round((widthMm / 25.4) * 300);
+          targetH = Math.round((heightMm / 25.4) * 300);
+        } else if (poster.artwork?.canvas?.width && poster.artwork?.canvas?.height) {
+          const artRatio = poster.artwork.canvas.width / poster.artwork.canvas.height;
+          const baseH = Math.round(heightMm * 6);
+          targetH = baseH;
+          targetW = Math.round(baseH * artRatio);
+        } else {
+          targetW = Math.round(widthMm * 6);
+          targetH = Math.round(heightMm * 6);
+        }
 
         void drawImported(
           canvas,

@@ -1,7 +1,7 @@
 import type { ImportedArtwork, ImportedPricePart } from '../../features/cartazes/types';
 import { computeTextLayoutAdjustment, type TextLayoutAdjustment } from '../../features/psd/textAdjustment';
 
-export const MIN_SAFE_HORIZONTAL_SCALE = 0.48;
+export const MIN_SAFE_HORIZONTAL_SCALE = 0.35;
 
 export function resolveFontFamily(psdFont?: string, fallback = 'sans-serif'): string {
   if (!psdFont) return fallback;
@@ -323,9 +323,14 @@ export function importedPriceWarning(artwork: ImportedArtwork, price: string): s
   const part = parts.find(item => item.role === 'whole');
   if (!part) return 'Mapeamento de reais ausente.';
   const origDigits = Math.max(1, (part.originalText ?? '').trim().length);
+  // Preços comuns do varejo com até 2 dígitos na parte inteira (ex: R$ 0,99 até R$ 99,99)
+  // são perfeitamente acomodados pela escala proporcional e nunca devem ser bloqueados
+  if (whole.length <= 2) {
+    return '';
+  }
   if (whole.length > 2 && whole.length > origDigits) {
     const available = Math.max(part.bounds.right - part.bounds.left, part.bounds.right - 24);
-    const perDigitWidth = (part.bounds.bottom - part.bounds.top) * (0.62 / origDigits);
+    const perDigitWidth = (part.bounds.bottom - part.bounds.top) * 0.62;
     const estimated = whole.length * perDigitWidth;
     if (estimated > available / 0.64) {
       return 'O valor é largo demais para a área mapeada. Reduza os dígitos ou prepare a arte.';
@@ -894,8 +899,8 @@ function drawPart(
     const maxLayerBottom = upperLayers.length > 0 ? Math.max(...upperLayers.map(l => l.bounds.bottom)) : 0;
     const maxObstacleBottom = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0, maxLayerBottom);
 
-    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 16) {
-      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 16));
+    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 20) {
+      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 20));
       const currentH = Math.max(1, part.bounds.bottom - part.bounds.top);
       if (availableH < currentH) {
         const factor = availableH / currentH;
