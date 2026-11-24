@@ -423,6 +423,15 @@ test('Caixa Fechada e Filtros de Formato: suporte a PEQUENOS (A6), MÉDIOS (A5),
   assert.equal(badgeA6.label, 'Pequeno (A6)');
   const badgeA5 = getFormatBadge('A5');
   assert.equal(badgeA5.label, 'Médio (A5)');
+
+  // Reconhecimento do setor FLV (Frutas, Legumes e Verduras)
+  const { isFlvItem } = await import('../src/components/ofertas/OfferFolders');
+  assert.equal(isFlvItem('FLV.ABACATE KG'), true);
+  assert.equal(isFlvItem('FLV.MACA KG GALA'), true);
+  assert.equal(isFlvItem('FLV ABACAXI C/COROA'), true);
+  assert.equal(isFlvItem('CAFE CABOCLO VCO 500G EX.FORT'), false);
+  assert.equal(isFlvItem('LEITE LONGA VIDA LIDER 1L INT'), false);
+  assert.equal(isFlvItem('CARRE SUINO KG'), false);
 });
 
 test('Modelo Caixa Fechada: criação oficial, alternância dinâmica e exportação PSD direta com atacado', async () => {

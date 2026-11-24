@@ -78,7 +78,23 @@ type PsdPairingFilter =
   | 'selected-batch'
   | 'already-linked';
 
-export type FormatTab = 'todos' | 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2';
+export type FormatTab = 'todos' | 'A6' | 'A5' | 'A5-flv' | 'A4' | 'A3' | 'expositor-a3-2x2';
+
+export function isFlvItem(description?: string, posterProductName?: string): boolean {
+  const d = (description || '').trim();
+  const n = (posterProductName || '').trim();
+  // Regra prioritária solicitada: produtos que começam com FLV. ou FLV (ex: FLV.ABACATE KG, FLV BANANA)
+  if (/^flv[\s.]/i.test(d) || /^flv[\s.]/i.test(n)) {
+    return true;
+  }
+  // Termos de hortifruti comuns no setor
+  const upper = `${d} ${n}`.toUpperCase();
+  return (
+    upper.includes('HORTIFRUTI') ||
+    upper.includes('FRUTAS E VERDURAS') ||
+    /\bFLV\b/i.test(upper)
+  );
+}
 
 export function getPosterPaperFormat(doc?: Cartaz | null, path?: string): PaperFormat {
   if (doc?.layout?.paper && ['A6', 'A5', 'A4', 'A3', 'expositor-a3-2x2'].includes(doc.layout.paper)) {
@@ -966,17 +982,23 @@ export function OfferFolders({
       todos: 0,
       A6: 0,
       A5: 0,
+      'A5-flv': 0,
       A4: 0,
       A3: 0,
       'expositor-a3-2x2': 0,
     };
     for (const v of matchViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
       for (const m of v.matchedPosters) {
         if (!m.libraryCartaz) continue;
         const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
         counts.todos++;
         if (fmt in counts) {
           counts[fmt as FormatTab]++;
+        }
+        if (fmt === 'A5' && isFlv) {
+          counts['A5-flv']++;
         }
       }
     }
@@ -986,11 +1008,17 @@ export function OfferFolders({
   const currentFormatQueueCount = useMemo(() => {
     let count = 0;
     for (const v of matchViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
       for (const m of v.matchedPosters) {
         if (!m.state.selected || !m.scheduledDocument || m.state.status === 'impresso') continue;
         if (formatTab !== 'todos') {
           const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
-          if (posterFmt !== formatTab) continue;
+          if (formatTab === 'A5-flv') {
+            if (posterFmt !== 'A5' || !isFlv) continue;
+          } else {
+            if (posterFmt !== formatTab) continue;
+          }
         }
         count++;
       }
@@ -1001,6 +1029,8 @@ export function OfferFolders({
   const filteredViews = useMemo(() => {
     const q = searchQuery.trim().toLocaleLowerCase('pt-BR');
     return matchViews.filter(v => {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
       if (q && !`${v.item.f7} ${v.item.description}`.toLocaleLowerCase('pt-BR').includes(q)) {
         return false;
       }
@@ -1013,6 +1043,9 @@ export function OfferFolders({
         const hasMatchingFormat = v.matchedPosters.some(m => {
           if (!m.libraryCartaz) return false;
           const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+          if (formatTab === 'A5-flv') {
+            return fmt === 'A5' && isFlv;
+          }
           return fmt === formatTab;
         });
         if (!hasMatchingFormat) return false;
@@ -1058,11 +1091,16 @@ export function OfferFolders({
   const navigablePosterKeys = useMemo(() => {
     const keys: string[] = [];
     for (const v of filteredViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
       const posters = formatTab === 'todos'
         ? v.matchedPosters
         : v.matchedPosters.filter(m => {
             if (!m.libraryCartaz) return true;
             const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+            if (formatTab === 'A5-flv') {
+              return fmt === 'A5' && isFlv;
+            }
             return fmt === formatTab;
           });
       if (posters.length > 0) {
@@ -1197,12 +1235,18 @@ export function OfferFolders({
     const limit = Math.max(1, Math.min(200, batchSize));
     let distinctPostersCount = 0;
     for (const v of matchViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
       for (const m of v.matchedPosters) {
         if (!m.state.selected || !m.scheduledDocument) continue;
         if (!reprintPrinted && m.state.status === 'impresso') continue;
         if (formatTab !== 'todos') {
           const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
-          if (posterFmt !== formatTab) continue;
+          if (formatTab === 'A5-flv') {
+            if (posterFmt !== 'A5' || !isFlv) continue;
+          } else {
+            if (posterFmt !== formatTab) continue;
+          }
         }
         if (m.priceMismatchReason) {
           blockedProducts.push(`F7 ${v.item.f7} (${v.item.description}): ${m.priceMismatchReason}`);
@@ -1232,7 +1276,7 @@ export function OfferFolders({
       );
     }
     setAwaitingPrintConfirm({ keys, count: distinctPostersCount });
-    const targetPaper = formatTab === 'todos' ? 'A6' : formatTab;
+    const targetPaper = formatTab === 'todos' ? 'A6' : formatTab === 'A5-flv' ? 'A5' : formatTab;
     onPrintBatch(queue, { formatConfig: { paper: targetPaper, orientation: 'portrait' } });
   };
 
@@ -1713,6 +1757,7 @@ export function OfferFolders({
                           { id: 'todos', label: 'Todos os Tamanhos', icon: '📋', subtitle: 'Visão geral' },
                           { id: 'A6', label: '1. Pequenos (A6)', icon: '🏷️', subtitle: 'Topo do A4 em pé' },
                           { id: 'A5', label: '2. Médios (A5)', icon: '📐', subtitle: 'Metade A4 em pé' },
+                          { id: 'A5-flv', label: '2.1 Médios FLV (A5)', icon: '🥦', subtitle: 'Hortifruti / FLV.' },
                           { id: 'A4', label: '3. Cartaz A4', icon: '📄', subtitle: 'Folha A4 inteira' },
                           { id: 'A3', label: '4. Açougue (A3)', icon: '🥩', subtitle: 'Folha A3 vertical' },
                           { id: 'expositor-a3-2x2', label: '5. Externos (2×2)', icon: '🏢', subtitle: 'Expositor 4 folhas A3' },
@@ -1785,10 +1830,10 @@ export function OfferFolders({
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 16 }}>
-                          {formatTab === 'A6' ? '🏷️' : formatTab === 'A5' ? '📐' : formatTab === 'A4' ? '📄' : formatTab === 'A3' ? '🥩' : formatTab === 'expositor-a3-2x2' ? '🏢' : '📋'}
+                          {formatTab === 'A6' ? '🏷️' : formatTab === 'A5' ? '📐' : formatTab === 'A5-flv' ? '🥦' : formatTab === 'A4' ? '📄' : formatTab === 'A3' ? '🥩' : formatTab === 'expositor-a3-2x2' ? '🏢' : '📋'}
                         </span>
                         <strong style={{ fontSize: 14, color: formatTab === 'todos' ? '#1e293b' : '#166534' }}>
-                          Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
+                          Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios (A5)' : formatTab === 'A5-flv' ? 'Médios FLV (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
                         </strong>
                         <span
                           style={{
@@ -1806,7 +1851,7 @@ export function OfferFolders({
                       <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 3 }}>
                         {formatTab === 'A6'
                           ? 'Epson L14150: Impressão vertical no topo da folha A4 (Superior: 0, centralizado)'
-                          : formatTab === 'A5'
+                          : formatTab === 'A5' || formatTab === 'A5-flv'
                             ? 'Epson L14150: Impressão vertical centralizada no A4 (Superior: 0)'
                             : formatTab === 'A4'
                               ? 'Epson L14150: Folha A4 vertical completa'
