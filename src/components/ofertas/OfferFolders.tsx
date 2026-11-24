@@ -994,11 +994,14 @@ export function OfferFolders({
         if (!m.libraryCartaz) continue;
         const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
         counts.todos++;
-        if (fmt in counts) {
+        if (fmt === 'A5') {
+          if (isFlv) {
+            counts['A5-flv']++;
+          } else {
+            counts.A5++;
+          }
+        } else if (fmt in counts) {
           counts[fmt as FormatTab]++;
-        }
-        if (fmt === 'A5' && isFlv) {
-          counts['A5-flv']++;
         }
       }
     }
@@ -1016,6 +1019,8 @@ export function OfferFolders({
           const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
           if (formatTab === 'A5-flv') {
             if (posterFmt !== 'A5' || !isFlv) continue;
+          } else if (formatTab === 'A5') {
+            if (posterFmt !== 'A5' || isFlv) continue;
           } else {
             if (posterFmt !== formatTab) continue;
           }
@@ -1045,6 +1050,9 @@ export function OfferFolders({
           const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
           if (formatTab === 'A5-flv') {
             return fmt === 'A5' && isFlv;
+          }
+          if (formatTab === 'A5') {
+            return fmt === 'A5' && !isFlv;
           }
           return fmt === formatTab;
         });
@@ -1100,6 +1108,9 @@ export function OfferFolders({
             const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
             if (formatTab === 'A5-flv') {
               return fmt === 'A5' && isFlv;
+            }
+            if (formatTab === 'A5') {
+              return fmt === 'A5' && !isFlv;
             }
             return fmt === formatTab;
           });
@@ -1244,6 +1255,8 @@ export function OfferFolders({
           const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
           if (formatTab === 'A5-flv') {
             if (posterFmt !== 'A5' || !isFlv) continue;
+          } else if (formatTab === 'A5') {
+            if (posterFmt !== 'A5' || isFlv) continue;
           } else {
             if (posterFmt !== formatTab) continue;
           }
@@ -1756,7 +1769,7 @@ export function OfferFolders({
                         [
                           { id: 'todos', label: 'Todos os Tamanhos', icon: '📋', subtitle: 'Visão geral' },
                           { id: 'A6', label: '1. Pequenos (A6)', icon: '🏷️', subtitle: 'Topo do A4 em pé' },
-                          { id: 'A5', label: '2. Médios (A5)', icon: '📐', subtitle: 'Metade A4 em pé' },
+                          { id: 'A5', label: '2. Médios (A5)', icon: '📐', subtitle: 'Mercearia / Geral' },
                           { id: 'A5-flv', label: '2.1 Médios FLV (A5)', icon: '🥦', subtitle: 'Hortifruti / FLV.' },
                           { id: 'A4', label: '3. Cartaz A4', icon: '📄', subtitle: 'Folha A4 inteira' },
                           { id: 'A3', label: '4. Açougue (A3)', icon: '🥩', subtitle: 'Folha A3 vertical' },
@@ -1833,7 +1846,7 @@ export function OfferFolders({
                           {formatTab === 'A6' ? '🏷️' : formatTab === 'A5' ? '📐' : formatTab === 'A5-flv' ? '🥦' : formatTab === 'A4' ? '📄' : formatTab === 'A3' ? '🥩' : formatTab === 'expositor-a3-2x2' ? '🏢' : '📋'}
                         </span>
                         <strong style={{ fontSize: 14, color: formatTab === 'todos' ? '#1e293b' : '#166534' }}>
-                          Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios (A5)' : formatTab === 'A5-flv' ? 'Médios FLV (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
+                          Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios Geral (A5)' : formatTab === 'A5-flv' ? 'Médios FLV (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
                         </strong>
                         <span
                           style={{
