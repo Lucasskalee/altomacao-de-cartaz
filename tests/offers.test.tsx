@@ -5,6 +5,7 @@ import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createDocument, serialize } from '../src/features/cartazes/serialization';
 import { indexCartazes } from '../src/features/cartazes/f7';
+import { computeSafePriceFontSize } from '../src/components/editor/importedRenderer';
 import type { Entry } from '../src/features/cartazes/types';
 import {
   columnLetter,
@@ -1354,4 +1355,67 @@ test('Carnes e Açougue (A3): cortes como SUINO, BOVINO nunca viram embalagem e 
   assert.equal(templateRoles.title, 't0'); // CARRÉ
   assert.equal(templateRoles.complement, 't1'); // SUINO (preserva corte/sabor no meio, NUNCA vira embalagem!)
   assert.notEqual(templateRoles.packaging, 't1'); // SUINO não pode ser packaging!
+});
+
+test('Renderização de preço PSD: número de Reais não encolhe por causa dos centavos, traço, vírgula ou peso lateral', () => {
+  const wholePart = {
+    role: 'whole' as const,
+    layerId: 'p_whole',
+    bounds: { left: 90, top: 470, right: 390, bottom: 920 },
+    fontFamily: 'Zullia',
+    fontSize: 32,
+    originalText: '2',
+    color: '#c74624',
+  };
+  const fractionPart = {
+    role: 'fraction' as const,
+    layerId: 'p_frac',
+    bounds: { left: 420, top: 465, right: 710, bottom: 720 },
+    fontFamily: 'Zullia',
+    fontSize: 32,
+    originalText: '49',
+    color: '#c74624',
+  };
+  const artwork: any = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'azeitona atalaia sache 80g com caroço.psd', sha256: 'a'.repeat(64) },
+    canvas: { width: 886, height: 1240, resolutionPpi: 150, fit: 'contain' },
+    staticBackground: '',
+    originalPreview: '',
+    priceParts: [
+      wholePart,
+      fractionPart,
+      { role: 'fractionRule', layerId: 'p_rule', bounds: { left: 420, top: 735, right: 710, bottom: 752 }, color: '#c74624' },
+      { role: 'decimal', layerId: 'p_comma', bounds: { left: 430, top: 770, right: 480, bottom: 830 }, color: '#c74624' },
+    ],
+    templateParts: [
+      { role: 'title', layerId: 't_title', bounds: { left: 100, top: 260, right: 760, bottom: 340 }, color: '#000000' },
+      { role: 'complement', layerId: 't_comp', bounds: { left: 140, top: 375, right: 720, bottom: 430 }, color: '#000000' },
+      { role: 'packaging', layerId: 't_pack', bounds: { left: 500, top: 775, right: 680, bottom: 860 }, color: '#000000' },
+    ],
+    layers: [
+      { id: 't_cat', name: 'AZEITONA', type: 'text', visible: true, depth: 0, text: 'AZEITONA', bounds: { left: 80, top: 150, right: 800, bottom: 250 } },
+      { id: 't_title', name: 'ATALAIA', type: 'text', visible: true, depth: 0, text: 'ATALAIA', bounds: { left: 100, top: 260, right: 760, bottom: 340 } },
+      { id: 't_line', name: 'Linha', type: 'vector', visible: true, depth: 0, bounds: { left: 80, top: 350, right: 800, bottom: 362 } },
+      { id: 't_comp', name: 'SACHE / COM CAROÇO', type: 'text', visible: true, depth: 0, text: 'SACHE / COM CAROÇO', bounds: { left: 140, top: 375, right: 720, bottom: 430 } },
+      { id: 'p_whole', name: '2', type: 'text', visible: true, depth: 0, text: '2', bounds: wholePart.bounds },
+      { id: 'p_frac', name: '49', type: 'text', visible: true, depth: 0, text: '49', bounds: fractionPart.bounds },
+      { id: 'p_rule', name: 'Rectangle 3', type: 'vector', visible: true, depth: 0, bounds: { left: 420, top: 735, right: 710, bottom: 752 } },
+      { id: 'p_comma', name: ',', type: 'text', visible: true, depth: 0, text: ',', bounds: { left: 430, top: 770, right: 480, bottom: 830 } },
+      { id: 't_pack', name: '80G', type: 'text', visible: true, depth: 0, text: '80G', bounds: { left: 500, top: 775, right: 680, bottom: 860 } },
+    ],
+    warnings: [],
+  };
+
+  // Sem colisão superior real, o fontSize nativo dos Reais (32) deve ser preservado 100% intacto
+  assert.equal(computeSafePriceFontSize(wholePart, 32, artwork), 32);
+  assert.equal(computeSafePriceFontSize(fractionPart, 32, artwork), 32);
+
+  // Quando há sobreposição real com o sabor superior (complement invadindo o topo do preço), aplica redução suave
+  const overlappingArtwork = structuredClone(artwork);
+  overlappingArtwork.templateParts[1].bounds.bottom = 490;
+  overlappingArtwork.layers[3].bounds.bottom = 490;
+  const adjustedSize = computeSafePriceFontSize(wholePart, 32, overlappingArtwork);
+  assert.ok(adjustedSize < 32 && adjustedSize > 26, `esperado redução suave entre 26 e 32, recebido ${adjustedSize}`);
 });

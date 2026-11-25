@@ -718,6 +718,71 @@ function drawUnBadge(context: CanvasRenderingContext2D, bounds: { left: number; 
   context.restore();
 }
 
+export function computeSafePriceFontSize(
+  part: ImportedPricePart,
+  baseFontSize: number,
+  artwork?: ImportedArtwork
+): number {
+  if (part.role !== 'whole' && part.role !== 'fraction') {
+    return baseFontSize;
+  }
+
+  const wholePart = artwork?.priceParts?.find(p => p.role === 'whole');
+  const fracPart = artwork?.priceParts?.find(p => p.role === 'fraction');
+  const priceBlockTop = Math.min(
+    part.bounds.top,
+    wholePart?.bounds.top ?? part.bounds.top,
+    fracPart?.bounds.top ?? part.bounds.top
+  );
+
+  const excludedIds = new Set<string>();
+  for (const p of artwork?.priceParts || []) {
+    if (p.layerId) excludedIds.add(p.layerId);
+  }
+  for (const p of artwork?.templateParts || []) {
+    if (p.role === 'packaging' && p.layerId) excludedIds.add(p.layerId);
+  }
+
+  const canvasH = artwork?.canvas?.height ?? 1260;
+  const compPart =
+    artwork?.templateParts?.find(p => p.role === 'complement') ||
+    artwork?.priceParts?.find(p => p.role === 'complement');
+  const titlePart =
+    artwork?.templateParts?.find(p => p.role === 'title') ||
+    artwork?.priceParts?.find(p => p.role === 'title');
+
+  const upperLayers = (artwork?.layers || []).filter(l => {
+    if (!l.visible || excludedIds.has(l.id)) return false;
+    const layerH = Math.max(0, l.bounds.bottom - l.bounds.top);
+    if (layerH >= canvasH * 0.45) return false; // ignora fundos / molduras de página inteira
+    // Só considera obstáculo superior camadas que realmente começam acima da faixa de preço
+    return (
+      l.bounds.bottom > 80 &&
+      l.bounds.top < priceBlockTop - 10 &&
+      l.bounds.bottom <= priceBlockTop + 60
+    );
+  });
+
+  const maxLayerBottom =
+    upperLayers.length > 0 ? Math.max(...upperLayers.map(l => l.bounds.bottom)) : 0;
+  const compBottom =
+    compPart && compPart.bounds.top < priceBlockTop - 10 ? compPart.bounds.bottom : 0;
+  const titleBottom =
+    titlePart && titlePart.bounds.top < priceBlockTop - 10 ? titlePart.bounds.bottom : 0;
+  const maxObstacleBottom = Math.max(compBottom, titleBottom, maxLayerBottom);
+
+  if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 16) {
+    const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 16));
+    const currentH = Math.max(1, part.bounds.bottom - part.bounds.top);
+    if (availableH < currentH) {
+      const factor = Math.max(0.55, availableH / currentH);
+      return Number((baseFontSize * factor).toFixed(2));
+    }
+  }
+
+  return baseFontSize;
+}
+
 function drawPart(
   context: CanvasRenderingContext2D,
   part: ImportedPricePart,
@@ -890,24 +955,9 @@ function drawPart(
     }
   }
 
-  // Trava de segurança rigorosa: impede que números subam sobre sabor (complement), título, linha ou outras camadas
-  if (part.role === 'whole' || part.role === 'fraction') {
-    const compPart = artwork?.templateParts?.find(p => p.role === 'complement') || artwork?.priceParts?.find(p => p.role === 'complement');
-    const titlePart = artwork?.templateParts?.find(p => p.role === 'title') || artwork?.priceParts?.find(p => p.role === 'title');
-    const upperLayers = (artwork?.layers || [])
-      .filter(l => l.visible && l.bounds.bottom < part.bounds.bottom - 40 && l.bounds.bottom > 80);
-    const maxLayerBottom = upperLayers.length > 0 ? Math.max(...upperLayers.map(l => l.bounds.bottom)) : 0;
-    const maxObstacleBottom = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0, maxLayerBottom);
-
-    if (maxObstacleBottom > 0 && part.bounds.top < maxObstacleBottom + 20) {
-      const availableH = Math.max(60, part.bounds.bottom - (maxObstacleBottom + 20));
-      const currentH = Math.max(1, part.bounds.bottom - part.bounds.top);
-      if (availableH < currentH) {
-        const factor = availableH / currentH;
-        localFontSize = Math.max(20, Math.round(localFontSize * factor));
-      }
-    }
-  }
+  // Trava de segurança: impede que números subam sobre sabor (complement), título ou linha divisória superior,
+  // ignorando camadas laterais do próprio preço (centavos, traço, vírgula e peso/unidade)
+  localFontSize = computeSafePriceFontSize(part, localFontSize, artwork);
 
   const fontStr = `400 ${localFontSize}px ${resolvedFont}`;
 
