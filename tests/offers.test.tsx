@@ -1419,3 +1419,50 @@ test('Renderização de preço PSD: número de Reais não encolhe por causa dos 
   const adjustedSize = computeSafePriceFontSize(wholePart, 32, overlappingArtwork);
   assert.ok(adjustedSize < 32 && adjustedSize > 26, `esperado redução suave entre 26 e 32, recebido ${adjustedSize}`);
 });
+
+test('Pastas de Ofertas: adicionar múltiplos PSDs de tamanhos diferentes (A6, A5, A4, A3 e 2×2 A3) ao mesmo produto sem substituir', () => {
+  let campaign = createCampaign('OFERTA MULTI TAMANHOS', '2026-11-26');
+  campaign = {
+    ...campaign,
+    items: [
+      {
+        id: 'item-1',
+        rowNumber: 2,
+        f7: '18722',
+        description: 'LEITE L.VIDA LIDER 1L INT',
+        scheduledPriceCents: 499,
+        conflicting: false,
+        issues: [],
+        posters: [],
+      },
+    ],
+  };
+
+  const formatos: Array<{ paper: 'A6' | 'A5' | 'A4' | 'A3' | 'expositor-a3-2x2'; file: string }> = [
+    { paper: 'A6', file: 'C:\\Skalee\\leite-lider [A6].skcartaz' },
+    { paper: 'A5', file: 'C:\\Skalee\\leite-lider [A5].skcartaz' },
+    { paper: 'A4', file: 'C:\\Skalee\\leite-lider [A4].skcartaz' },
+    { paper: 'A3', file: 'C:\\Skalee\\leite-lider [A3].skcartaz' },
+    { paper: 'expositor-a3-2x2', file: 'C:\\Skalee\\leite-lider [2x2].skcartaz' },
+  ];
+
+  for (const { paper, file } of formatos) {
+    const doc = createDocument();
+    doc.product.name = 'LEITE LIDER';
+    doc.product.productCode = '18722';
+    doc.product.priceCents = 499;
+    doc.layout.paper = paper;
+    campaign = linkSavedPosterToCampaignItem(campaign, 'item-1', file, doc, false);
+  }
+
+  assert.equal(campaign.items[0].posters.length, 5);
+  assert.deepEqual(
+    campaign.items[0].posters.map(p => p.cartazPath),
+    formatos.map(f => f.file)
+  );
+
+  // Desvincular apenas o A4 mantém os outros 4 tamanhos intactos
+  campaign = unlinkPosterFromCampaignItem(campaign, 'item-1', 'C:\\Skalee\\leite-lider [A4].skcartaz');
+  assert.equal(campaign.items[0].posters.length, 4);
+  assert.ok(!campaign.items[0].posters.some(p => p.cartazPath.includes('[A4]')));
+});

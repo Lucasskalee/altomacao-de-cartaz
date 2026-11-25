@@ -39,7 +39,8 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
   const [name, setName] = useState(excelSuggestion?.name ?? '');
   const [complement, setComplement] = useState(excelSuggestion?.complement ?? '');
   const [unit, setUnit] = useState(excelSuggestion?.unit ?? '');
-  const [paper, setPaper] = useState<PaperFormat>('A6');
+  const [paper, setPaper] = useState<PaperFormat>(offerContext?.initialPaper ?? 'A6');
+  const [paperChosenManually, setPaperChosenManually] = useState(false);
   const [f7, setF7] = useState(offerContext ? offerContext.productCode : '');
   const [price, setPrice] = useState(offerContext ? centsToBr(offerContext.futurePriceCents) : '');
   const [psdBasePrice, setPsdBasePrice] = useState('');
@@ -82,7 +83,9 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
       setAnalysis(result);
       setRoles(result.suggested);
       const detectedPaper = detectPsdPaperFormat(selected.name, excelSuggestion?.name || offerContext?.description);
-      setPaper(detectedPaper);
+      if (!paperChosenManually) {
+        setPaper(detectedPaper);
+      }
       // Preserva textos artísticos reais do PSD; usa descrição do Excel apenas como fallback se o PSD não tiver camada reconhecida
       setName(result.metadata.name || excelSuggestion?.name || '');
       setComplement(
@@ -161,9 +164,17 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
       document.layout = { template: 'imported-psd', paper, orientation: 'portrait', artwork };
       document.metadata = { ...document.metadata, createdAt: now, updatedAt: now };
 
-      const suggestedName = analysis?.fileName
+      const baseSuggestedName = analysis?.fileName
         ? psdFileNameToCartazFileName(analysis.fileName)
         : fileName(`${name}-${complement}`);
+      let suggestedName = baseSuggestedName;
+      if (offerContext?.mode === 'add') {
+        const sizeLabel = paper === 'expositor-a3-2x2' ? '2x2' : paper;
+        const sizeTagRegex = new RegExp(`(?:\\[|\\(|\\b)${sizeLabel}(?:\\]|\\)|\\b)`, 'i');
+        if (!sizeTagRegex.test(baseSuggestedName)) {
+          suggestedName = baseSuggestedName.replace(/\.skcartaz$/i, ` [${sizeLabel}].skcartaz`);
+        }
+      }
       const path = await chooseSave(suggestedName);
       if (!path) return;
       await saveDocument(path, document);
@@ -194,9 +205,17 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
         <div className="psd-title">
           <div>
             <h2 id="psd-title">
-              {offerContext ? 'Importar arte PSD para Pasta de Ofertas' : 'Importar arte PSD'}
+              {offerContext?.mode === 'add'
+                ? 'Adicionar outro PSD (outro tamanho) ao produto'
+                : offerContext
+                  ? 'Importar arte PSD para Pasta de Ofertas'
+                  : 'Importar arte PSD'}
             </h2>
-            <p>O arquivo original será apenas lido. A arte salva ficará independente dele.</p>
+            <p>
+              {offerContext?.mode === 'add'
+                ? 'Este novo PSD será adicionado ao mesmo produto sem substituir os tamanhos já vinculados.'
+                : 'O arquivo original será apenas lido. A arte salva ficará independente dele.'}
+            </p>
           </div>
           <button className="subtle" disabled={busy} onClick={close}>
             Fechar
@@ -231,6 +250,37 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
 
         {!analysis ? (
           <div className="psd-empty">
+            {offerContext?.mode === 'add' && (
+              <div
+                style={{
+                  maxWidth: 360,
+                  margin: '0 auto 16px',
+                  padding: '12px 14px',
+                  background: '#eff6ff',
+                  border: '1px solid #93c5fd',
+                  borderRadius: 10,
+                  textAlign: 'left',
+                }}
+              >
+                <label style={{ display: 'block', fontSize: 12.5, fontWeight: 700, color: '#1e3a8a' }}>
+                  Tamanho deste novo cartaz PSD
+                  <select
+                    value={paper}
+                    onChange={event => {
+                      setPaper(event.target.value as PaperFormat);
+                      setPaperChosenManually(true);
+                    }}
+                    style={{ width: '100%', marginTop: 6, height: 40, borderRadius: 8, padding: '0 10px' }}
+                  >
+                    <option value="A6">🏷️ Pequenos (A6)</option>
+                    <option value="A5">📐 Médios (A5)</option>
+                    <option value="A4">📄 Cartaz A4</option>
+                    <option value="A3">🥩 Açougue (A3)</option>
+                    <option value="expositor-a3-2x2">🏢 Externos (2×2 A3)</option>
+                  </select>
+                </label>
+              </div>
+            )}
             <button disabled={busy} onClick={() => void select()}>
               {busy ? 'Analisando…' : 'Selecionar arquivo PSD'}
             </button>
@@ -348,14 +398,25 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
                   }}
                 />
               </label>
-              <label>
-                Formato do cartaz
-                <select value={paper} onChange={event => setPaper(event.target.value as PaperFormat)}>
-                  <option value="A5">📐 Médios (A5)</option>
+              <label style={offerContext?.mode === 'add' ? { color: '#1d4ed8' } : undefined}>
+                {offerContext?.mode === 'add' ? 'Tamanho do cartaz (obrigatório)' : 'Formato do cartaz'}
+                <select
+                  value={paper}
+                  onChange={event => {
+                    setPaper(event.target.value as PaperFormat);
+                    setPaperChosenManually(true);
+                  }}
+                  style={
+                    offerContext?.mode === 'add'
+                      ? { borderColor: '#2563eb', background: '#eff6ff', fontWeight: 700 }
+                      : undefined
+                  }
+                >
                   <option value="A6">🏷️ Pequenos (A6)</option>
+                  <option value="A5">📐 Médios (A5)</option>
                   <option value="A4">📄 Cartaz A4</option>
                   <option value="A3">🥩 Açougue (A3)</option>
-                  <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
+                  <option value="expositor-a3-2x2">🏢 Externos (2×2 A3)</option>
                 </select>
               </label>
             </fieldset>
@@ -438,7 +499,11 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
                     .finally(() => setBusy(false));
                 }}
               >
-                {busy ? 'Salvando…' : 'Salvar cartaz importado'}
+                {busy
+                  ? 'Salvando…'
+                  : offerContext?.mode === 'add'
+                    ? 'Salvar e adicionar tamanho à oferta'
+                    : 'Salvar cartaz importado'}
               </button>
               <button className="subtle" disabled={busy} onClick={close}>
                 Cancelar

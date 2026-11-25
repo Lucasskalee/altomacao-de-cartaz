@@ -1,4 +1,4 @@
-import type { Cartaz } from '../cartazes/types';
+import type { Cartaz, PaperFormat } from '../cartazes/types';
 import type { IndexedCartaz } from '../cartazes/f7';
 import type { ScannedPsdEntry } from '../scantech/types';
 import type { ColumnMapping } from './excel';
@@ -65,6 +65,8 @@ export type PsdImportOfferContext = {
   productCode: string;
   description: string;
   futurePriceCents: number;
+  mode?: 'replace' | 'add';
+  initialPaper?: PaperFormat;
 };
 
 export type PsdSuggestionReason = 'f7-exact' | 'description-similar' | 'no-suggestion';

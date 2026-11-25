@@ -3,7 +3,7 @@ import { PosterView, type Poster } from '../editor/PosterView';
 import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { indexCartazes, type IndexedCartaz } from '../../features/cartazes/f7';
-import { chooseSave, saveDocument, saveExportDocument } from '../../features/cartazes/storage';
+import { chooseSave, remove as removeLibraryFile, saveDocument, saveExportDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
 import {
   columnLetter,
@@ -862,23 +862,43 @@ export function OfferFolders({
 
   const handlePsdSavedForOffer = async (path: string, savedDocument: Cartaz) => {
     if (!activeCampaign || !psdOfferContext) return;
+    const replaceExisting = psdOfferContext.mode !== 'add';
     const linked = linkSavedPosterToCampaignItem(
       activeCampaign,
       psdOfferContext.offerItemId,
       path,
       savedDocument,
-      true // replaceExisting = true: substitui qualquer arte de referência anterior desse produto
+      replaceExisting
     );
     await persistUpdate(linked);
     if (onRefreshLibrary) await onRefreshLibrary();
     setPreviewKey(`${psdOfferContext.offerItemId}::${path}`);
   };
 
-  const handleLinkLibraryPoster = async (offerItemId: string, poster: IndexedCartaz) => {
+  const handleLinkLibraryPoster = async (offerItemId: string, poster: IndexedCartaz, replaceExisting = false) => {
     if (!activeCampaign) return;
-    const linked = linkSavedPosterToCampaignItem(activeCampaign, offerItemId, poster.path, poster.document, true);
+    const linked = linkSavedPosterToCampaignItem(activeCampaign, offerItemId, poster.path, poster.document, replaceExisting);
     await persistUpdate(linked);
     setPreviewKey(`${offerItemId}::${poster.path}`);
+  };
+
+  const handleDeleteLibraryPoster = async (posterPath: string) => {
+    await removeLibraryFile(posterPath);
+    if (previewKey && previewKey.endsWith(`::${posterPath}`)) {
+      setPreviewKey(null);
+    }
+    if (onRefreshLibrary) await onRefreshLibrary();
+  };
+
+  const handleRemoveMissingItems = async () => {
+    if (!activeCampaign) return;
+    const missingIds = new Set(matchViews.filter(v => v.missingPoster).map(v => v.item.id));
+    if (missingIds.size === 0) return;
+    let updated = activeCampaign;
+    for (const itemId of missingIds) {
+      updated = removeCampaignItem(updated, itemId);
+    }
+    await persistUpdate(updated);
   };
 
   const handleRepairInvertedPoster = async (cartazPath: string, doc: Cartaz) => {
@@ -1950,6 +1970,25 @@ export function OfferFolders({
                       <option value="pendente">Status: Pendente</option>
                       <option value="impresso">Status: Impresso</option>
                     </select>
+                    {campaignStats.missing > 0 && (
+                      <button
+                        type="button"
+                        className="subtle"
+                        style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', fontWeight: 700, whiteSpace: 'nowrap' }}
+                        title="Remover da pasta de ofertas todos os produtos que estão sem cartaz vinculado"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Remover ${campaignStats.missing} produto(s) sem cartaz vinculado desta pasta de ofertas?`
+                            )
+                          ) {
+                            run(() => handleRemoveMissingItems());
+                          }
+                        }}
+                      >
+                        🗑️ Apagar sem cartaz ({campaignStats.missing})
+                      </button>
+                    )}
                   </div>
 
                   <div className="offer-workspace">
@@ -2204,6 +2243,7 @@ export function OfferFolders({
                                         : v.matchedPosters.filter(m => {
                                             if (!m.libraryCartaz) return true;
                                             const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+                                            if (formatTab === 'A5-flv') return fmt === 'A5';
                                             return fmt === formatTab;
                                           });
 
@@ -2719,6 +2759,33 @@ export function OfferFolders({
                                                   <button
                                                     type="button"
                                                     className="subtle"
+                                                    style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, border: '1px solid #86efac', background: '#f0fdf4' }}
+                                                    title="Adicionar mais 1 arte PSD (em A6, A5, A4, A3 ou 2×2 A3) para este mesmo produto sem substituir a atual"
+                                                    onClick={e => {
+                                                      e.stopPropagation();
+                                                      const existingFormats = new Set(
+                                                        v.matchedPosters.map(p =>
+                                                          getPosterPaperFormat(p.scheduledDocument || p.libraryCartaz?.document, p.state.cartazPath)
+                                                        )
+                                                      );
+                                                      const formatOrder: PaperFormat[] = ['A6', 'A5', 'A4', 'A3', 'expositor-a3-2x2'];
+                                                      const nextSuggested = formatOrder.find(f => !existingFormats.has(f)) ?? 'A5';
+                                                      setPsdOfferContext({
+                                                        folderId: activeCampaign.id,
+                                                        offerItemId: v.item.id,
+                                                        productCode: v.item.f7,
+                                                        description: v.item.description,
+                                                        futurePriceCents: v.item.scheduledPriceCents,
+                                                        mode: 'add',
+                                                        initialPaper: nextSuggested,
+                                                      });
+                                                    }}
+                                                  >
+                                                    ➕ Adicionar outro PSD
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    className="subtle"
                                                     style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600 }}
                                                     title="Trocar a imagem / arte de referência deste produto por outro PSD"
                                                     onClick={e => {
@@ -2729,6 +2796,7 @@ export function OfferFolders({
                                                         productCode: v.item.f7,
                                                         description: v.item.description,
                                                         futurePriceCents: v.item.scheduledPriceCents,
+                                                        mode: 'replace',
                                                       });
                                                     }}
                                                   >
@@ -2934,17 +3002,34 @@ export function OfferFolders({
                                                             ({getPosterPaperFormat(poster.document, poster.path)})
                                                           </span>
                                                         </span>
-                                                        <button
-                                                          type="button"
-                                                          className="subtle"
-                                                          style={{ padding: '3px 8px', fontSize: 11.5, color: '#16a34a', fontWeight: 600 }}
-                                                          onClick={e => {
-                                                            e.stopPropagation();
-                                                            run(() => handleLinkLibraryPoster(v.item.id, poster));
-                                                          }}
-                                                        >
-                                                          Vincular cartaz
-                                                        </button>
+                                                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '3px 8px', fontSize: 11.5, color: '#16a34a', fontWeight: 600 }}
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              run(() => handleLinkLibraryPoster(v.item.id, poster, false));
+                                                            }}
+                                                          >
+                                                            Vincular cartaz
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            className="subtle"
+                                                            style={{ padding: '3px 8px', fontSize: 11.5, color: '#dc2626', fontWeight: 600 }}
+                                                            title="Apagar definitivamente este cartaz desvinculado da biblioteca"
+                                                            onClick={e => {
+                                                              e.stopPropagation();
+                                                              const fileLabel = poster.path.split(/[\\/]/).pop() || poster.path;
+                                                              if (window.confirm(`Apagar definitivamente o cartaz "${fileLabel}" da biblioteca?`)) {
+                                                                run(() => handleDeleteLibraryPoster(poster.path));
+                                                              }
+                                                            }}
+                                                          >
+                                                            🗑️ Apagar
+                                                          </button>
+                                                        </div>
                                                       </div>
                                                     ))}
                                                   </div>
@@ -2966,13 +3051,29 @@ export function OfferFolders({
                                         <small>
                                           F7 {v.item.f7} · {poster.path}
                                         </small>
-                                        <button
-                                          className="subtle"
-                                          style={{ padding: '5px 10px', fontSize: 12 }}
-                                          onClick={() => run(() => handleLinkLibraryPoster(v.item.id, poster))}
-                                        >
-                                          Vincular cartaz
-                                        </button>
+                                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                                          <button
+                                            className="subtle"
+                                            style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600 }}
+                                            onClick={() => run(() => handleLinkLibraryPoster(v.item.id, poster, false))}
+                                          >
+                                            Vincular cartaz
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="subtle"
+                                            style={{ padding: '5px 10px', fontSize: 12, color: '#dc2626', fontWeight: 600 }}
+                                            title="Apagar definitivamente este cartaz desvinculado da biblioteca"
+                                            onClick={() => {
+                                              const fileLabel = poster.path.split(/[\\/]/).pop() || poster.path;
+                                              if (window.confirm(`Apagar definitivamente o cartaz "${fileLabel}" da biblioteca?`)) {
+                                                run(() => handleDeleteLibraryPoster(poster.path));
+                                              }
+                                            }}
+                                          >
+                                            🗑️ Apagar cartaz
+                                          </button>
+                                        </div>
                                       </div>
                                     ))}
                                   </div>
