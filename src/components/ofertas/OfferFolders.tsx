@@ -3358,9 +3358,9 @@ export function OfferFolders({
                             type="button"
                             style={{
                               width: '100%',
-                              marginBottom: 8,
-                              padding: '9px 12px',
-                              fontSize: 13,
+                              marginBottom: 7,
+                              padding: '8px 10px',
+                              fontSize: 12,
                               fontWeight: 700,
                               background: '#16a34a',
                               color: '#ffffff',
@@ -3372,6 +3372,7 @@ export function OfferFolders({
                               gap: 6,
                               border: 'none',
                               boxShadow: '0 2px 4px rgba(22,163,74,0.3)',
+                              whiteSpace: 'nowrap',
                             }}
                             title="Imprimir 1 teste deste cartaz na impressora agora"
                             onClick={() => {
@@ -3383,15 +3384,15 @@ export function OfferFolders({
                               );
                             }}
                           >
-                            🖨️ Imprimir este Cartaz (Teste na Impressora)
+                            🖨️ Imprimir este Cartaz (Teste)
                           </button>
                           <button
                             type="button"
                             style={{
                               width: '100%',
-                              marginBottom: 10,
-                              padding: '9px 12px',
-                              fontSize: 13,
+                              marginBottom: 9,
+                              padding: '8px 10px',
+                              fontSize: 12,
                               fontWeight: 700,
                               background: '#0284c7',
                               color: '#ffffff',
@@ -3403,6 +3404,7 @@ export function OfferFolders({
                               gap: 6,
                               border: 'none',
                               boxShadow: '0 2px 4px rgba(2,132,199,0.3)',
+                              whiteSpace: 'nowrap',
                             }}
                             title="Exportar arquivo PSD editável deste cartaz selecionando uma pasta de destino"
                             onClick={() => {

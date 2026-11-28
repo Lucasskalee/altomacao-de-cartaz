@@ -4577,6 +4577,56 @@ header:not(.sk-header){height:78px;padding:0 36px;background:#101b33;color:white
   border-radius: 10px;
 }
 
+.offer-preview-box .paper-wrap {
+  padding: 12px;
+  height: 404px;
+  min-height: 404px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.offer-preview-box .poster:not(.imported-poster) {
+  width: 444px !important;
+  height: 630px !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform: scale(0.58);
+  transform-origin: center center;
+  margin: -132px -93px;
+  flex-shrink: 0;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.offer-preview-box .poster.imported-poster {
+  transform: none;
+  margin: 0 auto;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.offer-preview-box .poster.imported-poster canvas {
+  max-width: 100% !important;
+  max-height: 380px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain;
+  display: block;
+}
+
 .sk-offer-preview-meta {
   background: #ffffff;
   border: 1px solid #e2e8f0;
