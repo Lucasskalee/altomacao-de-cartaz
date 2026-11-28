@@ -6,12 +6,18 @@ export type ImportedLayerInfo = {
   visible: boolean; depth: number; text?: string; font?: string;
   bounds: { left: number; top: number; right: number; bottom: number };
 };
+export type PartAdjustment = {
+  dx?: number;
+  dy?: number;
+  scale?: number;
+};
 export type ImportedPricePart = {
   role: ImportedRole; layerId: string;
   bounds: { left: number; top: number; right: number; bottom: number };
   fontFamily?: string; fontSize?: number; originalText?: string; transform?: [number,number,number,number,number,number];
   color: string; shadow?: { dx: number; dy: number; blur: number; color: string };
   stroke?: { size: number; color: string };
+  adjustments?: PartAdjustment;
 };
 export type PosterTemplateModel = 'oferta' | 'destaque' | 'vencimento' | 'scantech' | 'caixa';
 
@@ -30,10 +36,38 @@ export type LayoutOrientation = 'portrait' | 'landscape';
 export type ClassicLayout = { template: 'oferta-classica'; paper: PaperFormat; orientation: LayoutOrientation; customWidthMm?: number; customHeightMm?: number; [key: string]: unknown };
 export type ImportedLayout = { template: 'imported-psd'; paper: PaperFormat; orientation: LayoutOrientation; customWidthMm?: number; customHeightMm?: number; artwork: ImportedArtwork; [key: string]: unknown };
 
+export type BoxPackageType = 'caixa' | 'fardo';
+export type UnitBadgeMode = 'auto' | 'un' | 'text';
+export type ProductImageAsset = {
+  dataUrl: string;
+  fileName?: string;
+  bounds?: { left: number; top: number; right: number; bottom: number };
+};
+
+export type CartazProduct = {
+  name: string;
+  complement: string;
+  priceCents: number;
+  unit: string;
+  productCode?: string | null;
+  category?: string;
+  validityText?: string;
+  hasBoxPrice?: boolean;
+  boxQuantity?: number;
+  boxUnitLabel?: string;
+  boxPriceCents?: number;
+  boxPackageType?: BoxPackageType;
+  boxPackageLabel?: string;
+  unitBadgeMode?: UnitBadgeMode;
+  productImage?: ProductImageAsset;
+  posterModel?: PosterTemplateModel;
+  [key: string]: unknown;
+};
+
 export type Cartaz = {
   schemaVersion: 1;
   id: string;
-  product: { name: string; complement: string; priceCents: number; unit: string; productCode?: string | null; [key: string]: unknown };
+  product: CartazProduct;
   layout: ClassicLayout | ImportedLayout;
   metadata: { createdAt: string; updatedAt: string; [key: string]: unknown };
   [key: string]: unknown;

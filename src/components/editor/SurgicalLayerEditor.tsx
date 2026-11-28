@@ -1,14 +1,16 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import type { Cartaz, PosterTemplateModel } from '../../features/cartazes/types';
 import type { PosterFormatConfig } from '../../features/formatos/types';
-import { posterFromDocument } from '../../features/cartazes/presentation';
+import { formatCentsBr, posterFromDocument } from '../../features/cartazes/presentation';
+import { priceToCents } from '../../features/cartazes/validation';
 import { PosterView, type Poster } from './PosterView';
 import './SurgicalLayerEditor.css';
 
 type Props = {
   document: Cartaz;
+  price?: string;
   activeFormat: PosterFormatConfig;
-  onChangeField: (key: string, value: any) => void;
+  onChangeField: (key: string, value: unknown) => void;
   onExportPsd: (openPhotoshop?: boolean) => Promise<void>;
   onSwitchModel?: (targetModel: PosterTemplateModel) => Promise<boolean>;
   onClose: () => void;
@@ -17,6 +19,7 @@ type Props = {
 
 export function SurgicalLayerEditor({
   document,
+  price,
   activeFormat,
   onChangeField,
   onExportPsd,
@@ -26,28 +29,39 @@ export function SurgicalLayerEditor({
 }: Props) {
   const [zoom, setZoom] = useState(78);
   const [showGuides, setShowGuides] = useState(true);
+  const [boxPriceDraft, setBoxPriceDraft] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const product = document.product as any;
+  const product = document.product;
   const artwork = document.layout.template === 'imported-psd' ? document.layout.artwork : undefined;
   const canvasW = artwork?.canvas?.width ?? 1080;
   const canvasH = artwork?.canvas?.height ?? 1350;
 
-  const basePoster = useMemo(() => posterFromDocument(document), [document]);
+  const effectivePrice = price ?? formatCentsBr(product.priceCents);
+  const effectiveUnitCents = useMemo(() => {
+    try {
+      return priceToCents(effectivePrice);
+    } catch {
+      return product.priceCents;
+    }
+  }, [effectivePrice, product.priceCents]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isBusy) {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isBusy, onClose]);
+
+  const basePoster = useMemo(() => posterFromDocument(document, effectivePrice), [document, effectivePrice]);
   const poster: Poster = useMemo(() => ({
     ...basePoster,
     showSurgicalGuides: showGuides,
-    productImage: product.productImage,
-    hasBoxPrice: Boolean(product.hasBoxPrice),
-    boxQuantity: Number(product.boxQuantity) || 12,
-    boxUnitLabel: product.boxUnitLabel || 'UND.',
-    boxPackageType: (product.boxPackageType as 'caixa' | 'fardo') || 'caixa',
-    boxPackageLabel: product.boxPackageLabel,
-    unitBadgeMode: product.unitBadgeMode,
-    boxPrice: product.hasBoxPrice && product.boxPriceCents
-      ? (product.boxPriceCents / 100).toFixed(2).replace('.', ',')
-      : undefined,
-  }), [basePoster, showGuides, product.productImage, product.hasBoxPrice, product.boxQuantity, product.boxUnitLabel, product.boxPriceCents, product.boxPackageType, product.boxPackageLabel, product.unitBadgeMode]);
+  }), [basePoster, showGuides]);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -69,7 +83,13 @@ export function SurgicalLayerEditor({
     onChangeField('productImage', undefined);
   };
 
-  const priceValue = (product.priceCents / 100).toFixed(2).replace('.', ',');
+  const boxQuantity = Number(product.boxQuantity) || 12;
+  const boxPriceDisplay =
+    boxPriceDraft !== null
+      ? boxPriceDraft
+      : product.boxPriceCents
+        ? formatCentsBr(product.boxPriceCents)
+        : formatCentsBr(effectiveUnitCents * boxQuantity);
 
   return (
     <div className="sk-surgical-container" role="dialog" aria-label="Editor Cirúrgico de Camadas">
@@ -77,17 +97,18 @@ export function SurgicalLayerEditor({
       <header className="sk-surgical-topbar">
         <div className="sk-surgical-topbar-left">
           <span className="sk-surgical-breadcrumb">
-            Projetos / <strong>{product.name || 'Encarte_Semanal_Modelo_PSD'}</strong>
+            Editor / <strong>{product.name || 'Cartaz PSD'}</strong>
           </span>
-          <span className="sk-surgical-badge-local">Salvo no Computador (PSD)</span>
+          <span className="sk-surgical-meta-sep" aria-hidden="true">·</span>
+          <span className="sk-surgical-meta-text">
+            {canvasW}×{canvasH}px
+          </span>
         </div>
 
-        <div className="sk-surgical-guide-pill" title="Indicação visual de camadas editáveis vs travadas">
-          <span>📐 Padrão: {canvasW}x{canvasH}px</span>
-          <span>|</span>
-          <span className="green-text">Zonas Verdes = Editáveis</span>
-          <span>|</span>
-          <span className="red-text">Vermelhas = Travadas</span>
+        <div className="sk-surgical-guide-legend" title="Indicação visual de camadas editáveis vs travadas">
+          <span className="green-text">Editáveis</span>
+          <span aria-hidden="true">·</span>
+          <span className="red-text">Travadas</span>
         </div>
 
         <div className="sk-surgical-topbar-right">
@@ -114,10 +135,11 @@ export function SurgicalLayerEditor({
           <button
             type="button"
             className="sk-surgical-btn-close"
+            disabled={isBusy}
             onClick={onClose}
-            title="Voltar ao Editor Convencional"
+            title="Voltar ao Editor Principal (Esc)"
           >
-            ✕ Fechar
+            ✕ Voltar ao Editor
           </button>
         </div>
       </header>
@@ -261,17 +283,16 @@ export function SurgicalLayerEditor({
               <div className="sk-surgical-input-wrap">
                 <input
                   type="text"
+                  inputMode="decimal"
                   className="sk-surgical-input"
-                  value={priceValue}
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                  value={effectivePrice}
                   onChange={e => {
-                    const raw = e.target.value.replace(/[^\d,]/g, '');
-                    const [w = '0', f = '00'] = raw.split(',');
-                    const cents = (parseInt(w, 10) || 0) * 100 + (parseInt(f.padEnd(2, '0').slice(0, 2), 10) || 0);
-                    onChangeField('priceCents', cents);
+                    onChangeField('price', e.target.value);
                   }}
                   placeholder="0,00"
                 />
-                <span className="sk-surgical-char-counter">2/$</span>
+                <span className="sk-surgical-char-counter">R$</span>
               </div>
 
               <select
@@ -279,16 +300,38 @@ export function SurgicalLayerEditor({
                 value={product.unit || 'UN'}
                 onChange={e => onChangeField('unit', e.target.value)}
               >
-                <option value="UN">UN</option>
-                <option value="KG">KG</option>
-                <option value="L">L</option>
-                <option value="PCT">PCT</option>
-                <option value="CX">CX</option>
+                {Array.from(new Set(['UN', 'KG', 'LT', 'L', 'PCT', 'CX', product.unit || 'UN'])).map(unit => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
 
-          {/* Card 5: Caixa Fechada (Atacado) se ativo */}
+          {/* Card 5: Validade (modo Vencimento) ou Caixa Fechada (Oferta / Caixa) */}
+          {artwork?.posterModel === 'vencimento' ? (
+            <div className="sk-surgical-card editable">
+              <div className="sk-surgical-card-head">
+                <span className="sk-surgical-card-title">
+                  Validade — Próximo ao Vencimento
+                </span>
+              </div>
+              <input
+                type="text"
+                className="sk-surgical-input"
+                style={{ fontVariantNumeric: 'tabular-nums' }}
+                value={product.validityText || ''}
+                onChange={e => onChangeField('validityText', e.target.value)}
+                placeholder="Ex: 02/12 ou 28/10"
+              />
+              <div className="sk-surgical-meta" style={{ marginTop: 8 }}>
+                <span>Rodapé oficial</span>
+                <span>·</span>
+                <span>Item próximo ao vencimento · Não efetuamos a troca</span>
+              </div>
+            </div>
+          ) : (
           <div className="sk-surgical-card editable">
             <div className="sk-surgical-card-head">
               <span className="sk-surgical-card-title">
@@ -302,8 +345,8 @@ export function SurgicalLayerEditor({
                     const checked = e.target.checked;
                     onChangeField('hasBoxPrice', checked);
                     if (checked && !product.boxPriceCents) {
-                      const qty = Number(product.boxQuantity) || 12;
-                      onChangeField('boxPriceCents', product.priceCents * qty);
+                      setBoxPriceDraft(null);
+                      onChangeField('boxPriceCents', effectiveUnitCents * boxQuantity);
                     }
                     if (onSwitchModel) {
                       await onSwitchModel(checked ? 'caixa' : 'oferta');
@@ -325,7 +368,7 @@ export function SurgicalLayerEditor({
                       checked={product.boxPackageType !== 'fardo'}
                       onChange={() => onChangeField('boxPackageType', 'caixa')}
                     />
-                    📦 Caixa
+                    Caixa
                   </label>
                   <label style={{ fontSize: 11, color: '#e2e8f0', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
                     <input
@@ -334,12 +377,12 @@ export function SurgicalLayerEditor({
                       checked={product.boxPackageType === 'fardo'}
                       onChange={() => onChangeField('boxPackageType', 'fardo')}
                     />
-                    📦 Fardo
+                    Fardo
                   </label>
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 11, color: '#94a3b8' }}>Selo Unitário:</span>
+                  <span style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap' }}>Selo Unitário:</span>
                   <select
                     className="sk-surgical-input"
                     style={{ padding: '4px 8px', fontSize: 11 }}
@@ -358,13 +401,14 @@ export function SurgicalLayerEditor({
                     <input
                       type="number"
                       className="sk-surgical-input"
-                      style={{ padding: '8px' }}
-                      value={product.boxQuantity || 12}
+                      style={{ padding: '8px', fontVariantNumeric: 'tabular-nums' }}
+                      value={boxQuantity}
                       min={1}
                       onChange={e => {
-                        const q = parseInt(e.target.value, 10) || 1;
+                        const q = Math.max(1, parseInt(e.target.value, 10) || 1);
+                        setBoxPriceDraft(null);
                         onChangeField('boxQuantity', q);
-                        onChangeField('boxPriceCents', product.priceCents * q);
+                        onChangeField('boxPriceCents', effectiveUnitCents * q);
                       }}
                       placeholder="Qtd"
                     />
@@ -384,15 +428,20 @@ export function SurgicalLayerEditor({
                     <label style={{ fontSize: 10, color: '#94a3b8', display: 'block', marginBottom: 2 }}>Preço da Caixa (R$)</label>
                     <input
                       type="text"
+                      inputMode="decimal"
                       className="sk-surgical-input"
-                      style={{ padding: '8px' }}
-                      value={product.boxPriceCents ? (product.boxPriceCents / 100).toFixed(2).replace('.', ',') : ''}
+                      style={{ padding: '8px', fontVariantNumeric: 'tabular-nums' }}
+                      value={boxPriceDisplay}
                       onChange={e => {
-                        const raw = e.target.value.replace(/[^\d,]/g, '');
-                        const [w = '0', f = '00'] = raw.split(',');
-                        const cents = (parseInt(w, 10) || 0) * 100 + (parseInt(f.padEnd(2, '0').slice(0, 2), 10) || 0);
-                        onChangeField('boxPriceCents', cents);
+                        const val = e.target.value;
+                        setBoxPriceDraft(val);
+                        try {
+                          onChangeField('boxPriceCents', priceToCents(val));
+                        } catch {
+                          // Aguarda digitação completa
+                        }
                       }}
+                      onBlur={() => setBoxPriceDraft(null)}
                       placeholder="Total Caixa"
                     />
                   </div>
@@ -404,22 +453,24 @@ export function SurgicalLayerEditor({
                     border: '1px solid #334155',
                     color: '#cbd5e1',
                     fontSize: 11,
-                    padding: '4px 8px',
-                    borderRadius: 4,
+                    padding: '5px 10px',
+                    borderRadius: 6,
                     cursor: 'pointer',
                     alignSelf: 'flex-start',
+                    fontVariantNumeric: 'tabular-nums',
                   }}
                   onClick={() => {
-                    const q = Number(product.boxQuantity) || 12;
-                    onChangeField('boxPriceCents', product.priceCents * q);
+                    setBoxPriceDraft(null);
+                    onChangeField('boxPriceCents', effectiveUnitCents * boxQuantity);
                   }}
                   title="Recalcula Preço da Caixa = Preço Unitário × Quantidade"
                 >
-                  ⚡ Recalcular Automático (R$ {((product.priceCents * (Number(product.boxQuantity) || 12)) / 100).toFixed(2).replace('.', ',')})
+                  Recalcular Automático (R$ {formatCentsBr(effectiveUnitCents * boxQuantity)})
                 </button>
               </div>
             )}
           </div>
+          )}
 
           {/* Rodapé de Ações Cirúrgicas */}
           <footer className="sk-surgical-footer">

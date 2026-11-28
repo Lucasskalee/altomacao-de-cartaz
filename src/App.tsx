@@ -4,15 +4,26 @@ import { SurgicalLayerEditor } from './components/editor/SurgicalLayerEditor';
 import { exportPng } from './components/editor/exportPng';
 import { Library } from './components/library/Library';
 import { useCartaz } from './hooks/useCartaz';
-import { listFiles } from './features/cartazes/storage';
+import { listFiles, removeLibraryEntry, upsertLibraryEntry } from './features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from './features/cartazes/types';
 import { F7Field } from './components/editor/F7Field';
 import { useF7Matches } from './hooks/useF7Matches';
 import { formatCentsBr, posterFromDocument } from './features/cartazes/presentation';
 import { PriceImport } from './components/importacao/PriceImport';
-import { OfferFolders } from './components/ofertas/OfferFolders';
+import { OfferFolders, type BatchEditItem } from './components/ofertas/OfferFolders';
+import type { OfferCampaign } from './features/ofertas/types';
 import { ScantechCreator } from './components/scantech/ScantechCreator';
-import { hasInvertedPsdPriceParts, importedPriceWarning, repairInvertedPsdArtwork } from './components/editor/importedRenderer';
+import {
+  clampPartAdjustment,
+  computeHorizontalCenterDx,
+  getEditableParts,
+  getPartKey,
+  hasInvertedPsdPriceParts,
+  importedPriceWarning,
+  isPriceGroupRole,
+  PART_ROLE_LABELS,
+  repairInvertedPsdArtwork,
+} from './components/editor/importedRenderer';
 import { PrintConductor } from './components/condutor/PrintConductor';
 import { createQueueItemFromCartaz, createQueueItemFromPoster, findDuplicateInQueue } from './features/condutor/service';
 import type { ConductorQueueItem } from './features/condutor/types';
@@ -34,6 +45,18 @@ import { exportDerivedPsdDirect } from './features/scantech/directExport';
 import { fetchTemplateBuffer } from './features/psd/templateService';
 import { chooseSave } from './features/cartazes/storage';
 import { openInPhotoshop } from './features/psd/service';
+import { ConfirmModal, type ConfirmDialogRequest } from './components/common/ConfirmModal';
+import { ShortcutsModal } from './components/common/ShortcutsModal';
+import {
+  createDebouncedAsyncSaver,
+  INITIAL_ASYNC_SAVE_STATE,
+  type AsyncSaveProgress,
+  type AsyncSaveState,
+  type DebouncedAsyncSaver,
+} from './features/cartazes/asyncSave';
+import { useMarqueeSelection } from './hooks/useMarqueeSelection';
+
+export { useMarqueeSelection };
 
 const EditLinkedPsd = lazy(() =>
   import('./components/ofertas/EditLinkedPsd').then(module => ({ default: module.EditLinkedPsd }))
@@ -77,35 +100,208 @@ function getDemoLibrary(): LibraryData {
   };
 }
 
+function getDemoCampaigns(demoLib: LibraryData): OfferCampaign[] {
+  const now = new Date().toISOString();
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const byName = (needle: string) => demoLib.entries.find(e => !e.folder && e.name.includes(needle));
+  const parseId = (content?: string) => {
+    try {
+      return content ? (JSON.parse(content).id as string) : crypto.randomUUID();
+    } catch {
+      return crypto.randomUUID();
+    }
+  };
+
+  const eRepolho = byName('repolho');
+  const eCorona = byName('corona');
+  const eArroz = byName('arroz');
+  const eGuarana = byName('guarana');
+  const eTomate = byName('tomate');
+  const eFeijao = byName('feijao');
+
+  return [
+    {
+      schemaVersion: 1,
+      id: 'demo-campaign-semana',
+      name: 'Ofertas da Semana',
+      campaignDate: tomorrow,
+      archived: false,
+      sourceExcel: null,
+      createdAt: now,
+      updatedAt: now,
+      items: [
+        {
+          id: 'demo-item-1',
+          rowNumber: 2,
+          f7: '001245',
+          description: 'REPOLHO VERDE KG',
+          scheduledPriceCents: 249,
+          conflicting: false,
+          issues: [],
+          posters: eRepolho ? [{ cartazId: parseId(eRepolho.content), cartazPath: eRepolho.path, selected: true, copies: 2, status: 'preparado', printedAt: null }] : [],
+        },
+        {
+          id: 'demo-item-2',
+          rowNumber: 3,
+          f7: '0025037',
+          description: 'CERVEJA CORONA EXTRA LATA 350ML',
+          scheduledPriceCents: 399,
+          conflicting: false,
+          issues: [],
+          posters: eCorona ? [{ cartazId: parseId(eCorona.content), cartazPath: eCorona.path, selected: true, copies: 4, status: 'preparado', printedAt: null }] : [],
+        },
+        {
+          id: 'demo-item-3',
+          rowNumber: 4,
+          f7: '0038340',
+          description: 'ARROZ RAMPINELLI TIPO 1 5KG',
+          scheduledPriceCents: 1899,
+          conflicting: false,
+          issues: [],
+          posters: eArroz ? [{ cartazId: parseId(eArroz.content), cartazPath: eArroz.path, selected: true, copies: 2, status: 'pendente', printedAt: null }] : [],
+        },
+        {
+          id: 'demo-item-4',
+          rowNumber: 5,
+          f7: '0029965',
+          description: 'GUARANÁ ANTARCTICA TRADICIONAL 3L',
+          scheduledPriceCents: 1049,
+          conflicting: false,
+          issues: [],
+          posters: eGuarana ? [{ cartazId: parseId(eGuarana.content), cartazPath: eGuarana.path, selected: true, copies: 3, status: 'preparado', printedAt: null }] : [],
+        },
+        {
+          id: 'demo-item-5',
+          rowNumber: 6,
+          f7: '0018450',
+          description: 'TOMATE ITALIANO MÉDIO KG',
+          scheduledPriceCents: 599,
+          conflicting: false,
+          issues: [],
+          posters: eTomate ? [{ cartazId: parseId(eTomate.content), cartazPath: eTomate.path, selected: true, copies: 1, status: 'pendente', printedAt: null }] : [],
+        },
+        {
+          id: 'demo-item-6',
+          rowNumber: 7,
+          f7: '0015020',
+          description: 'FEIJÃO CARIOCA TIPO 1 1KG',
+          scheduledPriceCents: 649,
+          conflicting: false,
+          issues: [],
+          posters: eFeijao ? [{ cartazId: parseId(eFeijao.content), cartazPath: eFeijao.path, selected: false, copies: 1, status: 'impresso', printedAt: now }] : [],
+        },
+      ],
+    },
+  ];
+}
+
 export default function App() {
-  const editor = useCartaz();
+  const [confirmState, setConfirmState] = useState<{
+    request: ConfirmDialogRequest;
+    resolve: (value: boolean) => void;
+  } | null>(null);
+  const confirmAction = useCallback((request: ConfirmDialogRequest) => {
+    return new Promise<boolean>(resolve => {
+      setConfirmState(prev => {
+        if (prev) prev.resolve(false);
+        return { request, resolve };
+      });
+    });
+  }, []);
+  const resolveConfirm = useCallback((accepted: boolean) => {
+    setConfirmState(prev => {
+      if (prev) prev.resolve(accepted);
+      return null;
+    });
+  }, []);
+
+  const editor = useCartaz({ confirmAction });
   const editorGuard = { path: editor.path, dirty: editor.dirty };
   const guardRef = useRef(editorGuard);
   guardRef.current = editorGuard;
-  const f7Matches = useF7Matches(editor.document.product.productCode, editor.path);
   const queryParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
   const isDemoMode = queryParams?.get('demo') === '1' || !isTauri();
   const [section, setSection] = useState(() => queryParams?.get('tab') || 'editor');
   const [data, setData] = useState<LibraryData | null>(() => (isDemoMode ? getDemoLibrary() : null));
+  const [demoCampaigns] = useState<OfferCampaign[]>(() => (isDemoMode && data ? getDemoCampaigns(data) : []));
+  const f7Matches = useF7Matches(editor.document.product.productCode, editor.path, data?.entries);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const locked = useRef(false);
-  const [queue, setQueue] = useState<Poster[]>([]);
   const [conductorQueue, setConductorQueue] = useState<ConductorQueueItem[]>([]);
+  const conductorQueueRef = useRef(conductorQueue);
+  conductorQueueRef.current = conductorQueue;
   const [batchPrintPosters, setBatchPrintPosters] = useState<Poster[] | null>(null);
   const [batchPrintFormat, setBatchPrintFormat] = useState<PosterFormatConfig | null>(null);
   const [showFormatMenu, setShowFormatMenu] = useState(() => (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('formatMenu') === '1' : false));
   const formatMenuRef = useRef<HTMLDivElement>(null);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
   const [showCustomModal, setShowCustomModal] = useState(false);
+  const [showCanvasGrid, setShowCanvasGrid] = useState(false);
+  const [lockPriceGroup, setLockPriceGroup] = useState(false);
+  const [selectedPartKey, setSelectedPartKey] = useState<string | null>(null);
+  const [batchEditSession, setBatchEditSession] = useState<{ items: BatchEditItem[]; index: number } | null>(null);
   const [linkedArtworkEdit, setLinkedArtworkEdit] = useState<{ path: string | null; document: Cartaz } | null>(null);
+  const [boxPriceDraft, setBoxPriceDraft] = useState<string | null>(null);
+  const [librarySelectedPaths, setLibrarySelectedPaths] = useState<Set<string>>(new Set());
+  const [offerSelectedItemIds, setOfferSelectedItemIds] = useState<Set<string>>(new Set());
+  const mainContentRef = useRef<HTMLDivElement | null>(null);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const savedPref = localStorage.getItem('skalee_autosave_enabled');
+      if (savedPref !== null) return savedPref === 'true';
+    }
+    return true;
+  });
+  const [asyncSaveState, setAsyncSaveState] = useState<AsyncSaveState>(INITIAL_ASYNC_SAVE_STATE);
+  const asyncSaverRef = useRef<DebouncedAsyncSaver | null>(null);
+  const saveRequestRef = useRef<{ as: boolean; skipOverwriteConfirm: boolean }>({
+    as: false,
+    skipOverwriteConfirm: false,
+  });
   const [confirmationModal, setConfirmationModal] = useState<{
     entryIds: string[];
     productName: string;
     formatLabel: string;
     copies: number;
   } | null>(null);
+
+  const workspaceMarqueeEnabled =
+    (section === 'library' || section === 'offers') &&
+    !busy &&
+    !confirmState &&
+    !showCustomModal &&
+    !showHistoryModal &&
+    !showShortcutsModal &&
+    !linkedArtworkEdit &&
+    !confirmationModal;
+
+  const activeWorkspaceSelection =
+    section === 'library' ? librarySelectedPaths : offerSelectedItemIds;
+
+  const handleWorkspaceSelectionChange = useCallback(
+    (next: Set<string>) => {
+      if (section === 'library') {
+        setLibrarySelectedPaths(next);
+      } else if (section === 'offers') {
+        setOfferSelectedItemIds(next);
+      }
+    },
+    [section]
+  );
+
+  const {
+    marqueeRect: workspaceMarqueeRect,
+    isDragging: isWorkspaceMarqueeDragging,
+    handleMouseDown: handleWorkspaceMarqueeMouseDown,
+  } = useMarqueeSelection({
+    containerRef: mainContentRef,
+    selectedIds: activeWorkspaceSelection,
+    onSelectionChange: handleWorkspaceSelectionChange,
+    enabled: workspaceMarqueeEnabled,
+  });
   const [customWInput, setCustomWInput] = useState('148');
   const [customHInput, setCustomHInput] = useState('210');
   const [customOrientInput, setCustomOrientInput] = useState<Orientation>('portrait');
@@ -154,6 +350,27 @@ export default function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    setSelectedPartKey(null);
+  }, [editor.document.id, editor.path]);
+
+  useEffect(() => {
+    asyncSaverRef.current?.reset();
+  }, [editor.document.id]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (showShortcutsModal) setShowShortcutsModal(false);
+      else if (showFormatMenu) setShowFormatMenu(false);
+      else if (showCustomModal) setShowCustomModal(false);
+      else if (confirmationModal) setConfirmationModal(null);
+      else if (selectedPartKey) setSelectedPartKey(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showShortcutsModal, showFormatMenu, showCustomModal, confirmationModal, selectedPartKey]);
+
   const activeFormat: PosterFormatConfig = {
     paper: editor.document.layout.paper || 'A5',
     orientation: editor.document.layout.orientation || 'portrait',
@@ -184,25 +401,35 @@ export default function App() {
     }
   }, [showFormatMenu]);
   const [isSurgicalOpen, setIsSurgicalOpen] = useState(false);
-  const docPoster = posterFromDocument(editor.document);
-  const poster: Poster = {
-    ...docPoster,
-    price: editor.price,
-    productImage: (editor.document.product as any).productImage,
-    hasBoxPrice: Boolean((editor.document.product as any).hasBoxPrice),
-    boxQuantity: Number((editor.document.product as any).boxQuantity) || 12,
-    boxUnitLabel: ((editor.document.product as any).boxUnitLabel as string) || 'UND.',
-    boxPrice: (editor.document.product as any).hasBoxPrice
-      ? (editor.document.product as any).boxPriceCents
-        ? formatCentsBr((editor.document.product as any).boxPriceCents)
-        : formatCentsBr(priceToCents(editor.price) * (Number((editor.document.product as any).boxQuantity) || 12))
-      : undefined,
-  };
-  const imported=editor.document.layout.template==='imported-psd';
+  const editorQueueItems = conductorQueue.filter(item => item.sourceType === 'editor');
+  const poster: Poster = posterFromDocument(editor.document, editor.price);
+  const safeEditorUnitCents = (() => {
+    try {
+      return priceToCents(editor.price);
+    } catch {
+      return editor.document.product.priceCents;
+    }
+  })();
+  const editorBoxQty = Number(editor.document.product.boxQuantity) || 12;
+  const editorBoxPriceDisplay =
+    boxPriceDraft !== null
+      ? boxPriceDraft
+      : formatCentsBr(editor.document.product.boxPriceCents ?? safeEditorUnitCents * editorBoxQty);
+  const imported = editor.document.layout.template === 'imported-psd';
+  const editableParts = poster.artwork ? getEditableParts(poster.artwork) : [];
+  const selectedPart = selectedPartKey
+    ? editableParts.find(part => getPartKey(part) === selectedPartKey) ?? null
+    : null;
+  const selectedPartAdj = selectedPart ? clampPartAdjustment(selectedPart.adjustments) : null;
+  const hasAnyPartAdjustment = editableParts.some(part => {
+    if (!part.adjustments) return false;
+    const adj = clampPartAdjustment(part.adjustments);
+    return adj.dx !== 0 || adj.dy !== 0 || adj.scale !== 1;
+  });
   const hasTextRole = (role: 'category' | 'title' | 'complement' | 'packaging') =>
     Boolean(poster.artwork?.templateParts?.some(part => part.role === role));
-  const invertedLayers=poster.artwork?hasInvertedPsdPriceParts(poster.artwork):false;
-  const priceWarning=poster.artwork?(invertedLayers?'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.':importedPriceWarning(poster.artwork,poster.price)):'';
+  const invertedLayers = poster.artwork ? hasInvertedPsdPriceParts(poster.artwork) : false;
+  const priceWarning = poster.artwork ? (invertedLayers ? 'As camadas de Reais e Centavos estão invertidas nesta arte PSD. Clique em "Corrigir inversão Reais/Centavos" abaixo antes de salvar ou imprimir.' : importedPriceWarning(poster.artwork, poster.price)) : '';
   const resolutionCheck = poster.artwork?.canvas?.width && poster.artwork?.canvas?.height
     ? checkPosterResolution(activeFormat, poster.artwork.canvas.width, poster.artwork.canvas.height)
     : null;
@@ -327,9 +554,89 @@ export default function App() {
     locked.current = true; setBusy(true); setError(''); setMessage('');
     action().catch(ex => setError(String(ex))).finally(() => { locked.current = false; setBusy(false); });
   };
-  const newDocument = async () => { if (await editor.newDocument()) setSection('editor'); };
-  const open = async (path?: string) => { if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); } };
+  const performSaveInternal = async (opts: {
+    as?: boolean;
+    skipOverwriteConfirm?: boolean;
+    isAutoSave?: boolean;
+    onProgress?: (progress: AsyncSaveProgress) => void;
+  }) => {
+    const saved = await editor.save(Boolean(opts.as), {
+      skipOverwriteConfirm: opts.skipOverwriteConfirm,
+      isAutoSave: opts.isAutoSave,
+      onProgress: opts.onProgress,
+    });
+    if (saved) {
+      if (!opts.isAutoSave) {
+        setMessage('Cartaz salvo no computador.');
+      }
+      // Incremental in-memory update avoids re-scanning 3,000+ files from disk on every save.
+      setData(prev => upsertLibraryEntry(prev, saved.path, saved.document));
+      return true;
+    }
+    return false;
+  };
+  const performSaveRef = useRef(performSaveInternal);
+  performSaveRef.current = performSaveInternal;
+
+  useEffect(() => {
+    const saver = createDebouncedAsyncSaver({
+      debounceMs: 900,
+      performSave: ({ reason, onProgress }) => {
+        const isAutoSave = reason === 'auto';
+        const req = saveRequestRef.current;
+        return performSaveRef.current({
+          as: isAutoSave ? false : req.as,
+          skipOverwriteConfirm: isAutoSave ? true : req.skipOverwriteConfirm,
+          isAutoSave,
+          onProgress,
+        });
+      },
+      onStateChange: next => {
+        setAsyncSaveState(next);
+      },
+    });
+    asyncSaverRef.current = saver;
+    return () => {
+      saver.dispose();
+      asyncSaverRef.current = null;
+    };
+  }, []);
+
+  // Debounced auto-save for already-saved documents so edits persist smoothly without freezing the editor
+  useEffect(() => {
+    const saver = asyncSaverRef.current;
+    if (!saver) return;
+    if (!autoSaveEnabled || !editor.dirty || !editor.path || Boolean(priceWarning)) {
+      if (!editor.dirty) saver.cancel();
+      return;
+    }
+    if (!editor.document.product.name.trim()) return;
+    try {
+      priceToCents(editor.price);
+    } catch {
+      return;
+    }
+    saver.schedule();
+  }, [
+    autoSaveEnabled,
+    editor.revision,
+    editor.dirty,
+    editor.path,
+    editor.price,
+    editor.document.product.name,
+    priceWarning,
+  ]);
+
+  const newDocument = async () => {
+    asyncSaverRef.current?.reset();
+    if (await editor.newDocument()) setSection('editor');
+  };
+  const open = async (path?: string) => {
+    asyncSaverRef.current?.reset();
+    if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); }
+  };
   const openOfferPoster = async (path: string, scheduledPriceCents?: number) => {
+    asyncSaverRef.current?.reset();
     const result = await editor.open(path, true);
     if (!result) return;
     if (typeof scheduledPriceCents === 'number' && scheduledPriceCents > 0) {
@@ -344,12 +651,261 @@ export default function App() {
       setMessage('Cartaz aberto.');
     }
   };
-  const save = async (as = false) => { if (await editor.save(as)) { setMessage('Cartaz salvo no computador.'); await refresh(); } };
+
+  // Non-blocking manual save: uses the async save pipeline so the editor stays responsive while writing
+  const save = async (as = false, skipOverwriteConfirm = false) => {
+    setError('');
+    const saver = asyncSaverRef.current;
+    if (!saver) {
+      try {
+        return await performSaveInternal({ as, skipOverwriteConfirm, isAutoSave: false });
+      } catch (ex) {
+        setError(String(ex));
+        return false;
+      }
+    }
+    saveRequestRef.current = { as, skipOverwriteConfirm };
+    try {
+      const ok = await saver.flush('manual');
+      const finalState = saver.getState();
+      if (!ok && finalState.phase === 'error' && finalState.error) {
+        setError(finalState.error);
+      }
+      return ok;
+    } finally {
+      saveRequestRef.current = { as: false, skipOverwriteConfirm: false };
+    }
+  };
+
+  const startBatchEdit = async (items: BatchEditItem[]) => {
+    if (items.length === 0) return;
+    setBatchEditSession({ items, index: 0 });
+    await openOfferPoster(items[0].path, items[0].scheduledPriceCents);
+    setMessage(`Edição em lote iniciada (1 de ${items.length}): ${items[0].description}`);
+  };
+
+  const navigateBatchEdit = async (nextIndex: number, saveCurrentFirst: boolean) => {
+    if (!batchEditSession) return;
+    if (saveCurrentFirst && editor.dirty) {
+      const ok = await save(false, true);
+      if (!ok) return;
+    }
+    if (nextIndex < 0) return;
+    if (nextIndex >= batchEditSession.items.length) {
+      setBatchEditSession(null);
+      setMessage('Edição em lote concluída! Todos os produtos selecionados foram revisados.');
+      return;
+    }
+    const target = batchEditSession.items[nextIndex];
+    setBatchEditSession({ ...batchEditSession, index: nextIndex });
+    await openOfferPoster(target.path, target.scheduledPriceCents);
+    setMessage(`Lote ${nextIndex + 1} de ${batchEditSession.items.length}: ${target.description}`);
+  };
+
   const validPoster = () => { const d = editor.current(); if (!d.product.name.trim()) throw new Error('Informe o nome do produto.'); return posterFromDocument(d); };
+
+  const printActivePoster = async () => {
+    const p = validPoster();
+    const isExpositor = activeFormat.paper === 'expositor-a3-2x2';
+
+    const entries = addPrintHistoryEntries([{
+      productName: p.name,
+      f7: editor.document.product.productCode ? String(editor.document.product.productCode) : undefined,
+      formatLabel: getFormatLabel(activeFormat),
+      paper: activeFormat.paper,
+      orientation: activeFormat.orientation,
+      copies: isExpositor ? 4 : 1,
+      status: 'requested',
+    }]);
+    const entryIds = entries.map(e => e.id);
+
+    if (isExpositor) {
+      const expositorPosters = expandExpositorToA3Posters(p);
+      await handlePrintBatch(expositorPosters, {
+        formatConfig: { paper: 'A3', orientation: 'portrait' },
+        onReadyToPrint: () => {
+          updatePrintHistoryStatus(entryIds, 'sent');
+        },
+        onDialogClosed: () => {
+          setConfirmationModal({
+            entryIds,
+            productName: p.name,
+            formatLabel: 'Expositor A3 2×2 (4 folhas A3)',
+            copies: 4,
+          });
+        },
+      });
+    } else {
+      await handlePrintBatch([p], {
+        formatConfig: activeFormat,
+        onReadyToPrint: () => {
+          updatePrintHistoryStatus(entryIds, 'sent');
+        },
+        onDialogClosed: () => {
+          setConfirmationModal({
+            entryIds,
+            productName: p.name,
+            formatLabel: getFormatLabel(activeFormat),
+            copies: 1,
+          });
+        },
+      });
+    }
+  };
+
+  // Global & Editor operator keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (confirmState || showCustomModal || showHistoryModal || Boolean(linkedArtworkEdit)) {
+        return;
+      }
+
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isTextField = tag === 'input' || tag === 'textarea' || tag === 'select' || Boolean(target?.isContentEditable);
+
+      if (!isTextField && e.key === '?') {
+        e.preventDefault();
+        setShowShortcutsModal(prev => !prev);
+        return;
+      }
+
+      if (showShortcutsModal) return;
+
+      if (section === 'editor' && !isSurgicalOpen) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          void save(false, false);
+          return;
+        }
+        if (e.altKey && e.key.toLowerCase() === 'p') {
+          e.preventDefault();
+          if (!priceWarning) {
+            run(printActivePoster);
+          }
+          return;
+        }
+        if (batchEditSession && e.altKey && e.key === 'ArrowRight') {
+          e.preventDefault();
+          run(() => navigateBatchEdit(batchEditSession.index + 1, true));
+          return;
+        }
+        if (batchEditSession && e.altKey && e.key === 'ArrowLeft') {
+          e.preventDefault();
+          run(() => navigateBatchEdit(batchEditSession.index - 1, false));
+          return;
+        }
+
+        if (!isTextField && imported) {
+          if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'g') {
+            e.preventDefault();
+            setShowCanvasGrid(prev => !prev);
+            return;
+          }
+          if (selectedPartKey && selectedPart && selectedPartAdj) {
+            const applySelectedOrGroupAdjustment = (nextDx: number, nextDy: number, nextScale: number) => {
+              if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                const deltaDx = nextDx - selectedPartAdj.dx;
+                const deltaDy = nextDy - selectedPartAdj.dy;
+                const scaleRatio = selectedPartAdj.scale > 0 ? nextScale / selectedPartAdj.scale : 1;
+                const batch: Record<string, { dx: number; dy: number; scale: number }> = {};
+                for (const p of editableParts) {
+                  if (isPriceGroupRole(p.role)) {
+                    const cur = clampPartAdjustment(p.adjustments);
+                    batch[getPartKey(p)] = clampPartAdjustment({
+                      dx: cur.dx + deltaDx,
+                      dy: cur.dy + deltaDy,
+                      scale: Number((cur.scale * scaleRatio).toFixed(2)),
+                    });
+                  }
+                }
+                editor.updateMultiplePartAdjustments(batch);
+              } else {
+                editor.updatePartAdjustment(selectedPartKey, { dx: nextDx, dy: nextDy, scale: nextScale });
+              }
+            };
+            const step = e.shiftKey ? 10 : 2;
+            if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(selectedPartAdj.dx, selectedPartAdj.dy - step, selectedPartAdj.scale);
+              return;
+            }
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(selectedPartAdj.dx, selectedPartAdj.dy + step, selectedPartAdj.scale);
+              return;
+            }
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(selectedPartAdj.dx - step, selectedPartAdj.dy, selectedPartAdj.scale);
+              return;
+            }
+            if (e.key === 'ArrowRight') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(selectedPartAdj.dx + step, selectedPartAdj.dy, selectedPartAdj.scale);
+              return;
+            }
+            if (e.key === '+' || e.key === '=') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(
+                selectedPartAdj.dx,
+                selectedPartAdj.dy,
+                Number(Math.min(2.5, selectedPartAdj.scale + 0.05).toFixed(2))
+              );
+              return;
+            }
+            if (e.key === '-' || e.key === '_') {
+              e.preventDefault();
+              applySelectedOrGroupAdjustment(
+                selectedPartAdj.dx,
+                selectedPartAdj.dy,
+                Number(Math.max(0.4, selectedPartAdj.scale - 0.05).toFixed(2))
+              );
+              return;
+            }
+            if (e.key === 'Delete') {
+              e.preventDefault();
+              if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                const batch: Record<string, null> = {};
+                for (const p of editableParts) {
+                  if (isPriceGroupRole(p.role)) batch[getPartKey(p)] = null;
+                }
+                editor.updateMultiplePartAdjustments(batch);
+              } else {
+                editor.resetPartAdjustments(selectedPartKey);
+              }
+              return;
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    section,
+    isSurgicalOpen,
+    imported,
+    lockPriceGroup,
+    editableParts,
+    selectedPart,
+    selectedPartKey,
+    selectedPartAdj,
+    batchEditSession,
+    priceWarning,
+    confirmState,
+    showShortcutsModal,
+    showCustomModal,
+    showHistoryModal,
+    linkedArtworkEdit,
+    editor,
+    activeFormat,
+  ]);
 
   const handleExportOrOpenPsd = async (openPhotoshop = false) => {
     const p = validPoster();
-    const d = editor.document;
+    const d = editor.current();
     const cleanName = (p.name || 'cartaz').replace(/[/\\?%*:|"<>]/g, '').trim() || 'cartaz';
     const suggestedName = `${cleanName}.psd`;
 
@@ -368,16 +924,16 @@ export default function App() {
 
     const wholeVal = formatCentsBr(d.product.priceCents).split(',')[0];
     const fractionVal = formatCentsBr(d.product.priceCents).split(',')[1];
-    const boxWholeVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
-      ? formatCentsBr((d.product as any).boxPriceCents).split(',')[0]
+    const boxWholeVal = d.product.hasBoxPrice && d.product.boxPriceCents
+      ? formatCentsBr(d.product.boxPriceCents).split(',')[0]
       : undefined;
-    const boxFractionVal = (d.product as any).hasBoxPrice && (d.product as any).boxPriceCents
-      ? formatCentsBr((d.product as any).boxPriceCents).split(',')[1]
+    const boxFractionVal = d.product.hasBoxPrice && d.product.boxPriceCents
+      ? formatCentsBr(d.product.boxPriceCents).split(',')[1]
       : undefined;
 
     let sourcePath = d.layout.template === 'imported-psd' ? d.layout.artwork.source.sourcePath : undefined;
     let sourceBuffer: ArrayBuffer | undefined;
-    const isCaixaMode = Boolean((d.product as any).hasBoxPrice);
+    const isCaixaMode = Boolean(d.product.hasBoxPrice);
     const hasExistingCaixaLayers = d.layout.template === 'imported-psd' &&
       d.layout.artwork.layers.some(l => /caixa\s*com/i.test(l.name || l.text || ''));
 
@@ -403,19 +959,22 @@ export default function App() {
       sourcePsdBuffer: sourceBuffer,
       outputPsdPath: chosenPath || suggestedName,
       allowSamePath: true,
-      category: (d.product as any).category,
+      category: d.product.category,
       title: d.product.name,
       complement: d.product.complement,
       packaging: d.product.unit,
       whole: wholeVal,
       fraction: fractionVal,
-      validityText: (d.product as any).validityText,
-      hasBoxPrice: Boolean((d.product as any).hasBoxPrice),
-      boxQuantity: Number((d.product as any).boxQuantity) || 12,
-      boxUnitLabel: ((d.product as any).boxUnitLabel as string) || 'UND.',
+      validityText: d.product.validityText,
+      hasBoxPrice: Boolean(d.product.hasBoxPrice),
+      boxQuantity: Number(d.product.boxQuantity) || 12,
+      boxUnitLabel: d.product.boxUnitLabel || 'UND.',
       boxWhole: boxWholeVal,
       boxFraction: boxFractionVal,
-      productImage: (d.product as any).productImage,
+      boxPackageType: d.product.boxPackageType,
+      boxPackageLabel: d.product.boxPackageLabel,
+      unitBadgeMode: d.product.unitBadgeMode,
+      productImage: d.product.productImage,
       roles: {
         wholeLayerId: wholePart?.layerId,
         fractionLayerId: fractionPart?.layerId,
@@ -473,32 +1032,22 @@ export default function App() {
             aria-haspopup="listbox"
             title="Formato atual do papel para os cartazes"
           >
-            <span className="sk-status-dot" style={{ background: '#2563eb' }} />
-            <span>Formato: <strong>{getFormatLabel(activeFormat)}</strong></span>
+            <span>Formato: <strong className="sk-tabular">{getFormatLabel(activeFormat)}</strong></span>
             {printerSheetA4 && (activeFormat.paper === 'A5' || activeFormat.paper === 'A6') && (
               <span
-                style={{
-                  fontSize: 10,
-                  background: '#dbeafe',
-                  color: '#1e40af',
-                  padding: '1px 6px',
-                  borderRadius: 4,
-                  fontWeight: 700,
-                  marginLeft: 4,
-                }}
+                className="sk-format-sheet-tag"
                 title="Folha física da impressora travada em A4 com arte centralizada no topo"
               >
-                Folha A4 Topo
+                · Folha A4 Topo
               </span>
             )}
-            <span style={{ fontSize: 9, color: '#64748b', marginLeft: 2 }}>▼</span>
+            <span className="sk-format-caret" aria-hidden="true">▾</span>
           </button>
 
           {showFormatMenu && (
             <div className="sk-format-dropdown" role="listbox" aria-label="Formatos oficiais do Skalee Cartaz">
               <div className="sk-format-dropdown-heading">Formatos Oficiais</div>
 
-              {/* 1. A6 Vertical */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'A6' ? 'active' : ''}`}
@@ -506,13 +1055,10 @@ export default function App() {
                 role="option"
                 aria-selected={activeFormat.paper === 'A6'}
               >
-                <span>A6 Vertical (105 × 148 mm)</span>
-                {activeFormat.paper === 'A6' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                <span className="sk-tabular">A6 Vertical (105 × 148 mm)</span>
+                {activeFormat.paper === 'A6' && <span className="sk-format-active-label">Ativo</span>}
               </button>
 
-              {/* 2. A5 Vertical */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'A5' ? 'active' : ''}`}
@@ -520,13 +1066,10 @@ export default function App() {
                 role="option"
                 aria-selected={activeFormat.paper === 'A5'}
               >
-                <span>A5 Vertical (148 × 210 mm)</span>
-                {activeFormat.paper === 'A5' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                <span className="sk-tabular">A5 Vertical (148 × 210 mm)</span>
+                {activeFormat.paper === 'A5' && <span className="sk-format-active-label">Ativo</span>}
               </button>
 
-              {/* 3. A4 Vertical */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'A4' ? 'active' : ''}`}
@@ -534,13 +1077,10 @@ export default function App() {
                 role="option"
                 aria-selected={activeFormat.paper === 'A4'}
               >
-                <span>A4 Vertical (210 × 297 mm)</span>
-                {activeFormat.paper === 'A4' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                <span className="sk-tabular">A4 Vertical (210 × 297 mm)</span>
+                {activeFormat.paper === 'A4' && <span className="sk-format-active-label">Ativo</span>}
               </button>
 
-              {/* 4. A3 Vertical */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'A3' ? 'active' : ''}`}
@@ -548,13 +1088,10 @@ export default function App() {
                 role="option"
                 aria-selected={activeFormat.paper === 'A3'}
               >
-                <span>A3 Vertical (297 × 420 mm)</span>
-                {activeFormat.paper === 'A3' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                <span className="sk-tabular">A3 Vertical (297 × 420 mm)</span>
+                {activeFormat.paper === 'A3' && <span className="sk-format-active-label">Ativo</span>}
               </button>
 
-              {/* 5. Expositor A3 2x2 */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'expositor-a3-2x2' ? 'active' : ''}`}
@@ -564,29 +1101,14 @@ export default function App() {
                 title="Uma arte distribuída em 4 folhas A3 verticais (2 colunas × 2 linhas)"
               >
                 <div>
-                  <div>Expositor A3 2×2 (594 × 840 mm)</div>
-                  <div style={{ fontSize: 10, color: '#64748b', marginTop: 1 }}>4 folhas A3 em 2 colunas × 2 linhas</div>
+                  <div className="sk-tabular">Expositor A3 2×2 (594 × 840 mm)</div>
+                  <div className="sk-format-option-sub">4 folhas A3 em 2 colunas × 2 linhas</div>
                 </div>
-                {activeFormat.paper === 'expositor-a3-2x2' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                {activeFormat.paper === 'expositor-a3-2x2' && <span className="sk-format-active-label">Ativo</span>}
               </button>
 
               <div className="sk-format-dropdown-heading" style={{ marginTop: 8 }}>Segurança da Impressora</div>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                  padding: '8px 10px',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  background: printerSheetA4 ? '#eff6ff' : '#f8fafc',
-                  borderRadius: 8,
-                  border: printerSheetA4 ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
-                  margin: '4px 6px',
-                }}
-              >
+              <label className={`sk-format-sheet-card ${printerSheetA4 ? 'is-checked' : ''}`}>
                 <input
                   type="checkbox"
                   checked={printerSheetA4}
@@ -597,21 +1119,15 @@ export default function App() {
                       localStorage.setItem('skalee_printer_sheet_a4', String(val));
                     }
                   }}
-                  style={{ accentColor: '#2563eb', width: 16, height: 16, marginTop: 2 }}
                 />
-                <div style={{ flex: 1 }}>
-                  <strong style={{ display: 'block', color: '#1e293b', fontSize: 12 }}>
-                    Folha física sempre A4 (Topo Central)
-                  </strong>
-                  <span style={{ fontSize: 10.5, color: '#64748b', lineHeight: 1.3, display: 'block' }}>
-                    Trava a saída física em A4. Cartazes A5 e A6 saem no topo central sem desconfigurar a impressora.
-                  </span>
+                <div className="sk-format-sheet-copy">
+                  <strong>Folha física sempre A4 (Topo Central)</strong>
+                  <span>Trava a saída física em A4. Cartazes A5 e A6 saem no topo central sem desconfigurar a impressora.</span>
                 </div>
               </label>
 
               <div className="sk-format-dropdown-heading" style={{ marginTop: 6 }}>Opção Adicional</div>
 
-              {/* 6. Formato Personalizado */}
               <button
                 type="button"
                 className={`sk-format-option ${activeFormat.paper === 'custom' ? 'active' : ''}`}
@@ -623,13 +1139,21 @@ export default function App() {
                 aria-selected={activeFormat.paper === 'custom'}
               >
                 <span>Personalizado (largura × altura mm)…</span>
-                {activeFormat.paper === 'custom' && (
-                  <span className="sk-format-badge active">Ativo</span>
-                )}
+                {activeFormat.paper === 'custom' && <span className="sk-format-active-label">Ativo</span>}
               </button>
             </div>
           )}
         </div>
+
+        {/* Botão de Atalhos do Operador */}
+        <button
+          type="button"
+          className="editor-btn subtle"
+          onClick={() => setShowShortcutsModal(true)}
+          title="Ver atalhos rápidos de teclado (?)"
+        >
+          Atalhos (?)
+        </button>
 
         {/* Botão de Histórico de Impressão */}
         <button
@@ -637,10 +1161,8 @@ export default function App() {
           className="editor-btn subtle"
           onClick={() => setShowHistoryModal(true)}
           title="Consultar histórico local e persistente de impressões"
-          style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
         >
-          <span>📋</span>
-          <span>Histórico</span>
+          Histórico
         </button>
 
         {/* Alternador de Modo Escuro / Claro */}
@@ -651,18 +1173,8 @@ export default function App() {
           title={theme === 'dark' ? 'Alternar para Modo Claro' : 'Alternar para Modo Escuro'}
           aria-label={theme === 'dark' ? 'Alternar para Modo Claro' : 'Alternar para Modo Escuro'}
         >
-          <span>{theme === 'dark' ? '☀️' : '🌙'}</span>
           <span>{theme === 'dark' ? 'Modo Claro' : 'Modo Escuro'}</span>
         </button>
-
-        {/* Indicador de Operação Local */}
-        <div
-          className="sk-offline-pill"
-          title="Processamento e banco de dados executando localmente no seu computador"
-        >
-          <span className="sk-status-dot" />
-          <span>Execução Local</span>
-        </div>
       </div>
     </header>
 
@@ -704,7 +1216,7 @@ export default function App() {
             type="button"
             className={`sk-sidebar-item ${section === 'library' ? 'active' : ''}`}
             disabled={busy}
-            onClick={() => { setSection('library'); run(refresh); }}
+            onClick={() => { setSection('library'); if (!data) run(refresh); }}
             title="Meus Cartazes"
           >
             <div className="sk-sidebar-icon">
@@ -734,7 +1246,7 @@ export default function App() {
             type="button"
             className={`sk-sidebar-item ${section === 'offers' ? 'active' : ''}`}
             disabled={busy}
-            onClick={() => { setSection('offers'); run(refresh); }}
+            onClick={() => { setSection('offers'); if (!data) run(refresh); }}
             title="Pastas de Ofertas"
           >
             <div className="sk-sidebar-icon">
@@ -749,7 +1261,7 @@ export default function App() {
             type="button"
             className={`sk-sidebar-item ${section === 'scantech' ? 'active' : ''}`}
             disabled={busy}
-            onClick={() => { setSection('scantech'); run(refresh); }}
+            onClick={() => { setSection('scantech'); if (!data) run(refresh); }}
             title="Criar Cartaz Scantech"
           >
             <div className="sk-sidebar-icon">
@@ -764,7 +1276,7 @@ export default function App() {
             type="button"
             className={`sk-sidebar-item ${section === 'conductor' ? 'active' : ''}`}
             disabled={busy}
-            onClick={() => { setSection('conductor'); run(refresh); }}
+            onClick={() => { setSection('conductor'); if (!data) run(refresh); }}
             title="Condutor de Impressão"
           >
             <div className="sk-sidebar-icon">
@@ -780,7 +1292,12 @@ export default function App() {
         </nav>
       </aside>
 
-      <div className="sk-main-content" role="main">
+      <div
+        ref={mainContentRef}
+        className={`sk-main-content sk-marquee-surface ${isWorkspaceMarqueeDragging ? 'is-marquee-dragging' : ''}`}
+        role="main"
+        onMouseDown={handleWorkspaceMarqueeMouseDown}
+      >
         <div className="notifications" aria-live="polite">
           {busy && <p role="status">Aguarde…</p>}
           {message && <p className="success" role="status">{message}</p>}
@@ -790,17 +1307,70 @@ export default function App() {
         <fieldset className="workspace" disabled={busy} aria-busy={busy}>
     {section === 'editor' ? (
       <div className="editor-workspace-wrap">
-        {/* Barra de Ações do Documento */}
+        {batchEditSession && (
+          <div className="sk-batch-bar" role="region" aria-label="Navegação da edição em lote">
+            <div className="sk-batch-bar-info">
+              <span className="sk-batch-counter sk-tabular">
+                Lote {batchEditSession.index + 1} / {batchEditSession.items.length}
+              </span>
+              <strong>{batchEditSession.items[batchEditSession.index]?.description}</strong>
+              {batchEditSession.items[batchEditSession.index]?.f7 && (
+                <span className="sk-batch-f7 sk-tabular">
+                  F7 {batchEditSession.items[batchEditSession.index].f7}
+                </span>
+              )}
+            </div>
+            <div className="sk-batch-bar-actions">
+              <button
+                type="button"
+                className="editor-btn subtle"
+                disabled={batchEditSession.index === 0}
+                onClick={() => run(() => navigateBatchEdit(batchEditSession.index - 1, false))}
+                title="Voltar ao produto anterior (Alt+←)"
+              >
+                ← Anterior
+              </button>
+              <button
+                type="button"
+                className="editor-btn subtle"
+                onClick={() => run(() => navigateBatchEdit(batchEditSession.index + 1, false))}
+                title="Ir para o próximo sem salvar alterações"
+              >
+                Pular
+              </button>
+              <button
+                type="button"
+                className="editor-btn primary"
+                onClick={() => run(() => navigateBatchEdit(batchEditSession.index + 1, true))}
+                title="Salvar este cartaz e abrir o próximo (Alt+→)"
+              >
+                {batchEditSession.index + 1 < batchEditSession.items.length
+                  ? 'Salvar e Próximo (Alt+→)'
+                  : 'Salvar e Concluir'}
+              </button>
+              <button
+                type="button"
+                className="editor-btn subtle"
+                onClick={() => setBatchEditSession(null)}
+                title="Sair do modo de edição em sequência"
+              >
+                Encerrar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Barra de Ações do Documento (Ciclo de vida enxuto + salvamento assíncrono não bloqueante) */}
         <div className="editor-document-bar">
           <div className="editor-toolbar">
             <button type="button" className="editor-btn subtle" onClick={() => run(async () => { await editor.newOfficial('oferta'); })}>
-              + Novo (Oferta)
+              + Oferta
             </button>
-            <button type="button" className="editor-btn subtle" style={{ color: '#15803d', borderColor: '#bbf7d0', background: '#f0fdf4' }} onClick={() => run(async () => { await editor.newOfficial('caixa'); })}>
-              + Novo (Caixa)
+            <button type="button" className="editor-btn subtle sk-btn-tint-green" onClick={() => run(async () => { await editor.newOfficial('caixa'); })}>
+              + Caixa
             </button>
-            <button type="button" className="editor-btn subtle" style={{ color: '#b45309', borderColor: '#fde68a', background: '#fffbeb' }} onClick={() => run(async () => { await editor.newOfficial('vencimento'); })}>
-              + Novo (Vencimento)
+            <button type="button" className="editor-btn subtle sk-btn-tint-amber" onClick={() => run(async () => { await editor.newOfficial('vencimento'); })}>
+              + Vencimento
             </button>
             <button
               type="button"
@@ -811,40 +1381,28 @@ export default function App() {
                 }
               })}
             >
-              Novo a partir de PSD
+              Novo de PSD
             </button>
+            <span className="sk-toolbar-divider" aria-hidden="true" />
             <button type="button" className="editor-btn subtle" onClick={() => run(() => open())}>
               Abrir
             </button>
-            <button type="button" className="editor-btn primary" onClick={() => run(() => save())}>
-              Salvar
-            </button>
-            <button type="button" className="editor-btn subtle" onClick={() => run(() => save(true))}>
-              Salvar Como
-            </button>
-            <button type="button" className="editor-btn subtle" onClick={() => run(() => handleExportOrOpenPsd(false))}>
-              Exportar PSD
+            <button
+              type="button"
+              className="editor-btn primary"
+              onClick={() => { void save(false, false); }}
+              title="Salvar cartaz sem travar o editor (Ctrl+S)"
+            >
+              {asyncSaveState.phase === 'saving' ? 'Salvando…' : 'Salvar'}
             </button>
             <button
               type="button"
               className="editor-btn subtle"
-              style={{ color: '#059669', background: '#ecfdf5', borderColor: '#a7f3d0', fontWeight: 700 }}
-              title="Abre o Editor Cirúrgico de Camadas (padronização de arte com guias editáveis e bloqueadas)"
-              onClick={() => setIsSurgicalOpen(true)}
+              onClick={() => { void save(true, false); }}
+              title="Salvar uma cópia com outro nome"
             >
-              🎯 Camadas Cirúrgicas
+              Salvar Como
             </button>
-            {isTauri() && (
-              <button
-                type="button"
-                className="editor-btn subtle"
-                style={{ color: '#2563eb', fontWeight: 600 }}
-                title="Abre o arquivo PSD diretamente no Photoshop para você inspecionar a arte"
-                onClick={() => run(() => handleExportOrOpenPsd(true))}
-              >
-                👁️ Abrir no Photoshop
-              </button>
-            )}
             <button
               type="button"
               className="editor-btn subtle"
@@ -858,92 +1416,141 @@ export default function App() {
             </button>
           </div>
 
-          <div
-            className={`editor-status-pill ${editor.dirty ? 'dirty' : 'saved'}`}
-            title={editor.path ?? 'Cartaz novo — ainda não salvo'}
-          >
-            <span>{editor.dirty ? '● Alterações não salvas' : '✓ Salvo no computador'}</span>
-            <span style={{ opacity: 0.6 }}>·</span>
-            <span>{editor.path ? editor.path.split(/[\\/]/).pop() : 'Novo cartaz'}</span>
+          <div className="sk-save-status-cluster">
+            <label
+              className="sk-autosave-toggle"
+              title="Salva alterações automaticamente após uma breve pausa na edição (somente para cartazes já salvos)"
+            >
+              <input
+                type="checkbox"
+                checked={autoSaveEnabled}
+                onChange={e => {
+                  const checked = e.target.checked;
+                  setAutoSaveEnabled(checked);
+                  if (!checked) asyncSaverRef.current?.cancel();
+                  if (typeof window !== 'undefined') {
+                    try {
+                      localStorage.setItem('skalee_autosave_enabled', String(checked));
+                    } catch {}
+                  }
+                }}
+              />
+              <span>Auto-salvar</span>
+            </label>
+
+            <div
+              className={`sk-doc-status ${
+                asyncSaveState.phase === 'saving'
+                  ? 'is-saving'
+                  : asyncSaveState.phase === 'scheduled'
+                  ? 'is-scheduled'
+                  : asyncSaveState.phase === 'error'
+                  ? 'is-error'
+                  : editor.dirty
+                  ? 'is-dirty'
+                  : 'is-saved'
+              }`}
+              role="status"
+              aria-live="polite"
+              title={
+                asyncSaveState.phase === 'error'
+                  ? asyncSaveState.error ?? 'Erro ao salvar'
+                  : asyncSaveState.phase === 'saving' || asyncSaveState.phase === 'scheduled'
+                  ? asyncSaveState.stage
+                  : editor.path ?? 'Cartaz novo — ainda não salvo'
+              }
+            >
+              {asyncSaveState.phase === 'saving' ? (
+                <>
+                  <span className="sk-save-spinner" aria-hidden="true" />
+                  <span className="sk-tabular">
+                    {asyncSaveState.stage || 'Salvando…'} {asyncSaveState.percent}%
+                  </span>
+                </>
+              ) : asyncSaveState.phase === 'scheduled' ? (
+                <span>Salvando em instantes…</span>
+              ) : asyncSaveState.phase === 'error' ? (
+                <>
+                  <span>Falha ao salvar</span>
+                  <button
+                    type="button"
+                    className="sk-save-retry-btn"
+                    onClick={() => { void save(false, true); }}
+                  >
+                    Tentar novamente
+                  </button>
+                </>
+              ) : editor.dirty ? (
+                <span>Alterações não salvas</span>
+              ) : (
+                <span className="sk-tabular">
+                  {asyncSaveState.lastSavedAt
+                    ? `Salvo às ${new Date(asyncSaveState.lastSavedAt).toLocaleTimeString('pt-BR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}`
+                    : 'Salvo no computador'}
+                </span>
+              )}
+              <span aria-hidden="true">·</span>
+              <span className="sk-doc-filename">{editor.path ? editor.path.split(/[\\/]/).pop() : 'Novo cartaz'}</span>
+            </div>
           </div>
+
+          {(asyncSaveState.phase === 'saving' || asyncSaveState.phase === 'scheduled') && (
+            <div
+              className={`sk-doc-progress-track ${asyncSaveState.phase === 'scheduled' ? 'is-scheduled' : ''}`}
+              role="progressbar"
+              aria-label={asyncSaveState.stage || 'Progresso do salvamento'}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={asyncSaveState.percent}
+            >
+              <div
+                className="sk-doc-progress-fill"
+                style={{ width: `${Math.max(8, asyncSaveState.percent)}%` }}
+              />
+            </div>
+          )}
         </div>
 
-        {/* Layout Principal: Propriedades + Prévia A5 OU Editor Cirúrgico */}
+        {/* Layout Principal: Propriedades + Prévia Proporcional OU Editor Cirúrgico */}
         {isSurgicalOpen ? (
           <SurgicalLayerEditor
             document={editor.document}
+            price={editor.price}
             activeFormat={activeFormat}
             onChangeField={editor.change}
             onExportPsd={handleExportOrOpenPsd}
             onSwitchModel={editor.switchModel}
             onClose={() => setIsSurgicalOpen(false)}
-            isBusy={locked.current}
+            isBusy={busy}
           />
         ) : (
           <div className="editor-layout">
           {/* Coluna 1: Painel de Propriedades Organizado */}
           <section className="editor-panel" aria-label="Propriedades da oferta">
-            <div style={{ marginBottom: 16 }}>
-              <h2 style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', margin: '0 0 4px 0' }}>Editar Oferta</h2>
-              <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>Preencha os campos abaixo para atualizar instantaneamente o cartaz.</p>
+            <div className="sk-editor-panel-head">
+              <h2>Editar Oferta</h2>
+              <p>Preencha os campos abaixo para atualizar instantaneamente o cartaz.</p>
             </div>
 
             {/* SELETOR DE MODELO DE LAYOUT */}
-            <div
-              style={{
-                background: '#f8fafc',
-                border: '1px solid #e2e8f0',
-                borderRadius: 10,
-                padding: '10px 12px',
-                marginBottom: 16,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>Modelo de Layout</span>
-                <span
-                  style={{
-                    fontSize: 10.5,
-                    fontWeight: 700,
-                    padding: '2px 8px',
-                    borderRadius: 12,
-                    background:
-                      editor.posterModel === 'vencimento'
-                        ? '#fef3c7'
-                        : editor.posterModel === 'caixa'
-                        ? '#dcfce7'
-                        : '#e0e7ff',
-                    color:
-                      editor.posterModel === 'vencimento'
-                        ? '#92400e'
-                        : editor.posterModel === 'caixa'
-                        ? '#166534'
-                        : '#3730a3',
-                  }}
-                >
+            <div className="sk-model-switcher">
+              <div className="sk-model-switcher-head">
+                <span className="sk-model-switcher-title">Modelo de Layout</span>
+                <span className={`sk-model-active-text is-${editor.posterModel}`}>
                   {editor.posterModel === 'vencimento'
-                    ? '⏳ Vencimento'
+                    ? 'Vencimento'
                     : editor.posterModel === 'caixa'
-                    ? '📦 Caixa Fechada'
-                    : '🏷️ Oferta Normal'}
+                    ? 'Caixa Fechada'
+                    : 'Oferta Normal'}
                 </span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+              <div className="sk-model-grid">
                 <button
                   type="button"
-                  style={{
-                    padding: '7px 6px',
-                    fontSize: 11.5,
-                    fontWeight: 700,
-                    borderRadius: 7,
-                    border: editor.posterModel === 'oferta' ? '2px solid #2563eb' : '1px solid #cbd5e1',
-                    background: editor.posterModel === 'oferta' ? '#eff6ff' : '#ffffff',
-                    color: editor.posterModel === 'oferta' ? '#1d4ed8' : '#475569',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 4,
-                  }}
+                  className={`sk-model-btn ${editor.posterModel === 'oferta' ? 'active is-oferta' : ''}`}
                   onClick={() => run(async () => {
                     if (editor.posterModel !== 'oferta') {
                       await editor.switchModel('oferta');
@@ -951,24 +1558,11 @@ export default function App() {
                     }
                   })}
                 >
-                  🏷️ Oferta
+                  Oferta
                 </button>
                 <button
                   type="button"
-                  style={{
-                    padding: '7px 6px',
-                    fontSize: 11.5,
-                    fontWeight: 700,
-                    borderRadius: 7,
-                    border: editor.posterModel === 'caixa' ? '2px solid #16a34a' : '1px solid #cbd5e1',
-                    background: editor.posterModel === 'caixa' ? '#f0fdf4' : '#ffffff',
-                    color: editor.posterModel === 'caixa' ? '#15803d' : '#475569',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 4,
-                  }}
+                  className={`sk-model-btn ${editor.posterModel === 'caixa' ? 'active is-caixa' : ''}`}
                   onClick={() => run(async () => {
                     if (editor.posterModel !== 'caixa') {
                       await editor.switchModel('caixa');
@@ -976,24 +1570,11 @@ export default function App() {
                     }
                   })}
                 >
-                  📦 Caixa
+                  Caixa
                 </button>
                 <button
                   type="button"
-                  style={{
-                    padding: '7px 6px',
-                    fontSize: 11.5,
-                    fontWeight: 700,
-                    borderRadius: 7,
-                    border: editor.posterModel === 'vencimento' ? '2px solid #d97706' : '1px solid #cbd5e1',
-                    background: editor.posterModel === 'vencimento' ? '#fffbeb' : '#ffffff',
-                    color: editor.posterModel === 'vencimento' ? '#b45309' : '#475569',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 4,
-                  }}
+                  className={`sk-model-btn ${editor.posterModel === 'vencimento' ? 'active is-vencimento' : ''}`}
                   onClick={() => run(async () => {
                     if (editor.posterModel !== 'vencimento') {
                       await editor.switchModel('vencimento');
@@ -1001,30 +1582,19 @@ export default function App() {
                     }
                   })}
                 >
-                  ⏳ Vencimento
+                  Vencimento
                 </button>
               </div>
             </div>
 
             {imported && !poster.artwork?.isReferenceTemplate && (
-              <div className="import-warning" style={{ marginBottom: 14 }}>
+              <div className="sk-warn-banner">
                 Arte PSD legada: os textos ainda não estão preparados para edição.
               </div>
             )}
 
             {poster.artwork?.isReferenceTemplate && (
-              <div
-                style={{
-                  background: '#f0fdf4',
-                  border: '1px solid #bbf7d0',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  marginBottom: 14,
-                  fontSize: 11.5,
-                  color: '#15803d',
-                  fontWeight: 600,
-                }}
-              >
+              <div className="sk-info-banner">
                 Modelo PSD ativo: somente os campos de texto mapeados são editáveis.
               </div>
             )}
@@ -1032,8 +1602,8 @@ export default function App() {
             {imported && (
               <button
                 type="button"
-                className="editor-btn subtle"
-                style={{ marginBottom: 14 }}
+                className="editor-btn subtle sk-full-width-btn"
+                style={{ marginBottom: 10 }}
                 onClick={() => run(async () => setLinkedArtworkEdit({ path: editor.path, document: editor.current() }))}
               >
                 Preparar textos do PSD para edição
@@ -1042,27 +1612,11 @@ export default function App() {
 
             <button
               type="button"
-              className="editor-btn"
-              style={{
-                width: '100%',
-                background: '#064e3b',
-                color: '#ffffff',
-                border: '1px solid #059669',
-                padding: '10px 12px',
-                borderRadius: 8,
-                fontSize: 12,
-                fontWeight: 700,
-                marginBottom: 16,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 6,
-                cursor: 'pointer',
-              }}
+              className="editor-btn sk-btn-surgical"
               title="Abre o painel de padronização de arte e edição cirúrgica de camadas PSD"
               onClick={() => setIsSurgicalOpen(true)}
             >
-              🎯 Editor de Camadas Cirúrgicas (PSD)
+              Editor de Camadas Cirúrgicas (PSD)
             </button>
 
             {/* SEÇÃO 1: Identificação do Produto */}
@@ -1076,7 +1630,7 @@ export default function App() {
                   <label>Categoria</label>
                   <input
                     className="editor-input"
-                    value={((editor.document.product as any).category as string) || poster.category || ''}
+                    value={editor.document.product.category || poster.category || ''}
                     maxLength={100}
                     onChange={e => editor.change('category', e.target.value.toUpperCase())}
                   />
@@ -1086,8 +1640,7 @@ export default function App() {
               <div className="editor-field">
                 <label>Nome Principal</label>
                 <input
-                  className="editor-input"
-                  style={{ fontWeight: 700 }}
+                  className="editor-input sk-input-strong"
                   disabled={imported && !hasTextRole('title')}
                   value={poster.name}
                   maxLength={100}
@@ -1113,11 +1666,11 @@ export default function App() {
                 <span>2. Preço & Embalagem</span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="sk-two-col-grid">
                 <div className="editor-field">
                   <label>Preço (R$)</label>
                   <input
-                    className="editor-input price-input"
+                    className="editor-input price-input sk-tabular"
                     inputMode="decimal"
                     value={poster.price}
                     onChange={e => editor.change('price', e.target.value)}
@@ -1151,135 +1704,141 @@ export default function App() {
               </div>
 
               {editor.posterModel === 'vencimento' ? (
-                <div className="editor-field" style={{ marginTop: 10 }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#b45309', fontWeight: 700 }}>
-                    ⏳ Data de Vencimento do Produto
-                  </label>
-                  <input
-                    className="editor-input"
-                    style={{ borderColor: '#f59e0b', background: '#fffbeb', fontWeight: 700 }}
-                    value={((editor.document.product as any).validityText as string) || poster.validityText || ''}
-                    placeholder="Ex: 02/12 ou 28/10"
-                    onChange={e => editor.change('validityText', e.target.value)}
-                  />
-                  <small style={{ color: '#92400e', fontSize: 11, marginTop: 4, display: 'block' }}>
-                    O rodapé oficial ("ITEM PRÓXIMO AO VENCIMENTO" / "NÃO EFETUAMOS A TROCA") será aplicado automaticamente.
-                  </small>
+                <div className="sk-validity-section">
+                  <div className="sk-two-col-grid sk-validity-grid">
+                    <div className="editor-field">
+                      <label htmlFor="sk-validity-date">Data de Vencimento</label>
+                      <input
+                        id="sk-validity-date"
+                        className="editor-input sk-validity-input sk-tabular"
+                        value={editor.document.product.validityText || poster.validityText || ''}
+                        placeholder="Ex: 02/12 ou 28/10"
+                        onChange={e => editor.change('validityText', e.target.value)}
+                      />
+                    </div>
+                    <div className="editor-field">
+                      <label>Rodapé Oficial</label>
+                      <div className="sk-validity-status-row" aria-live="polite">
+                        <span>Aplicado automaticamente</span>
+                      </div>
+                    </div>
+                  </div>
+                  <dl className="sk-validity-list">
+                    <div className="sk-validity-list-row">
+                      <dt>Aviso</dt>
+                      <dd>Item próximo ao vencimento</dd>
+                    </div>
+                    <div className="sk-validity-list-row">
+                      <dt>Condição</dt>
+                      <dd>Não efetuamos a troca</dd>
+                    </div>
+                  </dl>
                 </div>
-              ) : (poster.artwork?.priceParts.some(part => part.role === 'validity') || ((editor.document.product as any).validityText)) && (
-                <div className="editor-field" style={{ marginTop: 10 }}>
-                  <label>Validade da Oferta</label>
+              ) : (poster.artwork?.priceParts.some(part => part.role === 'validity') || editor.document.product.validityText) && (
+                <div className="editor-field sk-validity-fallback">
+                  <label htmlFor="sk-offer-validity">Validade da Oferta</label>
                   <input
-                    className="editor-input"
-                    value={((editor.document.product as any).validityText as string) || poster.validityText || ''}
+                    id="sk-offer-validity"
+                    className="editor-input sk-tabular"
+                    value={editor.document.product.validityText || poster.validityText || ''}
                     placeholder="Ex: 08/11/2026 ou OFERTA VÁLIDA ATÉ 25/10"
                     onChange={e => editor.change('validityText', e.target.value)}
                   />
                 </div>
               )}
 
-              {/* MÓDULO OPCIONAL: Caixa Fechada / Atacado (Preço Duplo) */}
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: '10px 12px',
-                  background: (editor.document.product as any).hasBoxPrice ? '#f0fdf4' : '#f8fafc',
-                  borderRadius: 8,
-                  border: (editor.document.product as any).hasBoxPrice ? '1px solid #86efac' : '1px solid #e2e8f0',
-                }}
-              >
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    cursor: 'pointer',
-                    fontWeight: 700,
-                    margin: 0,
-                    color: (editor.document.product as any).hasBoxPrice ? '#166534' : '#334155',
-                  }}
-                >
+              {/* MÓDULO OPCIONAL: Caixa Fechada / Atacado (Preço Duplo) — indisponível no modo Vencimento */}
+              {editor.posterModel !== 'vencimento' && (
+              <div className={`sk-box-module ${editor.document.product.hasBoxPrice ? 'is-active' : ''}`}>
+                <label className="sk-box-toggle">
                   <input
                     type="checkbox"
-                    checked={Boolean((editor.document.product as any).hasBoxPrice)}
+                    checked={Boolean(editor.document.product.hasBoxPrice)}
                     onChange={async e => {
                       const checked = e.target.checked;
                       editor.change('hasBoxPrice', checked);
+                      setBoxPriceDraft(null);
                       if (checked) {
-                        const unitPrice = priceToCents(editor.price);
-                        const qty = Number((editor.document.product as any).boxQuantity) || 12;
-                        editor.change('boxQuantity', qty);
-                        editor.change('boxUnitLabel', (editor.document.product as any).boxUnitLabel || 'UND.');
-                        if (!(editor.document.product as any).boxPriceCents) {
-                          editor.change('boxPriceCents', unitPrice * qty);
+                        editor.change('boxQuantity', editorBoxQty);
+                        editor.change('boxUnitLabel', editor.document.product.boxUnitLabel || 'UND.');
+                        if (!editor.document.product.boxPriceCents) {
+                          editor.change('boxPriceCents', safeEditorUnitCents * editorBoxQty);
                         }
                         if (editor.posterModel !== 'caixa') {
                           await editor.switchModel('caixa');
                           setMessage('Layout ajustado automaticamente para Caixa Fechada.');
                         }
-                      } else {
-                        if (editor.posterModel === 'caixa') {
-                          await editor.switchModel('oferta');
-                          setMessage('Layout retornado para Oferta Normal.');
-                        }
+                      } else if (editor.posterModel === 'caixa') {
+                        await editor.switchModel('oferta');
+                        setMessage('Layout retornado para Oferta Normal.');
                       }
                     }}
                   />
-                  <span>📦 Ativar Caixa Fechada (Atacado / Combo)</span>
+                  <span>Ativar Caixa Fechada (Atacado / Combo)</span>
                 </label>
 
-                {Boolean((editor.document.product as any).hasBoxPrice) && (
-                  <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '80px 80px 1fr auto', gap: 8, alignItems: 'flex-end' }}>
+                {Boolean(editor.document.product.hasBoxPrice) && (
+                  <div className="sk-box-grid">
                     <div>
-                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Qtd. Caixa</label>
+                      <label className="sk-mini-label">Qtd. Caixa</label>
                       <input
                         type="number"
-                        className="editor-input"
+                        className="editor-input sk-input-compact sk-tabular"
                         min={1}
-                        style={{ padding: '6px 8px', fontSize: 13 }}
-                        value={(editor.document.product as any).boxQuantity ?? 12}
-                        onChange={e => editor.change('boxQuantity', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        value={editorBoxQty}
+                        onChange={e => {
+                          const qty = Math.max(1, parseInt(e.target.value, 10) || 1);
+                          setBoxPriceDraft(null);
+                          editor.change('boxQuantity', qty);
+                        }}
                       />
                     </div>
                     <div>
-                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Rótulo</label>
+                      <label className="sk-mini-label">Rótulo</label>
                       <input
-                        className="editor-input"
-                        style={{ padding: '6px 8px', fontSize: 13 }}
-                        value={((editor.document.product as any).boxUnitLabel as string) || 'UND.'}
+                        className="editor-input sk-input-compact"
+                        value={editor.document.product.boxUnitLabel || 'UND.'}
                         onChange={e => editor.change('boxUnitLabel', e.target.value.toUpperCase())}
                       />
                     </div>
                     <div>
-                      <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Preço Total (R$)</label>
+                      <label className="sk-mini-label">Preço Total (R$)</label>
                       <input
-                        className="editor-input price-input"
+                        className="editor-input price-input sk-input-compact sk-tabular"
                         inputMode="decimal"
-                        style={{ padding: '6px 8px', fontSize: 13 }}
-                        value={formatCentsBr((editor.document.product as any).boxPriceCents ?? (priceToCents(editor.price) * (Number((editor.document.product as any).boxQuantity) || 12)))}
-                        onChange={e => editor.change('boxPriceCents', priceToCents(e.target.value))}
+                        value={editorBoxPriceDisplay}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          setBoxPriceDraft(raw);
+                          try {
+                            editor.change('boxPriceCents', priceToCents(raw));
+                          } catch {
+                            // Permite digitação parcial sem erro (ex: "32,")
+                          }
+                        }}
+                        onBlur={() => setBoxPriceDraft(null)}
                       />
                     </div>
                     <div>
                       <button
                         type="button"
-                        className="editor-btn subtle"
-                        style={{ padding: '7px 10px', fontSize: 11, height: 35, whiteSpace: 'nowrap' }}
+                        className="editor-btn subtle sk-btn-calc"
                         title="Recalcular = Preço unitário × Quantidade"
                         onClick={() => {
-                          const qty = Number((editor.document.product as any).boxQuantity) || 12;
-                          editor.change('boxPriceCents', priceToCents(editor.price) * qty);
+                          setBoxPriceDraft(null);
+                          editor.change('boxPriceCents', safeEditorUnitCents * editorBoxQty);
                         }}
                       >
-                        ⚡ Calcular
+                        Calcular
                       </button>
                     </div>
                   </div>
                 )}
               </div>
+              )}
 
               {priceWarning && (
-                <p className="error-text" role="alert" style={{ margin: '10px 0 0 0', fontSize: 12 }}>
+                <p className="error-text sk-inline-alert" role="alert">
                   {priceWarning}
                 </p>
               )}
@@ -1287,8 +1846,8 @@ export default function App() {
               {invertedLayers && (
                 <button
                   type="button"
-                  className="editor-btn subtle"
-                  style={{ marginTop: 10, width: '100%' }}
+                  className="editor-btn subtle sk-full-width-btn"
+                  style={{ marginTop: 10 }}
                   onClick={() => editor.fixInvertedPsdLayers()}
                 >
                   Corrigir inversão Reais/Centavos (restaurar preço original)
@@ -1319,143 +1878,59 @@ export default function App() {
               </div>
 
               {resolutionCheck?.isInsufficient && (
-                <div
-                  style={{
-                    marginBottom: 10,
-                    padding: '8px 10px',
-                    background: '#fffbeb',
-                    border: '1px solid #fde68a',
-                    borderRadius: 6,
-                    color: '#b45309',
-                    fontSize: 12,
-                    lineHeight: 1.4,
-                  }}
-                >
-                  ⚠️ <strong>Aviso de Resolução:</strong> {resolutionCheck.warning}
+                <div className="sk-warn-banner">
+                  <strong>Aviso de Resolução:</strong> {resolutionCheck.warning}
                 </div>
               )}
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="sk-two-col-grid">
                 <button
                   type="button"
-                  className="editor-btn primary"
-                  style={{ justifyContent: 'center', height: 40, fontSize: 13 }}
+                  className="editor-btn primary sk-action-primary"
                   disabled={Boolean(priceWarning)}
-                  onClick={() => run(async () => {
-                    const p = validPoster();
-                    const isExpositor = activeFormat.paper === 'expositor-a3-2x2';
-
-                    // 1. Registra no histórico como 'requested'
-                    const entries = addPrintHistoryEntries([{
-                      productName: p.name,
-                      f7: editor.document.product.productCode ? String(editor.document.product.productCode) : undefined,
-                      formatLabel: getFormatLabel(activeFormat),
-                      paper: activeFormat.paper,
-                      orientation: activeFormat.orientation,
-                      copies: isExpositor ? 4 : 1,
-                      status: 'requested',
-                    }]);
-                    const entryIds = entries.map(e => e.id);
-
-                    if (isExpositor) {
-                      // Divide o Expositor A3 2×2 em 4 folhas A3 verticais com overlap e marcas
-                      const expositorPosters = expandExpositorToA3Posters(p);
-                      await handlePrintBatch(expositorPosters, {
-                        formatConfig: { paper: 'A3', orientation: 'portrait' },
-                        onReadyToPrint: () => {
-                          updatePrintHistoryStatus(entryIds, 'sent');
-                        },
-                        onDialogClosed: () => {
-                          setConfirmationModal({
-                            entryIds,
-                            productName: p.name,
-                            formatLabel: 'Expositor A3 2×2 (4 folhas A3)',
-                            copies: 4,
-                          });
-                        },
-                      });
-                    } else {
-                      applyDynamicPrintStyles(activeFormat);
-                      try {
-                        updatePrintHistoryStatus(entryIds, 'sent');
-                        window.print();
-                        setConfirmationModal({
-                          entryIds,
-                          productName: p.name,
-                          formatLabel: getFormatLabel(activeFormat),
-                          copies: 1,
-                        });
-                      } finally {
-                        removeDynamicPrintStyles();
-                      }
-                    }
-                  })}
+                  title="Imprimir cartaz atual (Alt+P)"
+                  onClick={() => run(printActivePoster)}
                 >
-                  🖨️ Imprimir {getFormatLabel(activeFormat)}
+                  Imprimir {activeFormat.paper === 'expositor-a3-2x2' ? 'Expositor 2×2' : activeFormat.paper}
                 </button>
 
                 <button
                   type="button"
-                  className="editor-btn secondary"
-                  style={{ justifyContent: 'center', height: 40, fontSize: 12 }}
+                  className="editor-btn secondary sk-action-secondary"
                   disabled={Boolean(priceWarning)}
-                  onClick={() => run(async () => exportPng(validPoster()))}
+                  onClick={() => run(async () => exportPng(validPoster(), activeFormat))}
                 >
                   Exportar PNG 300 DPI
                 </button>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+              <div className={isTauri() ? 'sk-two-col-grid sk-mt-10' : 'sk-mt-10'}>
                 <button
                   type="button"
-                  className="editor-btn secondary"
-                  style={{
-                    justifyContent: 'center',
-                    height: 38,
-                    fontSize: 12,
-                    fontWeight: 700,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    borderColor: '#93c5fd',
-                    background: '#f8fafc',
-                    color: '#1d4ed8',
-                  }}
+                  className="editor-btn subtle sk-btn-psd"
                   disabled={Boolean(priceWarning)}
                   onClick={() => run(() => handleExportOrOpenPsd(false))}
                 >
-                  🎨 Exportar PSD (.psd)
+                  Exportar PSD (.psd)
                 </button>
-                <button
-                  type="button"
-                  className="editor-btn secondary"
-                  style={{
-                    justifyContent: 'center',
-                    height: 38,
-                    fontSize: 12,
-                    fontWeight: 700,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    borderColor: '#c7d2fe',
-                    background: '#f5f3ff',
-                    color: '#4338ca',
-                  }}
-                  disabled={Boolean(priceWarning)}
-                  title="Gera o arquivo PSD e abre diretamente no Photoshop para você conferir as camadas e o visual"
-                  onClick={() => run(() => handleExportOrOpenPsd(true))}
-                >
-                  👁️ Abrir no Photoshop
-                </button>
+                {isTauri() && (
+                  <button
+                    type="button"
+                    className="editor-btn subtle sk-btn-photoshop"
+                    disabled={Boolean(priceWarning)}
+                    title="Gera o arquivo PSD e abre diretamente no Photoshop para você conferir as camadas e o visual"
+                    onClick={() => run(() => handleExportOrOpenPsd(true))}
+                  >
+                    Abrir no Photoshop
+                  </button>
+                )}
               </div>
 
               <button
                 type="button"
-                className="editor-btn outline-blue"
-                style={{ width: '100%', marginTop: 10, justifyContent: 'center', height: 38 }}
+                className="editor-btn outline-blue sk-full-width-btn sk-mt-10"
                 onClick={() => run(async () => {
                   const p = validPoster();
-                  setQueue(items => [...items, p]);
                   const item = createQueueItemFromPoster(p);
                   item.paperFormat = activeFormat.paper;
                   item.orientation = activeFormat.orientation;
@@ -1465,39 +1940,38 @@ export default function App() {
                   setMessage(`"${p.name}" adicionado ao Condutor de Impressão (${conductorQueue.length + 1} na fila).`);
                 })}
               >
-                + Adicionar ao Condutor de Impressão ({conductorQueue.length})
+                + Adicionar ao Condutor ({conductorQueue.length})
               </button>
 
-              {/* Fila Temporária Integrada (Preservada conforme requisito 7) */}
-              {queue.length > 0 && (
+              {/* Fila Rápida derivada da fonte única conductorQueue (remoção segura por ID) */}
+              {editorQueueItems.length > 0 && (
                 <div className="editor-queue-box">
-                  <h3>Cartazes no Condutor ({queue.length})</h3>
-                  {queue.map((item, i) => (
-                    <div key={i} className="editor-queue-item">
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 300 }}>
-                        <strong>{item.name}</strong> {item.detail} · R$ {item.price}
+                  <h3>Cartazes do Editor no Condutor ({editorQueueItems.length})</h3>
+                  {editorQueueItems.map(item => (
+                    <div key={item.id} className="editor-queue-item">
+                      <span className="sk-queue-item-label">
+                        <strong>{item.name}</strong> {item.detail} · <span className="sk-tabular">R$ {item.price}</span>
                       </span>
                       <button
                         type="button"
                         className="editor-queue-remove"
                         aria-label={'Remover ' + item.name}
-                        title="Remover cartaz da fila temporária"
+                        title="Remover cartaz da fila do Condutor"
                         onClick={() => {
-                          setQueue(items => items.filter((_, j) => i !== j));
-                          setConductorQueue(items => items.filter((_, j) => i !== j));
+                          setConductorQueue(items => items.filter(q => q.id !== item.id));
                         }}
                       >
                         ✕
                       </button>
                     </div>
                   ))}
-                  <div style={{ marginTop: 6, fontSize: 10, color: '#94a3b8' }}>
-                    Cartazes prontos para impressão em lote na aba Condutor de Impressão.
+                  <div className="sk-queue-footnote">
+                    Sincronizado em tempo real com a aba Condutor de Impressão.
                   </div>
                 </div>
               )}
 
-              <p style={{ margin: '14px 0 0 0', fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
+              <p className="sk-print-tip">
                 Impressão: papel {getFormatLabel(activeFormat)}, escala 100%, margens nenhuma e desative cabeçalhos/rodapés.
               </p>
             </div>
@@ -1508,17 +1982,234 @@ export default function App() {
             <div className="editor-preview-heading">
               <div>
                 <h2>Pré-visualização do Cartaz</h2>
-                <p>
-                  Proporção {getFormatLabel(activeFormat)} · {getFormatDimensionsMm(activeFormat).width} × {getFormatDimensionsMm(activeFormat).height} mm (300 DPI)
+                <p className="sk-tabular">
+                  {getFormatLabel(activeFormat)} · {getFormatDimensionsMm(activeFormat).width} × {getFormatDimensionsMm(activeFormat).height} mm · 300 DPI
                 </p>
               </div>
-              <span className="status" style={{ fontSize: 11, padding: '4px 10px' }}>
-                Documento Editável Local
+              <span className="sk-preview-meta">
+                {imported ? 'Arte PSD Editável' : 'Modelo Clássico'}
               </span>
             </div>
 
+            {imported && editableParts.length > 0 && (
+              <div className="sk-canvas-toolbar" role="toolbar" aria-label="Ajuste direto de camadas na arte">
+                <div className="sk-canvas-toolbar-left">
+                  <button
+                    type="button"
+                    className={`editor-btn subtle sk-canvas-tool-btn ${showCanvasGrid ? 'is-active' : ''}`}
+                    onClick={() => setShowCanvasGrid(prev => !prev)}
+                    aria-pressed={showCanvasGrid}
+                    title="Mostrar ou ocultar grade de alinhamento na prévia (G)"
+                  >
+                    Grade (G)
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`editor-btn subtle sk-canvas-tool-btn ${lockPriceGroup ? 'is-active' : ''}`}
+                    onClick={() => setLockPriceGroup(prev => !prev)}
+                    aria-pressed={lockPriceGroup}
+                    title="Mover e redimensionar Reais, Centavos, Vírgula e Traço juntos em bloco"
+                  >
+                    Preço junto
+                  </button>
+
+                  <label className="sk-canvas-layer-picker">
+                    <span className="sr-only">Camada selecionada</span>
+                    <select
+                      className="editor-select sk-canvas-select"
+                      value={selectedPartKey ?? ''}
+                      onChange={e => setSelectedPartKey(e.target.value || null)}
+                      title="Clique direto na arte ou escolha uma camada para mover/redimensionar"
+                    >
+                      <option value="">Clique na arte ou selecione camada…</option>
+                      {editableParts.map(part => {
+                        const key = getPartKey(part);
+                        return (
+                          <option key={key} value={key}>
+                            {PART_ROLE_LABELS[part.role] ?? part.role}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                </div>
+
+                {selectedPartKey && selectedPart && selectedPartAdj ? (
+                  <div className="sk-nudge-group">
+                    <label className="sk-nudge-field" title="Deslocamento horizontal (setas ← / →)">
+                      <span>X</span>
+                      <input
+                        type="number"
+                        className="editor-input sk-nudge-input sk-tabular"
+                        value={selectedPartAdj.dx}
+                        onChange={e => {
+                          const nextDx = Number(e.target.value) || 0;
+                          if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                            const delta = nextDx - selectedPartAdj.dx;
+                            const batch: Record<string, { dx: number; dy: number; scale: number }> = {};
+                            for (const p of editableParts) {
+                              if (isPriceGroupRole(p.role)) {
+                                const cur = clampPartAdjustment(p.adjustments);
+                                batch[getPartKey(p)] = clampPartAdjustment({ ...cur, dx: cur.dx + delta });
+                              }
+                            }
+                            editor.updateMultiplePartAdjustments(batch);
+                          } else {
+                            editor.updatePartAdjustment(selectedPartKey, {
+                              ...selectedPartAdj,
+                              dx: nextDx,
+                            });
+                          }
+                        }}
+                      />
+                    </label>
+                    <label className="sk-nudge-field" title="Deslocamento vertical (setas ↑ / ↓)">
+                      <span>Y</span>
+                      <input
+                        type="number"
+                        className="editor-input sk-nudge-input sk-tabular"
+                        value={selectedPartAdj.dy}
+                        onChange={e => {
+                          const nextDy = Number(e.target.value) || 0;
+                          if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                            const delta = nextDy - selectedPartAdj.dy;
+                            const batch: Record<string, { dx: number; dy: number; scale: number }> = {};
+                            for (const p of editableParts) {
+                              if (isPriceGroupRole(p.role)) {
+                                const cur = clampPartAdjustment(p.adjustments);
+                                batch[getPartKey(p)] = clampPartAdjustment({ ...cur, dy: cur.dy + delta });
+                              }
+                            }
+                            editor.updateMultiplePartAdjustments(batch);
+                          } else {
+                            editor.updatePartAdjustment(selectedPartKey, {
+                              ...selectedPartAdj,
+                              dy: nextDy,
+                            });
+                          }
+                        }}
+                      />
+                    </label>
+                    <label className="sk-nudge-field" title="Tamanho relativo da camada (+ / -)">
+                      <span>Tam</span>
+                      <input
+                        type="number"
+                        min={40}
+                        max={250}
+                        step={5}
+                        className="editor-input sk-nudge-input sk-nudge-scale sk-tabular"
+                        value={Math.round(selectedPartAdj.scale * 100)}
+                        onChange={e => {
+                          const pct = Math.max(40, Math.min(250, Number(e.target.value) || 100));
+                          const nextScale = Number((pct / 100).toFixed(2));
+                          if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                            const ratio = selectedPartAdj.scale > 0 ? nextScale / selectedPartAdj.scale : 1;
+                            const batch: Record<string, { dx: number; dy: number; scale: number }> = {};
+                            for (const p of editableParts) {
+                              if (isPriceGroupRole(p.role)) {
+                                const cur = clampPartAdjustment(p.adjustments);
+                                batch[getPartKey(p)] = clampPartAdjustment({
+                                  ...cur,
+                                  scale: Number((cur.scale * ratio).toFixed(2)),
+                                });
+                              }
+                            }
+                            editor.updateMultiplePartAdjustments(batch);
+                          } else {
+                            editor.updatePartAdjustment(selectedPartKey, {
+                              ...selectedPartAdj,
+                              scale: nextScale,
+                            });
+                          }
+                        }}
+                      />
+                      <span className="sk-nudge-unit">%</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="editor-btn subtle sk-canvas-tool-btn"
+                      onClick={() => {
+                        if (!poster.artwork) return;
+                        if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                          const priceParts = editableParts.filter(p => isPriceGroupRole(p.role));
+                          let minLeft = Infinity;
+                          let maxRight = -Infinity;
+                          for (const p of priceParts) {
+                            const cur = clampPartAdjustment(p.adjustments);
+                            const cx = (p.bounds.left + p.bounds.right) / 2 + cur.dx;
+                            const hw = ((p.bounds.right - p.bounds.left) / 2) * cur.scale;
+                            minLeft = Math.min(minLeft, cx - hw);
+                            maxRight = Math.max(maxRight, cx + hw);
+                          }
+                          const groupCenter = (minLeft + maxRight) / 2;
+                          const delta = Math.round(poster.artwork.canvas.width / 2 - groupCenter);
+                          const batch: Record<string, { dx: number; dy: number; scale: number }> = {};
+                          for (const p of priceParts) {
+                            const cur = clampPartAdjustment(p.adjustments);
+                            batch[getPartKey(p)] = clampPartAdjustment({ ...cur, dx: cur.dx + delta });
+                          }
+                          editor.updateMultiplePartAdjustments(batch);
+                        } else {
+                          const centeredDx = computeHorizontalCenterDx(selectedPart, poster.artwork);
+                          editor.updatePartAdjustment(selectedPartKey, {
+                            ...selectedPartAdj,
+                            dx: centeredDx,
+                          });
+                        }
+                      }}
+                      title="Centralizar horizontalmente na arte"
+                    >
+                      Centralizar
+                    </button>
+                    <button
+                      type="button"
+                      className="editor-btn subtle sk-canvas-tool-btn"
+                      onClick={() => {
+                        if (lockPriceGroup && isPriceGroupRole(selectedPart.role)) {
+                          const batch: Record<string, null> = {};
+                          for (const p of editableParts) {
+                            if (isPriceGroupRole(p.role)) batch[getPartKey(p)] = null;
+                          }
+                          editor.updateMultiplePartAdjustments(batch);
+                        } else {
+                          editor.resetPartAdjustments(selectedPartKey);
+                        }
+                      }}
+                      title="Restaurar posição e tamanho originais desta camada (Delete)"
+                    >
+                      Resetar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="sk-canvas-hint">
+                    <span>Arraste na prévia (imã automático · Alt solta) · Alça azul redimensiona</span>
+                    {hasAnyPartAdjustment && (
+                      <button
+                        type="button"
+                        className="editor-btn subtle sk-canvas-tool-btn"
+                        onClick={() => editor.resetPartAdjustments()}
+                        title="Restaurar posição e tamanho de todas as camadas ajustadas"
+                      >
+                        Resetar tudo
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="editor-canvas-wrap">
-              <PosterView poster={poster} formatConfig={activeFormat} />
+              <PosterView
+                poster={poster}
+                formatConfig={activeFormat}
+                showGrid={showCanvasGrid}
+                selectedPartKey={selectedPartKey}
+                lockPriceGroup={lockPriceGroup}
+                onSelectPart={imported ? setSelectedPartKey : undefined}
+                onUpdatePartAdjustment={imported ? editor.updatePartAdjustment : undefined}
+                onUpdateMultiplePartAdjustments={imported ? editor.updateMultiplePartAdjustments : undefined}
+              />
             </div>
           </section>
         </div>
@@ -1534,7 +2225,21 @@ export default function App() {
             run={run}
             refresh={refresh}
             relocated={editor.relocate}
-            removed={editor.removed}
+            removed={removedPath => {
+              editor.removed(removedPath);
+              setData(prev => removeLibraryEntry(prev, removedPath));
+              setLibrarySelectedPaths(prev => {
+                if (!prev.has(removedPath)) return prev;
+                const next = new Set(prev);
+                next.delete(removedPath);
+                return next;
+              });
+            }}
+            isActive={section === 'library'}
+            requestConfirmation={confirmAction}
+            selectedPaths={librarySelectedPaths}
+            onSelectedPathsChange={setLibrarySelectedPaths}
+            onNotify={setMessage}
             onAddToConductor={(cartaz, cartazPath) => {
               const existing = findDuplicateInQueue(conductorQueue, cartazPath);
               if (existing) {
@@ -1556,10 +2261,67 @@ export default function App() {
       </div>
     ) : null}
     <div hidden={section !== 'import'} className="library-container"><PriceImport run={run} editorGuard={editorGuard} getEditorGuard={() => guardRef.current} onFilesChanged={async paths => { await refresh(); await editor.refreshSaved(paths); }}/></div>
-    <div hidden={section !== 'offers'} className="library-container"><OfferFolders libraryData={data} run={run} onPrintBatch={handlePrintBatch} onEditPoster={openOfferPoster} onRefreshLibrary={refresh}/></div>
+    <div hidden={section !== 'offers'} className="library-container">
+      <OfferFolders
+        libraryData={data}
+        run={run}
+        onPrintBatch={handlePrintBatch}
+        onEditPoster={openOfferPoster}
+        onRefreshLibrary={refresh}
+        isActive={section === 'offers'}
+        requestConfirmation={confirmAction}
+        selectedItemIds={offerSelectedItemIds}
+        onSelectedItemIdsChange={setOfferSelectedItemIds}
+        onStartBatchEdit={startBatchEdit}
+        initialCampaigns={demoCampaigns}
+        onAddToConductor={(cartaz, cartazPath) => {
+          setConductorQueue(prev => {
+            if (findDuplicateInQueue(prev, cartazPath)) return prev;
+            const item = createQueueItemFromCartaz(cartaz, cartazPath, 'library');
+            return [...prev, item];
+          });
+          setMessage(`Cartaz "${cartaz.product.name}" enviado ao Condutor de Impressão.`);
+        }}
+        onAddBatchToConductor={entries => {
+          const next = [...conductorQueueRef.current];
+          let addedCount = 0;
+          for (const entry of entries) {
+            if (findDuplicateInQueue(next, entry.path)) continue;
+            const item = createQueueItemFromCartaz(entry.cartaz, entry.path, 'library');
+            if (entry.copies && entry.copies > 1) {
+              item.copies = entry.copies;
+            }
+            next.push(item);
+            addedCount++;
+          }
+          if (addedCount > 0) {
+            conductorQueueRef.current = next;
+            setConductorQueue(next);
+            setMessage(`${addedCount} cartaz(es) adicionado(s) à Fila de Impressão (Condutor).`);
+          } else {
+            setMessage('Todos os cartazes selecionados já estão na Fila de Impressão.');
+          }
+          return addedCount;
+        }}
+      />
+    </div>
     <div hidden={section !== 'scantech'} className="library-container"><ScantechCreator libraryData={data} run={run} onPrintBatch={handlePrintBatch} onRefreshLibrary={refresh}/></div>
     <div hidden={section !== 'conductor'} className="library-container"><PrintConductor queue={conductorQueue} setQueue={setConductorQueue} libraryData={data} run={run} onPrintBatch={handlePrintBatch}/></div>
     </fieldset>
+    {workspaceMarqueeRect && (
+      <div
+        className="sk-marquee-box"
+        role="presentation"
+        aria-hidden="true"
+        data-testid="workspace-marquee-box"
+        style={{
+          left: workspaceMarqueeRect.left,
+          top: workspaceMarqueeRect.top,
+          width: workspaceMarqueeRect.width,
+          height: workspaceMarqueeRect.height,
+        }}
+      />
+    )}
     </div>
     </div>
 
@@ -1579,9 +2341,14 @@ export default function App() {
 
     {/* Modal de Formato Personalizado */}
     {showCustomModal && (
-      <div className="modal-backdrop">
+      <div
+        className="modal-backdrop"
+        onMouseDown={e => {
+          if (e.target === e.currentTarget) setShowCustomModal(false);
+        }}
+      >
         <form
-          className="panel modal sk-lib-modal"
+          className="panel modal sk-lib-modal sk-confirm-modal"
           role="dialog"
           aria-modal="true"
           aria-label="Configurar Formato Personalizado"
@@ -1593,34 +2360,34 @@ export default function App() {
             setShowCustomModal(false);
           }}
         >
-          <h2>Formato de Papel Personalizado</h2>
-          <p style={{ margin: '4px 0 16px', fontSize: 12.5, color: '#64748b' }}>
+          <h2 className="sk-confirm-title">Formato de Papel Personalizado</h2>
+          <p className="sk-confirm-description">
             Configure as dimensões físicas da folha em milímetros (mm).
           </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155' }}>
+          <div className="sk-two-col-grid">
+            <label className="sk-modal-field-label">
               Largura (mm)
               <input
                 type="number"
                 min={50}
                 max={2000}
                 required
-                className="editor-input"
+                className="editor-input sk-tabular"
                 style={{ marginTop: 6 }}
                 value={customWInput}
                 onChange={e => setCustomWInput(e.target.value)}
               />
             </label>
 
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155' }}>
+            <label className="sk-modal-field-label">
               Altura (mm)
               <input
                 type="number"
                 min={50}
                 max={2000}
                 required
-                className="editor-input"
+                className="editor-input sk-tabular"
                 style={{ marginTop: 6 }}
                 value={customHInput}
                 onChange={e => setCustomHInput(e.target.value)}
@@ -1629,11 +2396,11 @@ export default function App() {
           </div>
 
           <div style={{ marginTop: 14 }}>
-            <span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 6 }}>
+            <span className="sk-modal-field-label" style={{ marginBottom: 6 }}>
               Orientação
             </span>
-            <div style={{ display: 'flex', gap: 16 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+            <div className="sk-radio-row">
+              <label className="sk-radio-option">
                 <input
                   type="radio"
                   name="custom-orient"
@@ -1642,7 +2409,7 @@ export default function App() {
                 />
                 Vertical (Retrato)
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+              <label className="sk-radio-option">
                 <input
                   type="radio"
                   name="custom-orient"
@@ -1654,7 +2421,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="toolbar" style={{ marginTop: 22, justifyContent: 'flex-end', gap: 8 }}>
+          <div className="toolbar sk-modal-actions">
             <button type="button" className="editor-btn subtle" onClick={() => setShowCustomModal(false)}>
               Cancelar
             </button>
@@ -1668,31 +2435,35 @@ export default function App() {
 
     {/* Modal de Confirmação Manual de Impressão */}
     {confirmationModal && (
-      <div className="modal-backdrop">
+      <div
+        className="modal-backdrop"
+        onMouseDown={e => {
+          if (e.target === e.currentTarget) setConfirmationModal(null);
+        }}
+      >
         <div
-          className="panel modal sk-lib-modal"
+          className="panel modal sk-lib-modal sk-confirm-modal"
           role="dialog"
           aria-modal="true"
           aria-label="Confirmar Impressão Física"
-          style={{ maxWidth: 460 }}
         >
-          <h2 style={{ color: '#1e40af', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>🖨️</span> Confirmar Saída na Impressora
+          <h2 className="sk-confirm-title sk-confirm-title--primary">
+            Confirmar Saída na Impressora
           </h2>
-          <p style={{ margin: '12px 0 16px', fontSize: 13, lineHeight: 1.5, color: '#334155' }}>
+          <p className="sk-confirm-description">
             A impressão de <strong>"{confirmationModal.productName}"</strong> ({confirmationModal.formatLabel}) saiu corretamente na impressora física?
           </p>
-          <div style={{ background: '#f8fafc', padding: '10px 12px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', marginBottom: 18 }}>
-            ℹ️ A confirmação manual do operador garante que apenas cartazes efetivamente impressos contem como confirmados no histórico.
+          <div className="sk-modal-note">
+            A confirmação manual do operador garante que apenas cartazes efetivamente impressos contem como confirmados no histórico.
           </div>
-          <div className="toolbar" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <div className="toolbar sk-modal-actions">
             <button
               type="button"
               className="editor-btn subtle"
               onClick={() => setConfirmationModal(null)}
               title="Registrar apenas como 'Enviada' sem confirmar saída física"
             >
-              ✕ Não Confirmar / Falha
+              Não Confirmar / Falha
             </button>
             <button
               type="button"
@@ -1704,15 +2475,25 @@ export default function App() {
               }}
               title="Confirmar que o papel saiu corretamente da impressora"
             >
-              ✓ Sim, Confirmar Impressão
+              Confirmar Impressão
             </button>
           </div>
         </div>
       </div>
     )}
 
+    {/* Modal Reutilizável de Confirmação (Descarte / Backup ao Sobrescrever) */}
+    <ConfirmModal
+      request={confirmState?.request ?? null}
+      onConfirm={() => resolveConfirm(true)}
+      onCancel={() => resolveConfirm(false)}
+    />
+
     {/* Modal de Histórico de Impressão */}
     <PrintHistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} />
+
+    {/* Modal de Atalhos de Teclado do Operador */}
+    <ShortcutsModal isOpen={showShortcutsModal} onClose={() => setShowShortcutsModal(false)} />
 
     <div className="print-only">
       {batchPrintPosters && batchPrintPosters.length > 0 ? (

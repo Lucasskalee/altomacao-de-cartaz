@@ -17,7 +17,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { PosterView } from '../src/components/editor/PosterView';
 import { digitsOnly, getF7, indexCartazes, findCartazesByF7, matchesCartazSearch, withoutF7 } from '../src/features/cartazes/f7';
 import { posterFromDocument } from '../src/features/cartazes/presentation';
-import { exportPng } from '../src/components/editor/exportPng';
+import { exportPng, computePngDimensionsPx } from '../src/components/editor/exportPng';
+import { applyProductFieldChange } from '../src/hooks/useCartaz';
 import { F7Field } from '../src/components/editor/F7Field';
 import { Library } from '../src/components/library/Library';
 import type { Entry } from '../src/features/cartazes/types';
@@ -489,3 +490,716 @@ test('Modelo Caixa Fechada: criação oficial, alternância dinâmica e exporta�
   assert.equal(exp.ok, true);
   assert.ok(exp.bytes && exp.bytes.length > 100);
 });
+
+test('sincronização de preço no editor: price <-> priceCents mantém consistência em ambas as direções', () => {
+  const base = createDocument();
+  assert.equal(base.product.priceCents, 289);
+
+  // Edição via input de texto principal atualiza string e priceCents juntos
+  const edited = applyProductFieldChange(base, '2,89', 'price', '14,90');
+  assert.equal(edited.price, '14,90');
+  assert.equal(edited.document.product.priceCents, 1490);
+
+  // Digitação intermediária ("14,") preserva texto digitado e mantém último priceCents válido
+  const partial = applyProductFieldChange(edited.document, edited.price, 'price', '14,');
+  assert.equal(partial.price, '14,');
+  assert.equal(partial.document.product.priceCents, 1490);
+
+  // Edição via Editor Cirúrgico (priceCents numérico) atualiza price formatado em pt-BR
+  const surgical = applyProductFieldChange(partial.document, partial.price, 'priceCents', 995);
+  assert.equal(surgical.document.product.priceCents, 995);
+  assert.equal(surgical.price, '9,95');
+});
+
+test('posterFromDocument propaga campos estendidos de embalagem/imagem e respeita priceOverride sem vazar F7', () => {
+  const doc = createDocument();
+  doc.product.productCode = '009988';
+  doc.product.hasBoxPrice = true;
+  doc.product.boxQuantity = 24;
+  doc.product.boxUnitLabel = 'UN';
+  doc.product.boxPriceCents = 4800;
+  doc.product.boxPackageType = 'fardo';
+  doc.product.boxPackageLabel = 'NO FARDO C/ 24';
+  doc.product.unitBadgeMode = 'un';
+  doc.product.productImage = { dataUrl: pixel, fileName: 'foto.png', bounds: { left: 10, top: 20, right: 200, bottom: 220 } };
+
+  const poster = posterFromDocument(doc, '3,49');
+  assert.equal(poster.price, '3,49');
+  assert.equal(poster.hasBoxPrice, true);
+  assert.equal(poster.boxQuantity, 24);
+  assert.equal(poster.boxPrice, '48,00');
+  assert.equal(poster.boxPackageType, 'fardo');
+  assert.equal(poster.boxPackageLabel, 'NO FARDO C/ 24');
+  assert.equal(poster.unitBadgeMode, 'un');
+  assert.deepEqual(poster.productImage, { dataUrl: pixel, fileName: 'foto.png', bounds: { left: 10, top: 20, right: 200, bottom: 220 } });
+  assert.equal('productCode' in poster, false);
+});
+
+test('computePngDimensionsPx calcula dimensões exatas em 300 DPI para todos os formatos de papel', () => {
+  assert.deepEqual(computePngDimensionsPx(), { width: 1748, height: 2480 });
+  assert.deepEqual(computePngDimensionsPx({ paper: 'A5', orientation: 'portrait' }), { width: 1748, height: 2480 });
+  assert.deepEqual(computePngDimensionsPx({ paper: 'A5', orientation: 'landscape' }), { width: 2480, height: 1748 });
+  assert.deepEqual(computePngDimensionsPx({ paper: 'A6', orientation: 'portrait' }), { width: 1240, height: 1748 });
+  assert.deepEqual(computePngDimensionsPx({ paper: 'A4', orientation: 'portrait' }), { width: 2480, height: 3508 });
+  assert.deepEqual(computePngDimensionsPx({ paper: 'A3', orientation: 'portrait' }), { width: 3508, height: 4961 });
+  assert.deepEqual(
+    computePngDimensionsPx({ paper: 'custom', orientation: 'portrait', customWidthMm: 100, customHeightMm: 200 }),
+    { width: 1181, height: 2362 },
+  );
+});
+
+test('exportPng em PSD importado aplica formato 300 DPI, validade e textos dinâmicos editados', async () => {
+  const artwork = importedArtwork();
+  artwork.posterModel = 'vencimento';
+  artwork.templateParts = [
+    {
+      role: 'validity',
+      layerId: 'val-1',
+      bounds: { left: 100, top: 900, right: 400, bottom: 960 },
+      fontSize: 36,
+      originalText: '01/01/2026',
+      color: '#ffffff',
+    },
+    {
+      role: 'title',
+      layerId: 'title-1',
+      bounds: { left: 80, top: 220, right: 800, bottom: 320 },
+      fontSize: 64,
+      originalText: 'PRODUTO ANTIGO',
+      color: '#292d5a',
+    },
+  ];
+  const doc = createDocument();
+  doc.product.name = 'LEITE INTEGRAL';
+  doc.product.complement = 'CAIXA 1L';
+  doc.product.unit = 'UN';
+  doc.product.priceCents = 499;
+  doc.product.validityText = '31/12/2026';
+  doc.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
+
+  const poster = posterFromDocument(doc);
+  const drawnTexts: string[] = [];
+  const ctx = {
+    clearRect: () => {},
+    fillRect: () => {},
+    drawImage: () => {},
+    save: () => {},
+    restore: () => {},
+    translate: () => {},
+    scale: () => {},
+    transform: () => {},
+    fillText: (text: string) => drawnTexts.push(String(text)),
+    strokeText: () => {},
+    measureText: (t: string) => ({ width: Math.max(10, String(t).length * 20) }),
+  };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ctx,
+    toDataURL: () => 'data:image/png;base64,ok',
+  };
+  const anchor = { download: '', href: '', click: () => {} };
+  const docDesc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const imgDesc = Object.getOwnPropertyDescriptor(globalThis, 'Image');
+
+  class FakeImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    naturalWidth = 100;
+    naturalHeight = 100;
+    set src(_v: string) {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { createElement: (tag: string) => (tag === 'canvas' ? canvas : anchor) },
+  });
+  Object.defineProperty(globalThis, 'Image', { configurable: true, value: FakeImage });
+
+  try {
+    await exportPng(poster, { paper: 'A4', orientation: 'portrait' });
+    assert.equal(canvas.width, 2480);
+    assert.equal(canvas.height, 3508);
+    assert.ok(drawnTexts.some(t => t.includes('31/12/2026')), 'Data de validade editada deve aparecer no PNG exportado');
+    assert.ok(drawnTexts.some(t => t.includes('LEITE INTEGRAL')), 'Nome dinâmico editado deve aparecer no PNG exportado');
+    assert.ok(drawnTexts.some(t => t.includes('4')), 'Preço inteiro deve aparecer no PNG exportado');
+    assert.ok(drawnTexts.some(t => t.includes('99')), 'Centavos devem aparecer no PNG exportado');
+  } finally {
+    if (docDesc) Object.defineProperty(globalThis, 'document', docDesc);
+    else Reflect.deleteProperty(globalThis, 'document');
+    if (imgDesc) Object.defineProperty(globalThis, 'Image', imgDesc);
+    else Reflect.deleteProperty(globalThis, 'Image');
+  }
+});
+
+test('alternar de Caixa para Vencimento carrega modelo_vencimento.psd e desativa modo Caixa Fechada', async () => {
+  const { createOfficialDocument, switchPosterModel, getPosterModel } = await import('../src/features/psd/templateService');
+
+  const docCaixa = await createOfficialDocument('caixa', {
+    name: 'CERVEJA AMSTEL',
+    complement: 'LATA 269ML',
+    priceCents: 269,
+    unit: 'UN',
+  });
+  assert.equal(getPosterModel(docCaixa), 'caixa');
+  assert.equal(docCaixa.product.hasBoxPrice, true);
+
+  // Alterna de Caixa -> Vencimento: deve trocar a arte para modelo_vencimento.psd e desligar hasBoxPrice
+  const docVenc = await switchPosterModel(docCaixa, 'vencimento');
+  assert.equal(getPosterModel(docVenc), 'vencimento');
+  assert.equal(docVenc.product.hasBoxPrice, false);
+  assert.ok(docVenc.product.validityText, 'Vencimento deve ter data sugerida');
+  assert.equal(docVenc.layout.template, 'imported-psd');
+  if (docVenc.layout.template === 'imported-psd') {
+    assert.equal(docVenc.layout.artwork.source.fileName, 'modelo_vencimento.psd');
+    assert.ok(docVenc.layout.artwork.priceParts.some(p => p.role === 'validity'));
+  }
+
+  // Alterna de Vencimento -> Oferta: deve trocar a arte para modelo_oferta.psd, limpar validade e manter hasBoxPrice = false
+  const docOferta = await switchPosterModel(docVenc, 'oferta');
+  assert.equal(getPosterModel(docOferta), 'oferta');
+  assert.equal(docOferta.product.hasBoxPrice, false);
+  assert.equal(docOferta.product.validityText, '');
+  if (docOferta.layout.template === 'imported-psd') {
+    assert.equal(docOferta.layout.artwork.source.fileName, 'modelo_oferta.psd');
+  }
+});
+
+test('upsertLibraryEntry e removeLibraryEntry atualizam biblioteca em memória sem reescanear disco', async () => {
+  const { upsertLibraryEntry, removeLibraryEntry } = await import('../src/features/cartazes/storage');
+  const root = 'C:\\Skalee\\Cartazes';
+  const doc1 = createDocument();
+  doc1.product = { name: 'SALGADINHO CHEETOS', complement: '95G LUA', priceCents: 1099, unit: 'UN', productCode: '009911' };
+
+  const initialLib = {
+    root,
+    entries: [
+      { path: `${root}\\Mercearia`, name: 'Mercearia', folder: true },
+      { path: `${root}\\Mercearia\\cheetos.psd`, name: 'cheetos.psd', folder: false, content: serialize(doc1), modifiedAt: 1000 },
+      { path: `${root}\\Mercearia\\cheetos.skcartaz`, name: 'cheetos.skcartaz', folder: false, content: serialize(doc1), modifiedAt: 1000 },
+    ],
+  };
+
+  // Atualiza gramagem e preço em memória para ambos .psd e .skcartaz companheiro
+  const updatedDoc = { ...doc1, product: { ...doc1.product, complement: '80G LUA', priceCents: 949 } };
+  const afterUpsert = upsertLibraryEntry(initialLib, `${root}\\Mercearia\\cheetos.psd`, updatedDoc, 2000);
+  assert.ok(afterUpsert);
+  assert.equal(afterUpsert!.entries.length, 3);
+  const psdEntry = afterUpsert!.entries.find(e => e.name === 'cheetos.psd');
+  const skEntry = afterUpsert!.entries.find(e => e.name === 'cheetos.skcartaz');
+  assert.ok(psdEntry?.content?.includes('80G LUA'));
+  assert.ok(skEntry?.content?.includes('949'));
+
+  // Novo arquivo salvo na raiz da biblioteca é inserido incrementalmente
+  const doc2 = createDocument();
+  doc2.product = { name: 'BATATA RUFFLES', complement: 'TUBO 100G', priceCents: 1299, unit: 'UN', productCode: '009922' };
+  const afterInsert = upsertLibraryEntry(afterUpsert, `${root}\\Mercearia\\ruffles.skcartaz`, doc2, 3000);
+  assert.equal(afterInsert?.entries.length, 4);
+
+  // Remoção limpa apenas o alvo (ou subpasta)
+  const afterRemove = removeLibraryEntry(afterInsert, `${root}\\Mercearia\\ruffles.skcartaz`);
+  assert.equal(afterRemove?.entries.length, 3);
+  assert.equal(afterRemove?.entries.some(e => e.name === 'ruffles.skcartaz'), false);
+});
+
+test('applyPartAdjustmentToDocument aplica, limita e reseta deslocamento (X/Y) e escala de camadas PSD', async () => {
+  const { applyPartAdjustmentToDocument } = await import('../src/hooks/useCartaz');
+  const { getEditableParts, getEffectivePartBounds, getPartKey } = await import('../src/components/editor/importedRenderer');
+
+  const doc = createDocument();
+  const baseArtwork = importedArtwork();
+  doc.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork: baseArtwork };
+
+  const parts = getEditableParts(baseArtwork);
+  const fractionPart = parts.find(p => p.role === 'fraction');
+  assert.ok(fractionPart, 'Deve existir parte de centavos editável');
+  const key = getPartKey(fractionPart!);
+
+  const moved = applyPartAdjustmentToDocument(doc, key, { dx: 18, dy: -12, scale: 1.25 });
+  assert.equal(moved.layout.template, 'imported-psd');
+  if (moved.layout.template === 'imported-psd') {
+    const updatedPart = moved.layout.artwork.priceParts.find(p => getPartKey(p) === key)!;
+    assert.deepEqual(updatedPart.adjustments, { dx: 18, dy: -12, scale: 1.25 });
+    const origCx = (fractionPart!.bounds.left + fractionPart!.bounds.right) / 2;
+    const eff = getEffectivePartBounds(updatedPart);
+    const effCx = (eff.left + eff.right) / 2;
+    assert.equal(Math.round(effCx - origCx), 18);
+  }
+
+  // Clamp de segurança impede valores absurdos
+  const clamped = applyPartAdjustmentToDocument(moved, key, { dx: 5000, dy: -5000, scale: 9 });
+  if (clamped.layout.template === 'imported-psd') {
+    const p = clamped.layout.artwork.priceParts.find(item => getPartKey(item) === key)!;
+    assert.deepEqual(p.adjustments, { dx: 600, dy: -800, scale: 2.5 });
+  }
+
+  // Resetar camada limpa o campo adjustments
+  const reset = applyPartAdjustmentToDocument(clamped, key, null);
+  if (reset.layout.template === 'imported-psd') {
+    const p = reset.layout.artwork.priceParts.find(item => getPartKey(item) === key)!;
+    assert.equal(p.adjustments, undefined);
+  }
+});
+
+test('createDebouncedAsyncSaver agrupa edições rápidas, reporta progresso e serializa alterações durante a gravação', async () => {
+  const { createDebouncedAsyncSaver } = await import('../src/features/cartazes/asyncSave');
+
+  let calls = 0;
+  let activeWrites = 0;
+  let maxConcurrentWrites = 0;
+  const phases: string[] = [];
+  const percents: number[] = [];
+  let releaseFirstWrite: (() => void) | null = null;
+
+  const saver = createDebouncedAsyncSaver({
+    debounceMs: 25,
+    performSave: async ({ onProgress }) => {
+      calls += 1;
+      activeWrites += 1;
+      maxConcurrentWrites = Math.max(maxConcurrentWrites, activeWrites);
+      onProgress({ percent: 45, stage: 'Gravando…' });
+      if (calls === 1) {
+        await new Promise<void>(resolve => {
+          releaseFirstWrite = resolve;
+        });
+      }
+      onProgress({ percent: 95, stage: 'Finalizando…' });
+      activeWrites -= 1;
+      return true;
+    },
+    onStateChange: state => {
+      phases.push(state.phase);
+      percents.push(state.percent);
+    },
+  });
+
+  // 4 alterações rápidas devem ser agrupadas em apenas 1 gravação
+  saver.schedule();
+  saver.schedule();
+  saver.schedule();
+  saver.schedule();
+  assert.equal(saver.getState().phase, 'scheduled');
+
+  await new Promise(resolve => setTimeout(resolve, 45));
+  assert.equal(calls, 1);
+  assert.equal(saver.isInFlight(), true);
+  assert.ok(percents.includes(45));
+
+  // Nova edição enquanto grava: não inicia 2ª gravação paralela, mas enfileira 1 follow-up automático
+  saver.schedule();
+  saver.schedule();
+  assert.equal(calls, 1);
+
+  releaseFirstWrite?.();
+  await new Promise(resolve => setTimeout(resolve, 35));
+
+  assert.equal(calls, 2, 'Deve executar exatamente 1 gravação adicional com as alterações ocorridas durante a escrita');
+  assert.equal(maxConcurrentWrites, 1, 'Nunca deve executar duas escritas simultâneas no mesmo arquivo');
+  assert.equal(saver.getState().phase, 'saved');
+  assert.equal(saver.getState().percent, 100);
+  assert.ok(phases.includes('scheduled'));
+  assert.ok(phases.includes('saving'));
+  assert.ok(phases.includes('saved'));
+  saver.dispose();
+});
+
+test('createDebouncedAsyncSaver suporta flush imediato (Ctrl+S) e recupera de erro de escrita', async () => {
+  const { createDebouncedAsyncSaver } = await import('../src/features/cartazes/asyncSave');
+
+  let shouldFail = true;
+  let lastReason = '';
+  const saver = createDebouncedAsyncSaver({
+    debounceMs: 500,
+    performSave: async ({ reason, onProgress }) => {
+      lastReason = reason;
+      onProgress({ percent: 50, stage: 'Gravando…' });
+      if (shouldFail) throw new Error('Disco protegido contra gravação');
+      return true;
+    },
+  });
+
+  saver.schedule();
+  const failed = await saver.flush('manual');
+  assert.equal(failed, false);
+  assert.equal(lastReason, 'manual');
+  assert.equal(saver.getState().phase, 'error');
+  assert.match(saver.getState().error ?? '', /Disco protegido/);
+
+  shouldFail = false;
+  const retried = await saver.flush('manual');
+  assert.equal(retried, true);
+  assert.equal(saver.getState().phase, 'saved');
+  assert.equal(saver.getState().error, null);
+  saver.dispose();
+});
+
+test('useMarqueeSelection helpers: normalizeMarqueeRect e computeMarqueeSelection selecionam itens no quadrado azul e suportam modo aditivo', async () => {
+  const { normalizeMarqueeRect, computeMarqueeSelection } = await import('../src/hooks/useMarqueeSelection');
+
+  // Arraste de baixo-direita para cima-esquerda deve normalizar corretamente
+  const rect = normalizeMarqueeRect(250, 220, 40, 80);
+  assert.deepEqual(rect, { left: 40, top: 80, right: 250, bottom: 220, width: 210, height: 140 });
+
+  const rows = [
+    { id: 'item-1', bounds: { left: 20, top: 20, right: 300, bottom: 60 } },   // fora (acima)
+    { id: 'item-2', bounds: { left: 20, top: 90, right: 300, bottom: 130 } },  // dentro
+    { id: 'item-3', bounds: { left: 20, top: 180, right: 300, bottom: 240 } }, // intersecção parcial
+    { id: 'item-4', bounds: { left: 20, top: 260, right: 300, bottom: 300 } }, // fora (abaixo)
+  ];
+
+  const replaced = computeMarqueeSelection(rows, rect, new Set(['item-1']), false);
+  assert.deepEqual([...replaced].sort(), ['item-2', 'item-3']);
+
+  const additive = computeMarqueeSelection(rows, rect, new Set(['item-1']), true);
+  assert.deepEqual([...additive].sort(), ['item-1', 'item-2', 'item-3']);
+});
+
+test('selectExportCandidates filtra corretamente por escopo (checked-rows, print-marked e all)', async () => {
+  const { selectExportCandidates } = await import('../src/components/ofertas/OfferFolders');
+  const docA = createDocument();
+  docA.product.name = 'PRODUTO A';
+  const docB = createDocument();
+  docB.product.name = 'PRODUTO B';
+  const docC = createDocument();
+  docC.product.name = 'PRODUTO C';
+
+  const makeView = (id: string, f7: string, path: string, doc: typeof docA, printSelected: boolean) => ({
+    item: {
+      id,
+      rowNumber: 1,
+      f7,
+      description: doc.product.name,
+      scheduledPriceCents: 499,
+      conflicting: false,
+      issues: [],
+      posters: [],
+    },
+    matchedPosters: [
+      {
+        state: {
+          cartazId: doc.id,
+          cartazPath: path,
+          selected: printSelected,
+          copies: 1,
+          status: 'preparado' as const,
+          printedAt: null,
+        },
+        libraryCartaz: null,
+        currentPriceCents: 499,
+        scheduledDocument: doc,
+        appliedPriceCents: 499,
+        hasInvertedLayers: false,
+        priceMismatchReason: null,
+      },
+    ],
+    unlinkedLibraryPosters: [],
+    hasConflict: false,
+    missingPoster: false,
+  });
+
+  const views = [
+    makeView('row-a', '100', 'C:\\a.skcartaz', docA, true),
+    makeView('row-b', '200', 'C:\\b.skcartaz', docB, false),
+    makeView('row-c', '300', 'C:\\c.skcartaz', docC, true),
+  ];
+
+  const checkedOnly = selectExportCandidates(views, 'checked-rows', new Set(['row-b', 'row-c']));
+  assert.deepEqual(checkedOnly.map(c => c.item.id), ['row-b', 'row-c']);
+
+  const printMarkedOnly = selectExportCandidates(views, 'print-marked', new Set(['row-b']));
+  assert.deepEqual(printMarkedOnly.map(c => c.item.id), ['row-a', 'row-c']);
+
+  const allLinked = selectExportCandidates(views, 'all', new Set());
+  assert.equal(allLinked.length, 3);
+});
+
+test('App.tsx expõe useMarqueeSelection e renderiza a superfície de seleção de arraste (sk-marquee-surface)', async () => {
+  const appModule = await import('../src/App');
+  assert.equal(typeof appModule.useMarqueeSelection, 'function');
+  const html = renderToStaticMarkup(<appModule.default />);
+  assert.match(html, /sk-main-content sk-marquee-surface/);
+});
+
+test('computeSnapAdjustment e computeHorizontalCenterDx aplicam imã no centro, camadas vizinhas e grade', async () => {
+  const { computeSnapAdjustment, computeHorizontalCenterDx } = await import('../src/components/editor/importedRenderer');
+  const artwork = importedArtwork();
+  const wholePart = artwork.priceParts.find(p => p.role === 'whole')!;
+  const fractionPart = artwork.priceParts.find(p => p.role === 'fraction')!;
+
+  // Centralização horizontal exata do Reais no canvas (tolerância de 0.5px por arredondamento inteiro de dx)
+  const centerDx = computeHorizontalCenterDx(wholePart, artwork);
+  const wholeBaseCenter = (wholePart.bounds.left + wholePart.bounds.right) / 2;
+  assert.ok(Math.abs(wholeBaseCenter + centerDx - artwork.canvas.width / 2) <= 0.5);
+
+  // Imã magnético próximo ao centro do canvas (desvio de 4px puxa para o centro exato)
+  const snappedCenter = computeSnapAdjustment(wholePart, centerDx + 4, 0, 1, artwork, [fractionPart], false);
+  assert.equal(snappedCenter.dx, centerDx);
+  assert.equal(snappedCenter.guides.verticalX, artwork.canvas.width / 2);
+
+  // Alinhamento magnético com o topo da camada vizinha (Centavos alinhado ao topo de Reais)
+  const deltaToWholeTop = Math.round(wholePart.bounds.top - fractionPart.bounds.top);
+  const snappedSibling = computeSnapAdjustment(fractionPart, 0, deltaToWholeTop + 3, 1, artwork, [wholePart], false);
+  assert.equal(snappedSibling.dy, deltaToWholeTop);
+  assert.equal(snappedSibling.guides.horizontalY, wholePart.bounds.top);
+});
+
+test('applyPartAdjustmentsBatchToDocument move e reseta o bloco de preço atomicamente', async () => {
+  const { applyPartAdjustmentsBatchToDocument } = await import('../src/hooks/useCartaz');
+  const { getPartKey } = await import('../src/components/editor/importedRenderer');
+  const doc = createDocument();
+  const artwork = importedArtwork();
+  doc.layout = { template: 'imported-psd', paper: 'A5', orientation: 'portrait', artwork };
+
+  const wholePart = artwork.priceParts.find(p => p.role === 'whole')!;
+  const fractionPart = artwork.priceParts.find(p => p.role === 'fraction')!;
+  const kWhole = getPartKey(wholePart);
+  const kFrac = getPartKey(fractionPart);
+
+  const moved = applyPartAdjustmentsBatchToDocument(doc, {
+    [kWhole]: { dx: 24, dy: -12, scale: 1.15 },
+    [kFrac]: { dx: 24, dy: -12, scale: 1.15 },
+  });
+  assert.equal(moved.layout.template, 'imported-psd');
+  if (moved.layout.template === 'imported-psd') {
+    assert.deepEqual(moved.layout.artwork.priceParts.find(p => p.role === 'whole')?.adjustments, { dx: 24, dy: -12, scale: 1.15 });
+    assert.deepEqual(moved.layout.artwork.priceParts.find(p => p.role === 'fraction')?.adjustments, { dx: 24, dy: -12, scale: 1.15 });
+  }
+
+  const reset = applyPartAdjustmentsBatchToDocument(moved, { [kWhole]: null, [kFrac]: null });
+  if (reset.layout.template === 'imported-psd') {
+    assert.equal(reset.layout.artwork.priceParts.find(p => p.role === 'whole')?.adjustments, undefined);
+    assert.equal(reset.layout.artwork.priceParts.find(p => p.role === 'fraction')?.adjustments, undefined);
+  }
+});
+
+test('indexCartazes reutiliza cache WeakMap por Entry e findCartazesByF7 opera em O(1)', () => {
+  const doc1 = createDocument();
+  doc1.product.name = 'CAFE EXTRA FORTE';
+  doc1.product.productCode = '004411';
+  const doc2 = createDocument();
+  doc2.product.name = 'LEITE INTEGRAL';
+  doc2.product.productCode = '009922';
+
+  const e1: Entry = { name: 'cafe.skcartaz', path: 'C:\\Lib\\cafe.skcartaz', folder: false, content: serialize(doc1) };
+  const e2: Entry = { name: 'leite.skcartaz', path: 'C:\\Lib\\leite.skcartaz', folder: false, content: serialize(doc2) };
+
+  const first = indexCartazes([e1, e2]);
+  const second = indexCartazes([e1, e2]);
+  // Mesma referência reutilizada do WeakMap (sem re-executar JSON.parse)
+  assert.equal(first[0], second[0]);
+  assert.equal(first[1], second[1]);
+
+  const found = findCartazesByF7('004411', first);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].document.product.name, 'CAFE EXTRA FORTE');
+});
+
+test('atalho Delete: isTextEditingElement libera checkboxes e buildBatchDeleteConfirmation lista itens para exclusão permanente', async () => {
+  const { isTextEditingElement, buildBatchDeleteConfirmation } = await import('../src/features/cartazes/keyboard');
+
+  // Checkboxes e botões NÃO bloqueiam o atalho Delete na lista
+  assert.equal(isTextEditingElement({ tagName: 'INPUT', type: 'checkbox' } as unknown as EventTarget), false);
+  assert.equal(isTextEditingElement({ tagName: 'INPUT', type: 'radio' } as unknown as EventTarget), false);
+  assert.equal(isTextEditingElement({ tagName: 'BUTTON' } as unknown as EventTarget), false);
+
+  // Campos de digitação continuam bloqueando o atalho Delete para não apagar itens enquanto digita
+  assert.equal(isTextEditingElement({ tagName: 'INPUT', type: 'text' } as unknown as EventTarget), true);
+  assert.equal(isTextEditingElement({ tagName: 'INPUT', type: 'search' } as unknown as EventTarget), true);
+  assert.equal(isTextEditingElement({ tagName: 'TEXTAREA' } as unknown as EventTarget), true);
+  assert.equal(isTextEditingElement({ tagName: 'SELECT' } as unknown as EventTarget), true);
+  assert.equal(isTextEditingElement({ tagName: 'DIV', isContentEditable: true } as unknown as EventTarget), true);
+
+  const single = buildBatchDeleteConfirmation(['C:\\Lib\\arroz.skcartaz'], () => 'ARROZ 5KG');
+  assert.equal(single.tone, 'danger');
+  assert.match(single.title, /1 cartaz permanentemente/);
+  assert.match(single.description, /"ARROZ 5KG"/);
+
+  const many = buildBatchDeleteConfirmation(
+    ['C:\\1.skcartaz', 'C:\\2.skcartaz', 'C:\\3.skcartaz', 'C:\\4.skcartaz', 'C:\\5.skcartaz', 'C:\\6.skcartaz'],
+    p => p.split('\\').pop() || p
+  );
+  assert.equal(many.tone, 'danger');
+  assert.match(many.title, /6 cartazes permanentemente/);
+  assert.match(many.description, /e mais 2/);
+  assert.match(many.note ?? '', /não pode ser desfeita/);
+});
+
+test('WebWorker de renderização: extractSerializableArtwork remove base64 pesados e preparePosterRenderPlan serializa plano completo', async () => {
+  const { extractSerializableArtwork, preparePosterRenderPlan } = await import(
+    '../src/components/editor/posterRenderPlan'
+  );
+
+  const artwork: ImportedArtwork = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'complexo.psd', sha256: 'hash-worker-1' },
+    canvas: { width: 1000, height: 1414, resolutionPpi: 300, fit: 'contain' },
+    staticBackground: 'data:image/png;base64,' + 'A'.repeat(2048),
+    originalPreview: 'data:image/png;base64,' + 'B'.repeat(2048),
+    warnings: [],
+    layers: [
+      { id: '1', name: 'Fundo', type: 'raster', visible: true, depth: 0, bounds: { left: 0, top: 0, right: 1000, bottom: 1414 } },
+      { id: '2', name: 'Caixa com 12 un', type: 'text', visible: true, depth: 0, text: 'CAIXA COM 12 UN', bounds: { left: 100, top: 1100, right: 900, bottom: 1180 } },
+    ],
+    priceParts: [
+      {
+        layerId: '10',
+        role: 'whole',
+        originalText: '10',
+        bounds: { left: 120, top: 600, right: 520, bottom: 1100 },
+        adjustments: { dx: 9999, dy: -9999, scale: 9 },
+        fontFamily: 'Impact',
+        fontSize: 400,
+        color: '#d32f2f',
+      },
+      {
+        layerId: '11',
+        role: 'fraction',
+        originalText: '99',
+        bounds: { left: 540, top: 620, right: 860, bottom: 880 },
+        fontFamily: 'Impact',
+        fontSize: 220,
+        color: '#d32f2f',
+      },
+    ],
+  };
+
+  const serializable = extractSerializableArtwork(artwork);
+  assert.equal('staticBackground' in serializable, false);
+  assert.equal('originalPreview' in serializable, false);
+  assert.equal(serializable.source.sha256, 'hash-worker-1');
+  assert.equal(serializable.priceParts.length, 2);
+
+  const plan = preparePosterRenderPlan({
+    artwork: serializable,
+    price: '19,90',
+    outputWidth: 500,
+    outputHeight: 707,
+    validityText: 'OFERTA VALIDA HOJE',
+    dynamicTexts: { name: 'SALGADINHO', complement: '80G', unit: 'UN' },
+  });
+
+  assert.equal(plan.whole, '19');
+  assert.equal(plan.fraction, '90');
+  assert.equal(plan.outputWidth, 500);
+  assert.equal(plan.outputHeight, 707);
+  assert.ok(Math.abs(plan.scale - 0.5) < 0.001);
+  assert.equal(plan.hasNativeBoxLayers, true);
+
+  // Ajustes fora dos limites foram clampados antes do desenho no Canvas
+  const wholePart = plan.normalizedPriceParts.find(p => p.role === 'whole');
+  assert.ok(wholePart?.adjustments);
+  assert.equal(wholePart!.adjustments!.dx, 600);
+  assert.equal(wholePart!.adjustments!.dy, -800);
+  assert.equal(wholePart!.adjustments!.scale, 2.5);
+
+  // serializedPayload é um JSON íntegro produzido fora da thread principal
+  const parsed = JSON.parse(plan.serializedPayload);
+  assert.equal(parsed.sourceHash, 'hash-worker-1');
+  assert.equal(parsed.whole, '19');
+  assert.equal(parsed.fraction, '90');
+  assert.equal(parsed.hasNativeBoxLayers, true);
+});
+
+test('preparePosterRenderOffThread executa via Worker (mock) e cancela requisições obsoletas via AbortController', async () => {
+  const { extractSerializableArtwork, preparePosterRenderPlan } = await import(
+    '../src/components/editor/posterRenderPlan'
+  );
+  const {
+    preparePosterRenderOffThread,
+    isPosterRenderWorkerActive,
+    setPosterRenderWorkerFactory,
+    terminatePosterRenderWorker,
+  } = await import('../src/components/editor/posterRenderWorkerClient');
+
+  const artwork: ImportedArtwork = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'oferta.psd', sha256: 'hash-worker-2' },
+    canvas: { width: 800, height: 1131, resolutionPpi: 300, fit: 'contain' },
+    staticBackground: 'data:image/png;base64,abc',
+    originalPreview: 'data:image/png;base64,def',
+    warnings: [],
+    layers: [],
+    priceParts: [
+      {
+        layerId: '1',
+        role: 'whole',
+        originalText: '9',
+        bounds: { left: 100, top: 500, right: 420, bottom: 950 },
+        fontFamily: 'Impact',
+        fontSize: 320,
+        color: '#b91c1c',
+      },
+      {
+        layerId: '2',
+        role: 'fraction',
+        originalText: '99',
+        bounds: { left: 440, top: 520, right: 700, bottom: 760 },
+        fontFamily: 'Impact',
+        fontSize: 180,
+        color: '#b91c1c',
+      },
+    ],
+  };
+
+  const baseInput = {
+    artwork: extractSerializableArtwork(artwork),
+    price: '12,49',
+    outputWidth: 400,
+    outputHeight: 566,
+  };
+
+  // 1) Fallback automático quando Worker não existe (ambiente Node)
+  setPosterRenderWorkerFactory(null);
+  const fallbackPlan = await preparePosterRenderOffThread(baseInput);
+  assert.equal(fallbackPlan.whole, '12');
+  assert.equal(fallbackPlan.fraction, '49');
+
+  // 2) Execução real via Worker simulado (valida postMessage / onmessage)
+  let workerCalls = 0;
+
+  class MockWorker {
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: Event) => void) | null = null;
+    postMessage(data: { requestId: number; input: Parameters<typeof preparePosterRenderPlan>[0] }) {
+      workerCalls += 1;
+      setTimeout(() => {
+        const plan = preparePosterRenderPlan(data.input);
+        this.onmessage?.({ data: { requestId: data.requestId, ok: true, plan } } as MessageEvent);
+      }, 5);
+    }
+    terminate() {
+      // noop
+    }
+  }
+
+  try {
+    setPosterRenderWorkerFactory(() => new MockWorker() as unknown as Worker);
+
+    const workerPlan = await preparePosterRenderOffThread({
+      ...baseInput,
+      price: '24,95',
+    });
+    assert.equal(isPosterRenderWorkerActive(), true);
+    assert.equal(workerCalls, 1);
+    assert.equal(workerPlan.whole, '24');
+    assert.equal(workerPlan.fraction, '95');
+
+    // 3) Cancelamento de edição anterior em digitação rápida via AbortController
+    const controller = new AbortController();
+    const pending = preparePosterRenderOffThread({ ...baseInput, price: '99,99' }, controller.signal);
+    controller.abort();
+    await assert.rejects(pending, (err: unknown) => (err as { name?: string })?.name === 'AbortError');
+  } finally {
+    setPosterRenderWorkerFactory(null);
+    terminatePosterRenderWorker();
+  }
+});
+
+
+
+
+

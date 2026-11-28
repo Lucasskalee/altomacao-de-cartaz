@@ -84,25 +84,64 @@ export async function createOfficialDocument(
   };
 }
 
+export function isOfficialTemplateArtwork(artwork?: ImportedArtwork | null): boolean {
+  if (!artwork) return false;
+  const srcPath = (artwork.source?.sourcePath || '').replace(/\\/g, '/').toLowerCase();
+  const fileName = (artwork.source?.fileName || '').toLowerCase();
+  return (
+    srcPath.startsWith('/templates/') ||
+    fileName === 'modelo_oferta.psd' ||
+    fileName === 'modelo_caixa.psd' ||
+    fileName === 'modelo_vencimento.psd' ||
+    fileName === 'modelo_fardo.psd'
+  );
+}
+
+function artworkHasVencimentoLayer(artwork: ImportedArtwork): boolean {
+  return (
+    artwork.priceParts.some(p => p.role === 'validity') ||
+    artwork.layers.some(
+      l => l.visible && /vencimento|pr[oó]ximo\s+ao\s+vencimento|n[aã]o\s+efetuamos\s+a\s+troca/i.test(l.text ?? l.name)
+    )
+  );
+}
+
 export async function switchPosterModel(
   currentDoc: Cartaz,
   targetModel: PosterTemplateModel
 ): Promise<Cartaz> {
-  // Se o cartaz já for um PSD customizado importado, preservamos a arte original do usuário
-  // e apenas adaptamos as propriedades e modelo (evita sobrescrever com o cartaz de Cerveja Heineken)
-  const artwork = currentDoc.layout.template === 'imported-psd'
-    ? { ...currentDoc.layout.artwork, posterModel: targetModel }
-    : await getOfficialArtwork(targetModel);
-  const currentProd = currentDoc.product as any;
+  const isCustomUserPsd =
+    currentDoc.layout.template === 'imported-psd' &&
+    !isOfficialTemplateArtwork(currentDoc.layout.artwork);
+
+  let artwork: ImportedArtwork;
+  if (isCustomUserPsd && currentDoc.layout.template === 'imported-psd') {
+    // Se o cartaz for um PSD customizado importado pelo usuário, preservamos a arte original
+    // exceto ao migrar para Vencimento quando o PSD customizado não possui camada de validade/vencimento.
+    if (targetModel === 'vencimento' && !artworkHasVencimentoLayer(currentDoc.layout.artwork)) {
+      artwork = await getOfficialArtwork('vencimento');
+    } else {
+      artwork = { ...currentDoc.layout.artwork, posterModel: targetModel };
+    }
+  } else if (targetModel === 'caixa') {
+    // Usa o modelo base de Oferta com posterModel='caixa' para renderização ao vivo editável
+    // da faixa de Caixa/Fardo no canvas (a exportação PSD direta usa modelo_caixa.psd).
+    const baseOffer = await getOfficialArtwork('oferta');
+    artwork = { ...baseOffer, posterModel: 'caixa' };
+  } else {
+    artwork = await getOfficialArtwork(targetModel);
+  }
+
+  const currentProd = currentDoc.product;
   const currentModel = getPosterModel(currentDoc);
   let validityText = currentProd.validityText ?? '';
-  if (targetModel === 'vencimento' && (!validityText || currentModel === 'oferta')) {
+  if (targetModel === 'vencimento') {
     validityText = validityText || '02/12';
-  } else if (targetModel === 'oferta' && currentModel === 'vencimento') {
+  } else if (currentModel === 'vencimento') {
     validityText = '';
   }
 
-  const hasBoxPrice = targetModel === 'caixa' ? true : targetModel === 'oferta' ? false : Boolean(currentProd.hasBoxPrice);
+  const hasBoxPrice = targetModel === 'caixa';
   const boxQuantity = currentProd.boxQuantity ?? 12;
   const boxUnitLabel = currentProd.boxUnitLabel ?? 'UND.';
   const boxPriceCents = currentProd.boxPriceCents ?? (currentDoc.product.priceCents * boxQuantity);

@@ -1,4 +1,5 @@
-import { lazy, Suspense, useMemo, useState, useEffect } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useRef, useState, useEffect } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
 import type { Cartaz, Entry, Library as LibraryData } from '../../features/cartazes/types';
 import { duplicate } from '../../features/cartazes/serialization';
 import * as storage from '../../features/cartazes/storage';
@@ -7,6 +8,13 @@ import { getF7, indexCartazes, matchesCartazSearch, withoutF7 } from '../../feat
 import { posterFromDocument } from '../../features/cartazes/presentation';
 import { getLatestPrintMap } from '../../features/history/service';
 import type { PaperSize } from '../../features/formatos/types';
+import type { ConfirmDialogRequest } from '../common/ConfirmModal';
+import { useMarqueeSelection } from '../../hooks/useMarqueeSelection';
+import {
+  buildBatchDeleteConfirmation,
+  hasActiveModalDialog,
+  isTextEditingElement,
+} from '../../features/cartazes/keyboard';
 
 const PsdImport = lazy(() => import('./PsdImport').then(module => ({ default: module.PsdImport })));
 
@@ -19,6 +27,11 @@ type Props = {
   relocated: (old: string, next: string) => void;
   removed: (path: string) => void;
   onAddToConductor?: (cartaz: Cartaz, path: string) => void;
+  isActive?: boolean;
+  requestConfirmation?: (request: ConfirmDialogRequest) => Promise<boolean>;
+  selectedPaths?: Set<string>;
+  onSelectedPathsChange?: (next: Set<string>) => void;
+  onNotify?: (message: string) => void;
 };
 
 export function Library({
@@ -30,6 +43,11 @@ export function Library({
   relocated,
   removed,
   onAddToConductor,
+  isActive = true,
+  requestConfirmation,
+  selectedPaths: controlledSelectedPaths,
+  onSelectedPathsChange,
+  onNotify,
 }: Props) {
   const [folder, setFolder] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -64,7 +82,35 @@ export function Library({
   const [onlyWithoutF7, setOnlyWithoutF7] = useState(false);
   const [fileFormat, setFileFormat] = useState<'all' | 'skcartaz' | 'psd'>('all');
   const [sort, setSort] = useState<'date' | 'date_asc' | 'name' | 'name_desc'>('date');
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [internalSelectedPaths, setInternalSelectedPaths] = useState<Set<string>>(new Set());
+  const isSelectionControlled =
+    controlledSelectedPaths !== undefined && onSelectedPathsChange !== undefined;
+  const selectedPaths = isSelectionControlled ? controlledSelectedPaths : internalSelectedPaths;
+  const selectedPathsRef = useRef(selectedPaths);
+  selectedPathsRef.current = selectedPaths;
+  const setSelectedPaths = useCallback(
+    (updater: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      if (isSelectionControlled) {
+        const next = typeof updater === 'function' ? updater(selectedPathsRef.current) : updater;
+        onSelectedPathsChange(next);
+      } else {
+        setInternalSelectedPaths(updater);
+      }
+    },
+    [isSelectionControlled, onSelectedPathsChange]
+  );
+
+  const libItemsRef = useRef<HTMLDivElement | null>(null);
+  const {
+    marqueeRect: libMarqueeRect,
+    isDragging: isLibMarqueeDragging,
+    handleMouseDown: handleLibMarqueeMouseDown,
+  } = useMarqueeSelection({
+    containerRef: libItemsRef,
+    selectedIds: selectedPaths,
+    onSelectionChange: next => setSelectedPaths(next),
+    enabled: isActive && !isSelectionControlled,
+  });
   const [view, setView] = useState<'grid' | 'list'>(() => {
     if (typeof window !== 'undefined') {
       const v = new URLSearchParams(window.location.search).get('view');
@@ -72,6 +118,8 @@ export function Library({
     }
     return 'grid';
   });
+  const PAGE_SIZE = 48;
+  const [visibleLimit, setVisibleLimit] = useState(PAGE_SIZE);
 
   const [newName, setNewName] = useState('');
   const [editing, setEditing] = useState<Entry | null>(null);
@@ -80,16 +128,33 @@ export function Library({
   const [importingPsd, setImportingPsd] = useState(false);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
 
-  // Fechar dropdowns com tecla Escape ou clique externo
+  // Fechar dropdowns/seleção com Escape e suportar tecla Delete para exclusão permanente em lote
+  const handleBatchDeleteRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => {
+    if (!isActive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setActiveDropdown(null);
+        if (activeDropdown) {
+          setActiveDropdown(null);
+        } else if (!editing && !deleting && !importingPsd && !hasActiveModalDialog() && selectedPaths.size > 0) {
+          setSelectedPaths(new Set());
+        }
+        return;
+      }
+      if (editing || deleting || importingPsd || hasActiveModalDialog()) {
+        return;
+      }
+      if (isTextEditingElement(e.target)) {
+        return;
+      }
+      if (e.key === 'Delete' && selectedPaths.size > 0) {
+        e.preventDefault();
+        run(() => handleBatchDeleteRef.current());
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [isActive, selectedPaths, activeDropdown, editing, deleting, importingPsd, run, setSelectedPaths]);
 
   const printDateMap = useMemo(() => getLatestPrintMap(), [data.entries]);
 
@@ -257,6 +322,13 @@ export function Library({
     sort,
   ]);
 
+  useEffect(() => {
+    setVisibleLimit(PAGE_SIZE);
+  }, [active, query, f7Query, descQuery, paperFormat, createdDateFilter, printedDateFilter, onlyWithoutF7, fileFormat, sort, view]);
+
+  const visibleRows = useMemo(() => rows.slice(0, visibleLimit), [rows, visibleLimit]);
+  const remainingRowsCount = Math.max(0, rows.length - visibleRows.length);
+
   const handleClearFilters = () => {
     setQuery('');
     setF7Query('');
@@ -297,18 +369,59 @@ export function Library({
     setSelectedPaths(new Set());
   };
 
+  const entryByPath = useMemo(() => new Map(data.entries.map(e => [e.path, e])), [data.entries]);
+
   const handleBatchDelete = async () => {
     if (selectedPaths.size === 0) return;
-    if (confirm(`Deseja realmente excluir os ${selectedPaths.size} cartazes selecionados?`)) {
-      for (const p of selectedPaths) {
-        if (await storage.remove(p)) {
-          removed(p);
-        }
+    const targets = Array.from(selectedPaths);
+    const confirmRequest = buildBatchDeleteConfirmation(targets, p => {
+      const indexedItem = byPath.get(p);
+      if (indexedItem?.document.product.name) return indexedItem.document.product.name;
+      return entryByPath.get(p)?.name ?? p.split(/[\\/]/).pop() ?? p;
+    });
+
+    const confirmed = requestConfirmation ? await requestConfirmation(confirmRequest) : true;
+    if (!confirmed) return;
+
+    const desktop = isTauri();
+    let deletedCount = 0;
+    const failedPaths: string[] = [];
+    const errors: string[] = [];
+
+    for (const p of targets) {
+      if (!desktop) {
+        removed(p);
+        deletedCount++;
+        continue;
       }
-      setSelectedPaths(new Set());
+      try {
+        const ok = await storage.remove(p);
+        if (ok) {
+          removed(p);
+          deletedCount++;
+        } else {
+          failedPaths.push(p);
+        }
+      } catch (err) {
+        failedPaths.push(p);
+        errors.push(`${p.split(/[\\/]/).pop() || p}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    setSelectedPaths(new Set(failedPaths));
+    if (deletedCount > 0) {
+      onNotify?.(
+        deletedCount === 1
+          ? '1 cartaz excluído permanentemente da biblioteca.'
+          : `${deletedCount} cartazes excluídos permanentemente da biblioteca.`
+      );
+    }
+    if (errors.length > 0) {
       await refresh();
+      throw new Error(`Não foi possível excluir ${errors.length} arquivo(s): ${errors[0]}`);
     }
   };
+  handleBatchDeleteRef.current = handleBatchDelete;
 
   function label(e: Entry) {
     return byPath.get(e.path)?.document.product.name ?? e.name;
@@ -326,9 +439,17 @@ export function Library({
     if (!deleting) return;
     const target = deleting.entry;
     setDeleting(null);
+    if (!isTauri()) {
+      removed(target.path);
+      onNotify?.(`"${target.name}" excluído da biblioteca.`);
+      return;
+    }
     if (await storage.remove(target.path)) {
       removed(target.path);
-      await refresh();
+      onNotify?.(`"${target.name}" excluído permanentemente.`);
+      if (target.folder) {
+        await refresh();
+      }
     }
   };
 
@@ -922,10 +1043,14 @@ export function Library({
             </div>
           )}
 
-          {/* Modo Grade de Cartazes com Seleção Isolada */}
+          {/* Modo Grade de Cartazes com Seleção Isolada + Arraste estilo Windows */}
           {rows.length > 0 && view === 'grid' && (
-            <div className="cards grid sk-lib-grid-cards">
-              {rows.map(e => {
+            <div
+              ref={libItemsRef}
+              className={`cards grid sk-lib-grid-cards sk-marquee-surface ${isLibMarqueeDragging ? 'is-marquee-dragging' : ''}`}
+              onMouseDown={handleLibMarqueeMouseDown}
+            >
+              {visibleRows.map(e => {
                 const d = byPath.get(e.path)?.document;
                 const error = e.error || (!d ? 'Documento inválido ou incompatível.' : undefined);
                 const f7 = getF7(d?.product.productCode);
@@ -939,6 +1064,7 @@ export function Library({
 
                 return (
                   <article
+                    data-marquee-id={e.path}
                     className={`cartaz-card sk-lib-card ${isSelected ? 'selected' : ''}`}
                     key={e.path}
                   >
@@ -1127,7 +1253,11 @@ export function Library({
 
           {/* Modo Lista Detalhada */}
           {rows.length > 0 && view === 'list' && (
-            <div className="sk-lib-table-wrap">
+            <div
+              ref={libItemsRef}
+              className={`sk-lib-table-wrap sk-marquee-surface ${isLibMarqueeDragging ? 'is-marquee-dragging' : ''}`}
+              onMouseDown={handleLibMarqueeMouseDown}
+            >
               <table className="sk-lib-table" aria-label="Lista de cartazes">
                 <thead>
                   <tr>
@@ -1150,7 +1280,7 @@ export function Library({
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(e => {
+                  {visibleRows.map(e => {
                     const d = byPath.get(e.path)?.document;
                     const error = e.error || (!d ? 'Documento inválido ou incompatível.' : undefined);
                     const f7 = getF7(d?.product.productCode);
@@ -1165,6 +1295,7 @@ export function Library({
                     return (
                       <tr
                         key={e.path}
+                        data-marquee-id={e.path}
                         className={`sk-lib-table-row ${isSelected ? 'selected' : ''}`}
                       >
                         {/* Checkbox de Linha */}
@@ -1360,6 +1491,32 @@ export function Library({
               </table>
             </div>
           )}
+
+          {remainingRowsCount > 0 && (
+            <div className="sk-lib-pagination-bar" data-no-marquee="true">
+              <span className="sk-lib-pagination-info sk-tabular">
+                Exibindo <strong>{visibleRows.length}</strong> de <strong>{rows.length}</strong> cartazes
+              </span>
+              <div className="sk-lib-pagination-actions">
+                <button
+                  type="button"
+                  className="editor-btn primary"
+                  onClick={() => setVisibleLimit(prev => prev + PAGE_SIZE)}
+                >
+                  Carregar mais (+{Math.min(PAGE_SIZE, remainingRowsCount)})
+                </button>
+                {remainingRowsCount > PAGE_SIZE && (
+                  <button
+                    type="button"
+                    className="editor-btn subtle"
+                    onClick={() => setVisibleLimit(rows.length)}
+                  >
+                    Mostrar todos ({rows.length})
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1396,12 +1553,26 @@ export function Library({
             <button
               type="button"
               className="editor-btn subtle danger sk-lib-dock-btn-danger"
-              onClick={handleBatchDelete}
+              onClick={() => run(() => handleBatchDelete())}
+              title="Excluir permanentemente os cartazes selecionados do disco e da biblioteca (Delete)"
             >
-              Excluir Selecionados
+              Excluir (Del)
             </button>
           </div>
         </aside>
+      )}
+
+      {libMarqueeRect && (
+        <div
+          className="sk-marquee-box"
+          aria-hidden="true"
+          style={{
+            left: libMarqueeRect.left,
+            top: libMarqueeRect.top,
+            width: libMarqueeRect.width,
+            height: libMarqueeRect.height,
+          }}
+        />
       )}
 
       {/* Modal de Renomear */}

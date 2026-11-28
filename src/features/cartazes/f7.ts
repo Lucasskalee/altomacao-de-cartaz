@@ -8,14 +8,32 @@ export const getF7 = (value: unknown): string | null =>
 
 export type IndexedCartaz = { path: string; fileName: string; document: Cartaz; source?: string };
 
+const entryIndexCache = new WeakMap<Entry, IndexedCartaz | null>();
+const f7LookupCache = new WeakMap<IndexedCartaz[], Map<string, IndexedCartaz[]>>();
+
 /** Includes every valid document in the recursive local library snapshot. */
 export function indexCartazes(entries: Entry[]): IndexedCartaz[] {
   const result: IndexedCartaz[] = [];
   for (const entry of entries) {
     if (entry.folder || !entry.content || entry.error) continue;
+    if (entryIndexCache.has(entry)) {
+      const cached = entryIndexCache.get(entry);
+      if (cached) result.push(cached);
+      continue;
+    }
     try {
-      result.push({ path: entry.path, fileName: entry.name, document: deserialize(entry.content), source: entry.content });
-    } catch { /* Invalid files stay visible as errors in the library, never as matches. */ }
+      const indexed: IndexedCartaz = {
+        path: entry.path,
+        fileName: entry.name,
+        document: deserialize(entry.content),
+        source: entry.content,
+      };
+      entryIndexCache.set(entry, indexed);
+      result.push(indexed);
+    } catch {
+      /* Invalid files stay visible as errors in the library, never as matches. */
+      entryIndexCache.set(entry, null);
+    }
   }
   return result;
 }
@@ -23,7 +41,20 @@ export function indexCartazes(entries: Entry[]): IndexedCartaz[] {
 /** Exact product lookup; never deduplicate by UUID, F7 or folder, and never write. */
 export function findCartazesByF7(f7: string, cartazes: IndexedCartaz[]): IndexedCartaz[] {
   if (!getF7(f7)) return [];
-  return cartazes.filter(item => getF7(item.document.product.productCode) === f7);
+  let lookup = f7LookupCache.get(cartazes);
+  if (!lookup) {
+    lookup = new Map<string, IndexedCartaz[]>();
+    for (const item of cartazes) {
+      const code = getF7(item.document.product.productCode);
+      if (!code) continue;
+      const list = lookup.get(code);
+      if (list) list.push(item);
+      else lookup.set(code, [item]);
+    }
+    f7LookupCache.set(cartazes, lookup);
+  }
+  const matches = lookup.get(f7);
+  return matches ? [...matches] : [];
 }
 
 export function matchesCartazSearch(item: IndexedCartaz, query: string): boolean {

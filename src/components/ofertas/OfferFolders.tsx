@@ -1,10 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
 import { PosterView, type Poster } from '../editor/PosterView';
 import { hasInvertedPsdPriceParts, repairInvertedPsdArtwork } from '../editor/importedRenderer';
 import { posterFromDocument } from '../../features/cartazes/presentation';
+import { serialize } from '../../features/cartazes/serialization';
 import { indexCartazes, type IndexedCartaz } from '../../features/cartazes/f7';
 import { chooseSave, remove as removeLibraryFile, saveDocument, saveExportDocument } from '../../features/cartazes/storage';
 import type { Cartaz, Library as LibraryData } from '../../features/cartazes/types';
+import type { ConfirmDialogRequest } from '../common/ConfirmModal';
+import { useMarqueeSelection } from '../../hooks/useMarqueeSelection';
+import { hasActiveModalDialog, isTextEditingElement } from '../../features/cartazes/keyboard';
 import {
   columnLetter,
   detectHeaderRowIndex,
@@ -47,6 +52,7 @@ import {
 } from '../../features/ofertas/service';
 import type {
   CampaignItem,
+  CampaignMatchView,
   OfferCampaign,
   PrintStatus,
   PsdBatchLinkResult,
@@ -120,12 +126,66 @@ export function getFormatBadge(format: PaperFormat): { label: string; icon: stri
   }
 }
 
+export type BatchEditItem = {
+  path: string;
+  scheduledPriceCents?: number;
+  f7: string;
+  description: string;
+};
+
+export type OfferExportScope = 'all' | 'print-marked' | 'checked-rows';
+
+export type ExportCandidate = {
+  item: CampaignItem;
+  cartazPath: string;
+  doc: Cartaz;
+};
+
+/**
+ * Pure helper selecting exportable posters based on the chosen export scope:
+ * - 'all': every linked poster in the campaign
+ * - 'print-marked': posters with print checkbox enabled (`m.state.selected`)
+ * - 'checked-rows': posters belonging to items selected via row checkboxes / marquee drag
+ */
+export function selectExportCandidates(
+  views: CampaignMatchView[],
+  scope: OfferExportScope,
+  selectedItemIds: Set<string>
+): ExportCandidate[] {
+  const candidates: ExportCandidate[] = [];
+  const candidateKeys = new Set<string>();
+
+  for (const v of views) {
+    if (scope === 'checked-rows' && !selectedItemIds.has(v.item.id)) continue;
+    for (const m of v.matchedPosters) {
+      if (!m.scheduledDocument) continue;
+      if (scope === 'print-marked' && !m.state.selected) continue;
+      const candidateKey = `${v.item.id}::${m.state.cartazPath.replace(/\//g, '\\').toLocaleLowerCase('en-US')}`;
+      if (candidateKeys.has(candidateKey)) continue;
+      candidateKeys.add(candidateKey);
+      candidates.push({
+        item: v.item,
+        cartazPath: m.state.cartazPath,
+        doc: m.scheduledDocument,
+      });
+    }
+  }
+  return candidates;
+}
+
 type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[], options?: any) => void;
   onEditPoster?: (path: string, scheduledPriceCents?: number) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
+  isActive?: boolean;
+  onAddToConductor?: (cartaz: Cartaz, path: string) => void;
+  onAddBatchToConductor?: (entries: { cartaz: Cartaz; path: string; copies?: number }[]) => number;
+  onStartBatchEdit?: (items: BatchEditItem[]) => Promise<void>;
+  requestConfirmation?: (request: ConfirmDialogRequest) => Promise<boolean>;
+  selectedItemIds?: Set<string>;
+  onSelectedItemIdsChange?: (next: Set<string>) => void;
   initialCampaigns?: OfferCampaign[];
   initialActiveId?: string | null;
   initialPsdFolder?: string | null;
@@ -152,6 +212,13 @@ export function OfferFolders({
   onPrintBatch,
   onEditPoster,
   onRefreshLibrary,
+  isActive = true,
+  onAddToConductor,
+  onAddBatchToConductor,
+  onStartBatchEdit,
+  requestConfirmation,
+  selectedItemIds: controlledSelectedItemIds,
+  onSelectedItemIdsChange,
   initialCampaigns = [],
   initialActiveId = null,
   initialPsdFolder = null,
@@ -201,6 +268,51 @@ export function OfferFolders({
   // Batch print tracking
   const [batchSize, setBatchSize] = useState(10);
   const [awaitingPrintConfirm, setAwaitingPrintConfirm] = useState<{ keys: Set<string>; count: number } | null>(null);
+  // Item-level multi-selection for batch print / conductor / export / sequential edit / delete
+  const [internalSelectedItemIds, setInternalSelectedItemIds] = useState<Set<string>>(new Set());
+  const isSelectionControlled =
+    controlledSelectedItemIds !== undefined && onSelectedItemIdsChange !== undefined;
+  const selectedItemIds = isSelectionControlled ? controlledSelectedItemIds : internalSelectedItemIds;
+  const selectedItemIdsRef = useRef(selectedItemIds);
+  selectedItemIdsRef.current = selectedItemIds;
+  const setSelectedItemIds = useCallback(
+    (updater: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+      if (isSelectionControlled) {
+        const next = typeof updater === 'function' ? updater(selectedItemIdsRef.current) : updater;
+        onSelectedItemIdsChange(next);
+      } else {
+        setInternalSelectedItemIds(updater);
+      }
+    },
+    [isSelectionControlled, onSelectedItemIdsChange]
+  );
+
+  const lastSelectedItemIdRef = useRef<string | null>(null);
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const masterCheckboxRef = useRef<HTMLInputElement | null>(null);
+
+  const {
+    marqueeRect,
+    isDragging: isMarqueeDragging,
+    handleMouseDown: handleTableMarqueeMouseDown,
+  } = useMarqueeSelection({
+    containerRef: tableWrapRef,
+    selectedIds: selectedItemIds,
+    onSelectionChange: next => {
+      setSelectedItemIds(next);
+    },
+    enabled: isActive && !isSelectionControlled,
+  });
+
+  useEffect(() => {
+    setSelectedItemIds(new Set());
+    lastSelectedItemIdRef.current = null;
+  }, [activeId, setSelectedItemIds]);
+
+  const askConfirm = async (req: ConfirmDialogRequest): Promise<boolean> => {
+    if (requestConfirmation) return await requestConfirmation(req);
+    return true;
+  };
 
   // Pasta de PSDs de referência e pareamento revisável por produto da campanha (detecção automática por padrão)
   const [scannedPsds, setScannedPsds] = useState<ScannedPsdEntry[]>(initialScannedPsds);
@@ -223,7 +335,7 @@ export function OfferFolders({
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormatPsd, setExportFormatPsd] = useState(true);
   const [exportFormatSk, setExportFormatSk] = useState(true);
-  const [exportOnlySelected, setExportOnlySelected] = useState(false);
+  const [exportScope, setExportScope] = useState<OfferExportScope>('all');
   const [exportOrganizeByFormat, setExportOrganizeByFormat] = useState(true);
   const [exportFolder, setExportFolder] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -248,6 +360,9 @@ export function OfferFolders({
   };
 
   useEffect(() => {
+    if (!isTauri() && initialCampaigns.length > 0) {
+      return;
+    }
     let mounted = true;
     listCampaigns()
       .then(res => {
@@ -283,6 +398,7 @@ export function OfferFolders({
   }, []);
 
   const scheduleCampaignSave = (updated: OfferCampaign) => {
+    if (!isTauri()) return;
     if (pendingSaveTimeoutRef.current) {
       clearTimeout(pendingSaveTimeoutRef.current);
     }
@@ -336,7 +452,7 @@ export function OfferFolders({
   };
 
   const persistUpdate = async (updated: OfferCampaign) => {
-    const saved = await saveCampaign(updated);
+    const saved = isTauri() ? await saveCampaign(updated) : updated;
     setCampaigns(prev => {
       const idx = prev.findIndex(c => c.id === saved.id);
       if (idx === -1) return [saved, ...prev];
@@ -666,7 +782,9 @@ export function OfferFolders({
   };
 
   const handleRunBatchExport = async () => {
-    if (!activeCampaign || !exportFolder) return;
+    if (!activeCampaign) return;
+    const desktopMode = isTauri();
+    if (desktopMode && !exportFolder) return;
     if (!exportFormatPsd && !exportFormatSk) {
       throw new Error('Selecione pelo menos um formato de exportação (.PSD ou .skcartaz).');
     }
@@ -682,36 +800,20 @@ export function OfferFolders({
         .replace(/[^a-zA-Z0-9_-]+/g, '-')
         .replace(/^-|-$/g, '');
       const subFolderName = `${cleanCampName}_${activeCampaign.campaignDate}`;
-      const exportFolderBase = exportFolder.replace(/[\\/]+$/, '');
+      const exportFolderBase = (exportFolder || '').replace(/[\\/]+$/, '');
       const isAlreadyCampFolder =
         exportFolderBase.toLowerCase().includes(activeCampaign.campaignDate) ||
         exportFolderBase.toLowerCase().includes(cleanCampName.toLowerCase());
       const targetFolder = isAlreadyCampFolder ? exportFolderBase : `${exportFolderBase}\\${subFolderName}`;
 
-      const candidates: {
-        item: CampaignItem;
-        cartazPath: string;
-        doc: Cartaz;
-      }[] = [];
-      const candidateKeys = new Set<string>();
-
-      for (const v of matchViews) {
-        for (const m of v.matchedPosters) {
-          if (!m.scheduledDocument) continue;
-          if (exportOnlySelected && !m.state.selected) continue;
-          const candidateKey = `${v.item.id}::${m.state.cartazPath.replace(/\//g, '\\').toLocaleLowerCase('en-US')}`;
-          if (candidateKeys.has(candidateKey)) continue;
-          candidateKeys.add(candidateKey);
-          candidates.push({
-            item: v.item,
-            cartazPath: m.state.cartazPath,
-            doc: m.scheduledDocument,
-          });
-        }
-      }
+      const candidates = selectExportCandidates(matchViews, exportScope, selectedItemIds);
 
       if (candidates.length === 0) {
-        throw new Error('Nenhum cartaz com arte vinculada disponível para exportar.');
+        throw new Error(
+          exportScope === 'checked-rows'
+            ? 'Nenhum dos produtos selecionados possui cartaz vinculado pronto para exportar.'
+            : 'Nenhum cartaz com arte vinculada disponível para exportar.'
+        );
       }
 
       setExportProgress({ current: 0, total: candidates.length, message: 'Iniciando exportação...' });
@@ -763,8 +865,18 @@ export function OfferFolders({
             } else {
               skFileName = `${f7Tag}${baseSlug}${paperTag}-oferta.skcartaz`;
             }
-            const skPath = `${destFolder}\\${skFileName}`;
-            await saveExportDocument(skPath, doc);
+            if (desktopMode) {
+              const skPath = `${destFolder}\\${skFileName}`;
+              await saveExportDocument(skPath, doc);
+            } else {
+              const blob = new Blob([serialize(doc)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = skFileName;
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
             skCount++;
           } catch (e) {
             errors.push(`SK ${item.f7}: ${e instanceof Error ? e.message : String(e)}`);
@@ -772,7 +884,7 @@ export function OfferFolders({
         }
 
         // 2. Exporta .psd editável preservando camadas e modelos
-        if (exportFormatPsd) {
+        if (exportFormatPsd && desktopMode) {
           if (doc.layout.template === 'imported-psd') {
             const artwork = doc.layout.artwork;
             const wholePart = artwork.priceParts.find(p => p.role === 'whole');
@@ -1141,12 +1253,217 @@ export function OfferFolders({
     return keys;
   }, [filteredViews, formatTab]);
 
-  // Navegação intuitiva com setas do teclado (Cima / Baixo) para navegar e atualizar a prévia futura
+  const handleToggleRowSelect = (itemId: string, shiftKey: boolean) => {
+    if (shiftKey && lastSelectedItemIdRef.current) {
+      const ids = filteredViews.map(v => v.item.id);
+      const startIdx = ids.indexOf(lastSelectedItemIdRef.current);
+      const endIdx = ids.indexOf(itemId);
+      if (startIdx !== -1 && endIdx !== -1) {
+        const [from, to] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        setSelectedItemIds(prev => {
+          const next = new Set(prev);
+          for (let i = from; i <= to; i++) next.add(ids[i]);
+          return next;
+        });
+        lastSelectedItemIdRef.current = itemId;
+        return;
+      }
+    }
+    setSelectedItemIds(prev => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
+    });
+    lastSelectedItemIdRef.current = itemId;
+  };
+
+  const handleSelectVisibleItems = (checked: boolean) => {
+    if (!checked) {
+      setSelectedItemIds(new Set());
+      lastSelectedItemIdRef.current = null;
+      return;
+    }
+    setSelectedItemIds(new Set(filteredViews.map(v => v.item.id)));
+  };
+
+  const handleSelectPendingOrDivergent = () => {
+    const ids = filteredViews
+      .filter(v => v.matchedPosters.some(m => m.priceMismatchReason || m.state.status !== 'impresso'))
+      .map(v => v.item.id);
+    setSelectedItemIds(new Set(ids));
+  };
+
+  const selectedViews = useMemo(
+    () => matchViews.filter(v => selectedItemIds.has(v.item.id)),
+    [matchViews, selectedItemIds]
+  );
+
+  const selectedLinkedPosterCount = useMemo(
+    () =>
+      selectedViews.reduce(
+        (acc, v) => acc + v.matchedPosters.filter(m => Boolean(m.scheduledDocument || m.libraryCartaz?.document)).length,
+        0
+      ),
+    [selectedViews]
+  );
+
+  const allVisibleSelected =
+    filteredViews.length > 0 && filteredViews.every(v => selectedItemIds.has(v.item.id));
+  const someVisibleSelected =
+    filteredViews.some(v => selectedItemIds.has(v.item.id));
+
   useEffect(() => {
+    if (masterCheckboxRef.current) {
+      masterCheckboxRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+    }
+  }, [someVisibleSelected, allVisibleSelected]);
+
+  const selectedBatchEditQueue = useMemo<BatchEditItem[]>(() => {
+    const items: BatchEditItem[] = [];
+    for (const v of selectedViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
+      const matchingPosters =
+        formatTab === 'todos'
+          ? v.matchedPosters
+          : v.matchedPosters.filter(m => {
+              if (!m.libraryCartaz) return false;
+              const fmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz.document, m.state.cartazPath);
+              if (formatTab === 'A5-flv') return fmt === 'A5' && isFlv;
+              if (formatTab === 'A5') return fmt === 'A5' && !isFlv;
+              return fmt === formatTab;
+            });
+      const target = matchingPosters.find(m => m.libraryCartaz) ?? v.matchedPosters.find(m => m.libraryCartaz);
+      if (target) {
+        items.push({
+          path: target.state.cartazPath,
+          scheduledPriceCents: v.item.scheduledPriceCents,
+          f7: v.item.f7,
+          description: v.item.description,
+        });
+      }
+    }
+    return items;
+  }, [selectedViews, formatTab]);
+
+  const handlePrintSelectedItems = () => {
+    if (!activeCampaign || selectedViews.length === 0) return;
+    const queue: Poster[] = [];
+    const keys = new Set<string>();
+    const blockedProducts: string[] = [];
+    let distinctCount = 0;
+
+    for (const v of selectedViews) {
+      const firstMatchedDoc = v.matchedPosters[0]?.scheduledDocument || v.matchedPosters[0]?.libraryCartaz?.document;
+      const isFlv = isFlvItem(v.item.description, firstMatchedDoc?.product?.name);
+      for (const m of v.matchedPosters) {
+        if (!m.scheduledDocument) continue;
+        if (formatTab !== 'todos') {
+          const posterFmt = getPosterPaperFormat(m.scheduledDocument || m.libraryCartaz?.document, m.state.cartazPath);
+          if (formatTab === 'A5-flv' && (posterFmt !== 'A5' || !isFlv)) continue;
+          if (formatTab === 'A5' && (posterFmt !== 'A5' || isFlv)) continue;
+          if (formatTab !== 'A5-flv' && formatTab !== 'A5' && posterFmt !== formatTab) continue;
+        }
+        if (m.priceMismatchReason) {
+          blockedProducts.push(`F7 ${v.item.f7} (${v.item.description}): ${m.priceMismatchReason}`);
+          continue;
+        }
+        const poster = posterFromDocument(m.scheduledDocument);
+        for (let c = 0; c < Math.max(1, m.state.copies); c++) {
+          queue.push(poster);
+        }
+        const normPath = m.state.cartazPath.replace(/\//g, '\\').toLocaleLowerCase('en-US');
+        keys.add(`${v.item.id}::${normPath}`);
+        distinctCount++;
+      }
+    }
+
+    if (blockedProducts.length > 0 && queue.length === 0) {
+      throw new Error(`Impressão bloqueada por divergência de preço/camadas: ${blockedProducts[0]}`);
+    }
+    if (queue.length === 0) {
+      throw new Error('Os produtos selecionados não possuem cartaz vinculado pronto para impressão.');
+    }
+    setAwaitingPrintConfirm({ keys, count: distinctCount });
+    const targetPaper = formatTab === 'todos' ? 'A6' : formatTab === 'A5-flv' ? 'A5' : formatTab;
+    onPrintBatch(queue, { formatConfig: { paper: targetPaper, orientation: 'portrait' } });
+  };
+
+  const handleSendSelectedToConductor = () => {
+    if ((!onAddBatchToConductor && !onAddToConductor) || selectedViews.length === 0) return;
+    const entries: { cartaz: Cartaz; path: string; copies?: number }[] = [];
+    for (const v of selectedViews) {
+      for (const m of v.matchedPosters) {
+        const doc = m.scheduledDocument || m.libraryCartaz?.document;
+        if (doc) {
+          entries.push({ cartaz: doc, path: m.state.cartazPath, copies: m.state.copies });
+        }
+      }
+    }
+    if (entries.length === 0) return;
+    if (onAddBatchToConductor) {
+      onAddBatchToConductor(entries);
+    } else if (onAddToConductor) {
+      for (const entry of entries) {
+        onAddToConductor(entry.cartaz, entry.path);
+      }
+    }
+    setSelectedItemIds(new Set());
+  };
+
+  const handleOpenExportSelected = () => {
+    setExportScope('checked-rows');
+    setExportResult(null);
+    setExportProgress(null);
+    setShowExportModal(true);
+  };
+
+  const handleDeleteSelectedItems = async () => {
+    if (!activeCampaign || selectedItemIds.size === 0) return;
+    const count = selectedItemIds.size;
+    const confirmed = await askConfirm({
+      title: `Remover ${count} produto(s) selecionado(s)?`,
+      description: `Os ${count} produto(s) marcados serão removidos desta pasta de ofertas.`,
+      note: 'Os arquivos de cartaz na biblioteca local não serão apagados.',
+      confirmLabel: `Remover ${count} item(ns)`,
+      cancelLabel: 'Cancelar',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    const updated: OfferCampaign = {
+      ...activeCampaign,
+      items: activeCampaign.items.filter(it => !selectedItemIds.has(it.id)),
+      updatedAt: new Date().toISOString(),
+    };
+    await persistUpdate(updated);
+    setSelectedItemIds(new Set());
+    lastSelectedItemIdRef.current = null;
+  };
+
+  // Navegação e atalhos rápidos do operador (somente quando a aba Pastas de Ofertas está ativa)
+  useEffect(() => {
+    if (!isActive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+      if (hasActiveModalDialog() || isTextEditingElement(e.target)) {
+        return;
+      }
+
+      if (e.altKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        run(async () => {
+          if (selectedItemIds.size > 0) {
+            handlePrintSelectedItems();
+          } else {
+            handleTriggerPartialPrint(false);
+          }
+        });
+        return;
+      }
+
+      if (e.key === 'Delete' && selectedItemIds.size > 0) {
+        e.preventDefault();
+        run(() => handleDeleteSelectedItems());
         return;
       }
 
@@ -1174,7 +1491,7 @@ export function OfferFolders({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigablePosterKeys, previewKey]);
+  }, [isActive, navigablePosterKeys, previewKey, selectedItemIds, selectedViews, activeCampaign, formatTab]);
 
   const campaignStats = useMemo(() => {
     let totalItems = matchViews.length;
@@ -1654,21 +1971,14 @@ export function OfferFolders({
                   </button>
                   <button
                     type="button"
-                    className="subtle"
-                    style={{
-                      background: compactViewMode ? '#eff6ff' : '#f8fafc',
-                      color: compactViewMode ? '#2563eb' : '#475569',
-                      fontWeight: 700,
-                      border: compactViewMode ? '1px solid #bfdbfe' : '1px solid #cbd5e1',
-                    }}
+                    className={`subtle sk-offer-mode-btn ${compactViewMode ? 'is-compact' : ''}`}
                     onClick={() => setCompactViewMode(prev => !prev)}
                     title="Alternar entre visual limpo (ações no item clicado) ou expandido (todas as ações abertas)"
                   >
                     {compactViewMode ? '✨ Modo Limpo' : '📋 Modo Expandido'}
                   </button>
                   <button
-                    className="subtle"
-                    style={{ color: '#16a34a', fontWeight: 700 }}
+                    className="subtle sk-offer-a6-btn"
                     title="Altera o formato de todos os cartazes desta pasta para Pequeno (A6)"
                     onClick={() => run(handleConvertAllToA6)}
                   >
@@ -1774,17 +2084,17 @@ export function OfferFolders({
               {activeCampaign.items.length > 0 && (
                 <>
                   {/* BARRA VISUAL DE ETAPAS DE PRODUÇÃO POR TAMANHO */}
-                  <div style={{ marginBottom: 16 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>
-                        Etapas de Produção por Formato (Pastas da Loja):
+                  <div className="sk-offer-stage-section">
+                    <div className="sk-offer-stage-header">
+                      <span className="sk-offer-stage-title">
+                        Etapas de Produção por Formato (Pastas da Loja)
                       </span>
-                      <span style={{ fontSize: 11.5, color: '#64748b' }}>
+                      <span className="sk-offer-stage-subtitle">
                         Selecione um tamanho para produzir e imprimir em lote
                       </span>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                    <div className="sk-offer-stage-grid">
                       {(
                         [
                           { id: 'todos', label: 'Todos os Tamanhos', icon: '📋', subtitle: 'Visão geral' },
@@ -1799,89 +2109,42 @@ export function OfferFolders({
                         const isSelected = formatTab === tab.id;
                         const count = formatCounts[tab.id as FormatTab] ?? 0;
                         return (
-                          <div
+                          <button
+                            type="button"
                             key={tab.id}
-                            role="button"
-                            tabIndex={0}
-                            style={{
-                              padding: '10px 12px',
-                              borderRadius: 10,
-                              cursor: 'pointer',
-                              border: isSelected ? '2px solid #2563eb' : '1px solid #e2e8f0',
-                              background: isSelected ? '#eff6ff' : '#ffffff',
-                              boxShadow: isSelected ? '0 2px 8px rgba(37,99,235,0.15)' : '0 1px 2px rgba(0,0,0,0.03)',
-                              transition: 'all 0.15s ease',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              justifyContent: 'space-between',
-                            }}
+                            className={`sk-offer-stage-card ${isSelected ? 'is-selected' : ''}`}
+                            aria-pressed={isSelected}
                             onClick={() => setFormatTab(tab.id as FormatTab)}
-                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setFormatTab(tab.id as FormatTab); }}
                           >
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                              <span style={{ fontSize: 16 }}>{tab.icon}</span>
-                              <span
-                                style={{
-                                  fontSize: 11,
-                                  fontWeight: 800,
-                                  padding: '1px 7px',
-                                  borderRadius: 10,
-                                  background: isSelected ? '#2563eb' : count > 0 ? '#dcfce7' : '#f1f5f9',
-                                  color: isSelected ? '#ffffff' : count > 0 ? '#166534' : '#64748b',
-                                }}
-                              >
+                            <div className="sk-offer-stage-top">
+                              <span className="sk-offer-stage-icon" aria-hidden="true">{tab.icon}</span>
+                              <span className={`sk-offer-stage-count ${count > 0 ? 'has-items' : ''}`}>
                                 {count} {count === 1 ? 'cartaz' : 'cartazes'}
                               </span>
                             </div>
-                            <div style={{ fontWeight: 700, fontSize: 12.5, color: isSelected ? '#1d4ed8' : '#1e293b' }}>
-                              {tab.label}
-                            </div>
-                            <div style={{ fontSize: 10.5, color: isSelected ? '#3b82f6' : '#64748b', marginTop: 2 }}>
-                              {tab.subtitle}
-                            </div>
-                          </div>
+                            <div className="sk-offer-stage-label">{tab.label}</div>
+                            <div className="sk-offer-stage-sub">{tab.subtitle}</div>
+                          </button>
                         );
                       })}
                     </div>
                   </div>
 
                   {/* PAINEL DE CONTROLE DE IMPRESSÃO DO FORMATO ATIVO */}
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 14,
-                      flexWrap: 'wrap',
-                      padding: '12px 16px',
-                      background: formatTab === 'todos' ? '#f8fafc' : '#f0fdf4',
-                      border: formatTab === 'todos' ? '1px solid #cbd5e1' : '1.5px solid #86efac',
-                      borderRadius: 10,
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: 16 }}>
+                  <div className={`sk-offer-batch-bar ${formatTab !== 'todos' ? 'is-filtered' : ''}`}>
+                    <div className="sk-offer-batch-info">
+                      <div className="sk-offer-batch-title-row">
+                        <span aria-hidden="true">
                           {formatTab === 'A6' ? '🏷️' : formatTab === 'A5' ? '📐' : formatTab === 'A5-flv' ? '🥦' : formatTab === 'A4' ? '📄' : formatTab === 'A3' ? '🥩' : formatTab === 'expositor-a3-2x2' ? '🏢' : '📋'}
                         </span>
-                        <strong style={{ fontSize: 14, color: formatTab === 'todos' ? '#1e293b' : '#166534' }}>
+                        <strong className="sk-offer-batch-title">
                           Lote Ativo: {formatTab === 'todos' ? 'Todos os Tamanhos' : formatTab === 'A6' ? 'Pequenos (A6)' : formatTab === 'A5' ? 'Médios Geral (A5)' : formatTab === 'A5-flv' ? 'Médios FLV (A5)' : formatTab === 'A4' ? 'Cartaz A4' : formatTab === 'A3' ? 'Açougue (A3)' : 'Externos (2×2)'}
                         </strong>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 700,
-                            padding: '2px 8px',
-                            borderRadius: 12,
-                            background: currentFormatQueueCount > 0 ? '#16a34a' : '#94a3b8',
-                            color: '#ffffff',
-                          }}
-                        >
-                          {currentFormatQueueCount} na fila para imprimir
+                        <span className={`sk-offer-batch-count ${currentFormatQueueCount > 0 ? 'has-queue' : ''}`}>
+                          · {currentFormatQueueCount} na fila para imprimir
                         </span>
                       </div>
-                      <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 3 }}>
+                      <div className="sk-offer-batch-hint">
                         {formatTab === 'A6'
                           ? 'Epson L14150: Impressão vertical no topo da folha A4 (Superior: 0, centralizado)'
                           : formatTab === 'A5' || formatTab === 'A5-flv'
@@ -1894,8 +2157,8 @@ export function OfferFolders({
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                    <div className="sk-offer-batch-controls">
+                      <label className="sk-offer-batch-size">
                         Por vez:
                         <input
                           type="number"
@@ -1903,24 +2166,11 @@ export function OfferFolders({
                           max={200}
                           value={batchSize}
                           onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value, 10) || 10))}
-                          style={{ width: 60, padding: '5px 6px', borderRadius: 6, border: '1px solid #cbd5e1', fontSize: 12 }}
                         />
                       </label>
                       <button
                         type="button"
-                        style={{
-                          background: '#16a34a',
-                          color: '#ffffff',
-                          padding: '8px 16px',
-                          fontSize: 12.5,
-                          fontWeight: 700,
-                          borderRadius: 8,
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          boxShadow: '0 2px 4px rgba(22,163,74,0.25)',
-                        }}
+                        className="sk-offer-btn-print"
                         onClick={() =>
                           run(async () => {
                             handleTriggerPartialPrint(false);
@@ -1932,7 +2182,7 @@ export function OfferFolders({
                       <button
                         type="button"
                         className="subtle"
-                        style={{ padding: '8px 12px', fontSize: 12 }}
+                        style={{ padding: '7px 12px', fontSize: 12 }}
                         onClick={() =>
                           run(async () => {
                             handleTriggerPartialPrint(true);
@@ -1943,7 +2193,7 @@ export function OfferFolders({
                       </button>
                       <button
                         type="button"
-                        style={{ background: '#0284c7', color: '#fff', padding: '8px 12px', fontSize: 12, borderRadius: 8 }}
+                        className="sk-offer-btn-export"
                         onClick={() => setShowExportModal(true)}
                       >
                         📦 Exportar (PSD / SK)
@@ -1970,32 +2220,62 @@ export function OfferFolders({
                       <option value="pendente">Status: Pendente</option>
                       <option value="impresso">Status: Impresso</option>
                     </select>
+                    {filteredViews.length > 0 && (
+                      <button
+                        type="button"
+                        className="subtle"
+                        style={{ padding: '8px 10px', fontSize: 12, whiteSpace: 'nowrap' }}
+                        title="Selecionar rapidamente itens pendentes ou com divergência"
+                        onClick={handleSelectPendingOrDivergent}
+                      >
+                        Selecionar pendentes
+                      </button>
+                    )}
                     {campaignStats.missing > 0 && (
                       <button
                         type="button"
                         className="subtle"
                         style={{ padding: '8px 12px', fontSize: 12, color: '#dc2626', fontWeight: 700, whiteSpace: 'nowrap' }}
                         title="Remover da pasta de ofertas todos os produtos que estão sem cartaz vinculado"
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Remover ${campaignStats.missing} produto(s) sem cartaz vinculado desta pasta de ofertas?`
-                            )
-                          ) {
-                            run(() => handleRemoveMissingItems());
-                          }
-                        }}
+                        onClick={() =>
+                          run(async () => {
+                            const ok = await askConfirm({
+                              title: 'Remover produtos sem cartaz?',
+                              description: `Remover ${campaignStats.missing} produto(s) sem cartaz vinculado desta pasta de ofertas?`,
+                              confirmLabel: 'Remover sem cartaz',
+                              cancelLabel: 'Cancelar',
+                              tone: 'danger',
+                            });
+                            if (ok) await handleRemoveMissingItems();
+                          })
+                        }
                       >
                         🗑️ Apagar sem cartaz ({campaignStats.missing})
                       </button>
                     )}
                   </div>
 
-                  <div className="offer-workspace">
-                    <div className="import-table-wrap">
+                  <div className="offer-workspace" style={selectedItemIds.size > 0 ? { paddingBottom: 92 } : undefined}>
+                    <div
+                      ref={tableWrapRef}
+                      className={`import-table-wrap sk-marquee-surface ${isMarqueeDragging ? 'is-marquee-dragging' : ''}`}
+                      onMouseDown={handleTableMarqueeMouseDown}
+                      title="Dica: clique e arraste com o mouse para selecionar vários produtos de uma vez (segure Ctrl/Shift para somar)"
+                    >
                       <table className="import-table">
                         <thead>
                           <tr>
+                            <th style={{ width: 38, textAlign: 'center' }}>
+                              <input
+                                ref={masterCheckboxRef}
+                                type="checkbox"
+                                className="sk-row-checkbox"
+                                aria-label="Selecionar todos os produtos visíveis"
+                                title="Selecionar ou desmarcar todos os produtos visíveis (ou arraste o mouse para selecionar vários)"
+                                checked={allVisibleSelected}
+                                onChange={e => handleSelectVisibleItems(e.target.checked)}
+                              />
+                            </th>
                             <th>F7</th>
                             <th>Produto (Excel)</th>
                             <th>Preço Programado</th>
@@ -2028,7 +2308,31 @@ export function OfferFolders({
                         </thead>
                         <tbody>
                           {filteredViews.map(v => (
-                            <tr key={v.item.id}>
+                            <tr
+                              key={v.item.id}
+                              data-marquee-id={v.item.id}
+                              className={selectedItemIds.has(v.item.id) ? 'sk-row-selected' : undefined}
+                            >
+                              <td
+                                className="sk-checkbox-cell"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  handleToggleRowSelect(v.item.id, e.shiftKey);
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="sk-row-checkbox"
+                                  aria-label={`Selecionar ${v.item.description}`}
+                                  title="Selecionar produto (Shift+Clique seleciona intervalo · ou arraste com o mouse)"
+                                  checked={selectedItemIds.has(v.item.id)}
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    handleToggleRowSelect(v.item.id, e.shiftKey);
+                                  }}
+                                  onChange={() => {}}
+                                />
+                              </td>
                               <td className="code-cell">{v.item.f7}</td>
                               <td>
                                 {editingDescriptionId === v.item.id ? (
@@ -2100,13 +2404,26 @@ export function OfferFolders({
                                         className="subtle"
                                         style={{ padding: '2px 6px', fontSize: 10, color: '#ef4444' }}
                                         title="Remover esta linha/produto da pasta de ofertas"
-                                        onClick={() => {
-                                          if (window.confirm(`Remover "${v.item.description}" (F7 ${v.item.f7}) da pasta de ofertas?`)) {
-                                            run(async () => {
-                                              await persistUpdate(removeCampaignItem(activeCampaign, v.item.id));
+                                        onClick={() =>
+                                          run(async () => {
+                                            const ok = await askConfirm({
+                                              title: 'Remover produto da pasta de ofertas?',
+                                              description: `Remover "${v.item.description}" (F7 ${v.item.f7}) desta pasta de ofertas?`,
+                                              confirmLabel: 'Remover',
+                                              cancelLabel: 'Cancelar',
+                                              tone: 'danger',
                                             });
-                                          }
-                                        }}
+                                            if (ok) {
+                                              await persistUpdate(removeCampaignItem(activeCampaign, v.item.id));
+                                              setSelectedItemIds(prev => {
+                                                if (!prev.has(v.item.id)) return prev;
+                                                const next = new Set(prev);
+                                                next.delete(v.item.id);
+                                                return next;
+                                              });
+                                            }
+                                          })
+                                        }
                                       >
                                         🗑️ Remover
                                       </button>
@@ -2157,7 +2474,7 @@ export function OfferFolders({
                                   </div>
                                 ) : (
                                   <div>
-                                    <strong style={{ color: '#137b52', fontSize: 15 }}>
+                                    <strong className="sk-offer-scheduled-price">
                                       {money(v.item.scheduledPriceCents)}
                                     </strong>
                                     <div>
@@ -2273,22 +2590,12 @@ export function OfferFolders({
                                         <div
                                           key={key}
                                           id={safeId}
-                                          className="offer-poster-row"
+                                          className={`offer-poster-row ${isPreviewActive ? 'is-active' : ''}`}
                                           onClick={() => setPreviewKey(key)}
-                                          style={{
-                                            border: isPreviewActive ? '2px solid #2563eb' : '1px solid #dfe5ee',
-                                            background: isPreviewActive ? '#f0f7ff' : '#f8fafd',
-                                            boxShadow: isPreviewActive ? '0 2px 8px rgba(37,99,235,0.12)' : 'none',
-                                            transition: 'border 0.2s ease, background 0.2s ease, box-shadow 0.2s ease',
-                                            cursor: 'pointer',
-                                            borderRadius: 8,
-                                            padding: '8px 12px',
-                                            marginBottom: 6,
-                                          }}
                                         >
                                           {/* LINHA PRINCIPAL RESUMIDA (1 linha limpa por produto) */}
                                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 240 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 220 }}>
                                               <input
                                                 type="checkbox"
                                                 checked={m.state.selected}
@@ -2296,7 +2603,7 @@ export function OfferFolders({
                                                 onClick={e => e.stopPropagation()}
                                                 onChange={e => handleTogglePosterSelection(v.item.id, m.state.cartazPath, e.target.checked)}
                                               />
-                                              <strong style={{ fontSize: 13, color: '#0f172a' }}>
+                                              <strong className="sk-offer-poster-title">
                                                 {m.libraryCartaz?.document.product.name ?? 'Arquivo ausente'}{' '}
                                                 {m.libraryCartaz?.document.product.complement ?? ''}
                                               </strong>
@@ -2306,7 +2613,7 @@ export function OfferFolders({
                                                 style={{
                                                   fontSize: 10.5,
                                                   fontWeight: 700,
-                                                  padding: '1px 5px',
+                                                  padding: '2px 6px',
                                                   borderRadius: 6,
                                                   background: badge.bg,
                                                   color: badge.text,
@@ -2343,35 +2650,13 @@ export function OfferFolders({
                                                 <option value="expositor-a3-2x2">🏢 Externos (2×2)</option>
                                               </select>
                                               {hasBox && (
-                                                <span
-                                                  style={{
-                                                    fontSize: 10.5,
-                                                    fontWeight: 700,
-                                                    padding: '2px 7px',
-                                                    borderRadius: 6,
-                                                    background: '#dcfce7',
-                                                    color: '#166534',
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    gap: 4,
-                                                  }}
-                                                >
+                                                <span className="sk-offer-badge-box">
                                                   📦 {boxPackageType} {boxQuantity} {boxUnitLabel}
                                                 </span>
                                               )}
                                               {extraPosters.length > 0 && (
                                                 <span
-                                                  style={{
-                                                    fontSize: 10.5,
-                                                    fontWeight: 700,
-                                                    padding: '2px 7px',
-                                                    borderRadius: 6,
-                                                    background: '#e0e7ff',
-                                                    color: '#3730a3',
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    gap: 4,
-                                                  }}
+                                                  className="sk-offer-badge-extra"
                                                   title={`Este produto também tem ${extraPosters.length} outro(s) tamanho(s). Clique em Ações para gerenciar.`}
                                                 >
                                                   📏 +{extraPosters.length} outro tamanho
@@ -2379,14 +2664,7 @@ export function OfferFolders({
                                               )}
                                               {v.unlinkedLibraryPosters.length > 0 && (
                                                 <span
-                                                  style={{
-                                                    fontSize: 10.5,
-                                                    fontWeight: 600,
-                                                    padding: '2px 6px',
-                                                    borderRadius: 6,
-                                                    background: '#fef3c7',
-                                                    color: '#92400e',
-                                                  }}
+                                                  className="sk-offer-badge-lib"
                                                   title={`${v.unlinkedLibraryPosters.length} cartaz(es) na biblioteca disponíveis para vincular`}
                                                 >
                                                   📚 {v.unlinkedLibraryPosters.length} na bibl.
@@ -2394,21 +2672,14 @@ export function OfferFolders({
                                               )}
                                             </div>
 
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                              <span style={{ fontSize: 13, color: '#334155' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                              <span className="sk-offer-poster-price-wrap">
                                                 Preço:{' '}
-                                                <strong style={{ color: '#10b981', fontSize: 14 }}>{money(v.item.scheduledPriceCents)}</strong>
+                                                <strong className="sk-offer-poster-price">{money(v.item.scheduledPriceCents)}</strong>
                                               </span>
                                               <button
                                                 type="button"
-                                                className="subtle"
-                                                style={{
-                                                  padding: '4px 8px',
-                                                  fontSize: 11.5,
-                                                  color: isPreviewActive ? '#1d4ed8' : '#2563eb',
-                                                  fontWeight: isPreviewActive ? 700 : 600,
-                                                  background: isPreviewActive ? '#dbeafe' : 'transparent',
-                                                }}
+                                                className={`subtle sk-offer-row-btn ${isPreviewActive ? 'is-preview-active' : ''}`}
                                                 onClick={e => {
                                                   e.stopPropagation();
                                                   setPreviewKey(key);
@@ -2443,14 +2714,7 @@ export function OfferFolders({
                                               </button>
                                               <button
                                                 type="button"
-                                                className="subtle"
-                                                style={{
-                                                  padding: '4px 8px',
-                                                  fontSize: 11.5,
-                                                  color: isExpanded ? '#2563eb' : '#475569',
-                                                  fontWeight: 600,
-                                                  background: isExpanded ? '#eff6ff' : 'transparent',
-                                                }}
+                                                className={`subtle sk-offer-row-btn ${isExpanded ? 'is-expanded' : ''}`}
                                                 onClick={e => {
                                                   e.stopPropagation();
                                                   if (isExpanded) {
@@ -2484,28 +2748,23 @@ export function OfferFolders({
                                             style={{
                                               display: 'grid',
                                               gridTemplateRows: isExpanded ? '1fr' : '0fr',
-                                              transition: 'grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
+                                              transition: 'grid-template-rows 0.24s cubic-bezier(0.4, 0, 0.2, 1)',
                                             }}
                                           >
                                             <div style={{ overflow: 'hidden' }}>
                                               <div
-                                                style={{
-                                                  marginTop: 8,
-                                                  paddingTop: 8,
-                                                  borderTop: '1px solid #e2e8f0',
-                                                  opacity: isExpanded ? 1 : 0,
-                                                  transition: 'opacity 0.22s ease-in-out',
-                                                }}
+                                                className="sk-offer-drawer-body"
+                                                style={{ opacity: isExpanded ? 1 : 0 }}
                                               >
                                                 {m.currentPriceCents !== null && m.currentPriceCents !== v.item.scheduledPriceCents && (
-                                                  <div style={{ fontSize: 11.5, color: '#64748b', marginBottom: 4 }}>
+                                                  <div className="sk-offer-drawer-meta" style={{ marginBottom: 4 }}>
                                                     (Preço base registrado na biblioteca: {money(m.currentPriceCents)})
                                                   </div>
                                                 )}
-                                                <small style={{ color: '#64748b', display: 'block', marginBottom: 6 }}>
+                                                <small className="sk-offer-drawer-meta">
                                                   📄 Cartaz: <strong>{m.state.cartazPath.split(/[\\/]/).pop()}</strong>
                                                   {m.libraryCartaz?.document.layout.template === 'imported-psd' && m.libraryCartaz.document.layout.artwork.source.sourcePath && (
-                                                    <span style={{ color: '#2563eb', fontWeight: 600, marginLeft: 8 }}>
+                                                    <span className="sk-offer-drawer-psd">
                                                       · 🎨 PSD: {m.libraryCartaz.document.layout.artwork.source.sourcePath.split(/[\\/]/).pop()}
                                                     </span>
                                                   )}
@@ -2640,8 +2899,7 @@ export function OfferFolders({
                                                         {!hasA5Normal && (currentFmt !== 'A5' || isThisBox) && (
                                                           <button
                                                             type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#16a34a', fontWeight: 600, background: '#f0fdf4', borderRadius: 6, border: '1px solid #bbf7d0' }}
+                                                            className="subtle sk-offer-ver-btn is-green"
                                                             title="Criar versão Médio (A5) normal / unitário sem caixa e adicionar na pasta"
                                                             onClick={e => {
                                                               e.stopPropagation();
@@ -2657,8 +2915,7 @@ export function OfferFolders({
                                                           <>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                              className="subtle sk-offer-ver-btn is-green"
                                                               title="Criar versão Médio (A5) com preço por caixa e adicionar na pasta"
                                                               onClick={e => {
                                                                 e.stopPropagation();
@@ -2671,8 +2928,7 @@ export function OfferFolders({
                                                             </button>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, background: '#dcfce7', borderRadius: 6, border: '1px solid #86efac' }}
+                                                              className="subtle sk-offer-ver-btn is-green"
                                                               title="Criar versão Médio (A5) com preço por fardo e adicionar na pasta"
                                                               onClick={e => {
                                                                 e.stopPropagation();
@@ -2690,8 +2946,7 @@ export function OfferFolders({
                                                         {!hasA4Normal && (currentFmt !== 'A4' || isThisBox) && (
                                                           <button
                                                             type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#4f46e5', fontWeight: 600, background: '#eef2ff', borderRadius: 6, border: '1px solid #c7d2fe' }}
+                                                            className="subtle sk-offer-ver-btn is-indigo"
                                                             title="Criar versão Cartaz A4 (Folha inteira) normal / unitário e adicionar na pasta"
                                                             onClick={e => {
                                                               e.stopPropagation();
@@ -2707,8 +2962,7 @@ export function OfferFolders({
                                                           <>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                              className="subtle sk-offer-ver-btn is-indigo"
                                                               title="Criar versão Cartaz A4 com preço por caixa e adicionar na pasta"
                                                               onClick={e => {
                                                                 e.stopPropagation();
@@ -2721,8 +2975,7 @@ export function OfferFolders({
                                                             </button>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '5px 10px', fontSize: 12, color: '#4338ca', fontWeight: 700, background: '#e0e7ff', borderRadius: 6, border: '1px solid #a5b4fc' }}
+                                                              className="subtle sk-offer-ver-btn is-indigo"
                                                               title="Criar versão Cartaz A4 com preço por fardo e adicionar na pasta"
                                                               onClick={e => {
                                                                 e.stopPropagation();
@@ -2740,8 +2993,7 @@ export function OfferFolders({
                                                         {!hasA6 && currentFmt !== 'A6' && (
                                                           <button
                                                             type="button"
-                                                            className="subtle"
-                                                            style={{ padding: '5px 10px', fontSize: 12, color: '#2563eb', fontWeight: 600, background: '#eff6ff', borderRadius: 6, border: '1px solid #bfdbfe' }}
+                                                            className="subtle sk-offer-ver-btn is-blue"
                                                             title="Criar versão Pequeno (A6) deste cartaz para gôndola e adicionar na pasta"
                                                             onClick={e => {
                                                               e.stopPropagation();
@@ -2758,8 +3010,7 @@ export function OfferFolders({
                                                   })()}
                                                   <button
                                                     type="button"
-                                                    className="subtle"
-                                                    style={{ padding: '5px 10px', fontSize: 12, color: '#15803d', fontWeight: 700, border: '1px solid #86efac', background: '#f0fdf4' }}
+                                                    className="subtle sk-offer-ver-btn is-green"
                                                     title="Adicionar mais 1 arte PSD (em A6, A5, A4, A3 ou 2×2 A3) para este mesmo produto sem substituir a atual"
                                                     onClick={e => {
                                                       e.stopPropagation();
@@ -2859,8 +3110,8 @@ export function OfferFolders({
 
                                                 {/* OUTROS TAMANHOS DESTE PRODUTO */}
                                                 {extraPosters.length > 0 && (
-                                                  <div style={{ marginTop: 12, padding: '10px 12px', background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-                                                    <div style={{ fontSize: 12, fontWeight: 700, color: '#1e293b', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                  <div className="sk-offer-extra-box">
+                                                    <div className="sk-offer-extra-box-title">
                                                       <span>📏</span> Outros tamanhos deste produto na campanha ({extraPosters.length}):
                                                     </div>
                                                     {extraPosters.map(otherPoster => {
@@ -2873,20 +3124,7 @@ export function OfferFolders({
                                                       const otherBoxLabel = (otherPoster.scheduledDocument?.product as any)?.boxUnitLabel || 'UND.';
 
                                                       return (
-                                                        <div
-                                                          key={otherKey}
-                                                          style={{
-                                                            display: 'flex',
-                                                            alignItems: 'center',
-                                                            justifyContent: 'space-between',
-                                                            gap: 10,
-                                                            padding: '6px 10px',
-                                                            background: '#ffffff',
-                                                            borderRadius: 6,
-                                                            border: '1px solid #cbd5e1',
-                                                            marginBottom: 6,
-                                                          }}
-                                                        >
+                                                        <div key={otherKey} className="sk-offer-extra-row">
                                                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                                             <input
                                                               type="checkbox"
@@ -2899,11 +3137,11 @@ export function OfferFolders({
                                                               {otherBadge.icon} {otherBadge.label}
                                                             </span>
                                                             {otherBox && (
-                                                              <span style={{ fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>
+                                                              <span className="sk-offer-badge-box">
                                                                 📦 {otherBoxType} {otherBoxQty} {otherBoxLabel}
                                                               </span>
                                                             )}
-                                                            <span style={{ fontSize: 12, color: '#475569' }}>
+                                                            <span className="sk-offer-extra-file">
                                                               📄 {otherPoster.state.cartazPath.split(/[\\/]/).pop()}
                                                             </span>
                                                           </div>
@@ -2922,8 +3160,7 @@ export function OfferFolders({
                                                             </label>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '3px 8px', fontSize: 11, color: '#2563eb', fontWeight: 600 }}
+                                                              className="subtle sk-offer-row-btn"
                                                               onClick={e => {
                                                                 e.stopPropagation();
                                                                 setPreviewKey(otherKey);
@@ -2955,8 +3192,8 @@ export function OfferFolders({
                                                             </button>
                                                             <button
                                                               type="button"
-                                                              className="subtle"
-                                                              style={{ padding: '3px 6px', fontSize: 11, color: '#ef4444' }}
+                                                              className="subtle sk-offer-ver-btn is-danger"
+                                                              style={{ padding: '3px 6px', fontSize: 11 }}
                                                               title="Remover esta versão da pasta"
                                                               onClick={e => {
                                                                 e.stopPropagation();
@@ -2980,25 +3217,15 @@ export function OfferFolders({
 
                                                 {/* CARTAZES ENCONTRADOS NA BIBLIOTECA PARA ESTE PRODUTO */}
                                                 {v.unlinkedLibraryPosters.length > 0 && (
-                                                  <div style={{ marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 8, border: '1px dashed #cbd5e1' }}>
-                                                    <div style={{ fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                  <div className="sk-offer-unlinked-box">
+                                                    <div className="sk-offer-extra-box-title">
                                                       <span>📚</span> Cartazes encontrados na biblioteca para este produto ({v.unlinkedLibraryPosters.length}):
                                                     </div>
                                                     {v.unlinkedLibraryPosters.map(poster => (
-                                                      <div
-                                                        key={poster.path}
-                                                        style={{
-                                                          display: 'flex',
-                                                          alignItems: 'center',
-                                                          justifyContent: 'space-between',
-                                                          gap: 10,
-                                                          padding: '5px 0',
-                                                          borderBottom: '1px solid #f1f5f9',
-                                                        }}
-                                                      >
-                                                        <span style={{ fontSize: 12, color: '#475569' }}>
+                                                      <div key={poster.path} className="sk-offer-unlinked-row">
+                                                        <span className="sk-offer-extra-file">
                                                           Encontrado na biblioteca: <strong>{poster.document.product.name} {poster.document.product.complement}</strong>{' '}
-                                                          <span style={{ color: '#2563eb', fontWeight: 600 }}>
+                                                          <span className="sk-offer-drawer-psd">
                                                             ({getPosterPaperFormat(poster.document, poster.path)})
                                                           </span>
                                                         </span>
@@ -3109,16 +3336,21 @@ export function OfferFolders({
                       </div>
                       {selectedPosterPreview ? (
                         <>
-                          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', marginBottom: 10 }}>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b' }}>
+                          <div className="sk-offer-preview-meta">
+                            <div className="sk-offer-preview-title">
                               {selectedPosterPreview.item.description}
                             </div>
-                            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <div className="sk-offer-preview-sub">
                               <span>F7: <strong>{selectedPosterPreview.item.f7}</strong></span>
-                              <span>•</span>
-                              <span>Preço Oferta: <strong style={{ color: '#16a34a', fontSize: 13 }}>{money(selectedPosterPreview.item.scheduledPriceCents)}</strong></span>
+                              <span aria-hidden="true">·</span>
+                              <span>
+                                Preço Oferta:{' '}
+                                <strong className="sk-offer-poster-price" style={{ fontSize: 13 }}>
+                                  {money(selectedPosterPreview.item.scheduledPriceCents)}
+                                </strong>
+                              </span>
                             </div>
-                            <div style={{ fontSize: 10.5, color: '#3b82f6', marginTop: 4 }}>
+                            <div className="sk-offer-preview-file" title={selectedPosterPreview.posterState.cartazPath}>
                               📄 {selectedPosterPreview.posterState.cartazPath.split(/[\\/]/).pop()}
                             </div>
                           </div>
@@ -3196,6 +3428,95 @@ export function OfferFolders({
                       )}
                     </div>
                   </div>
+
+                  {selectedItemIds.size > 0 && (
+                    <div
+                      className="sk-floating-action-bar sk-batch-dock"
+                      role="region"
+                      aria-label="Dock de ações em lote para produtos selecionados"
+                    >
+                      <div className="sk-floating-bar-meta">
+                        <strong className="sk-tabular">{selectedItemIds.size}</strong>
+                        <span>
+                          {selectedItemIds.size === 1 ? 'produto selecionado' : 'produtos selecionados'}
+                        </span>
+                        <span className="sk-floating-bar-sub sk-tabular">
+                          · {selectedLinkedPosterCount}{' '}
+                          {selectedLinkedPosterCount === 1 ? 'cartaz vinculado' : 'cartazes vinculados'}
+                        </span>
+                      </div>
+                      <div className="sk-floating-bar-actions">
+                        {(onAddBatchToConductor || onAddToConductor) && (
+                          <button
+                            type="button"
+                            className="editor-btn primary"
+                            disabled={selectedLinkedPosterCount === 0}
+                            onClick={handleSendSelectedToConductor}
+                            title="Adicionar os cartazes selecionados à Fila de Impressão (Condutor)"
+                          >
+                            Adicionar à Fila de Impressão ({selectedLinkedPosterCount})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="editor-btn secondary"
+                          disabled={selectedLinkedPosterCount === 0}
+                          onClick={handleOpenExportSelected}
+                          title="Exportar somente os cartazes dos produtos selecionados (.PSD / .skcartaz)"
+                        >
+                          Exportar Selecionados ({selectedLinkedPosterCount})
+                        </button>
+                        <button
+                          type="button"
+                          className="editor-btn outline-blue"
+                          disabled={selectedLinkedPosterCount === 0}
+                          onClick={() => run(async () => handlePrintSelectedItems())}
+                          title="Imprimir imediatamente os cartazes selecionados (Alt+P)"
+                        >
+                          Imprimir (Alt+P)
+                        </button>
+                        {onStartBatchEdit && selectedBatchEditQueue.length > 0 && (
+                          <button
+                            type="button"
+                            className="editor-btn subtle"
+                            onClick={() => run(() => onStartBatchEdit(selectedBatchEditQueue))}
+                            title="Abrir os produtos selecionados em sequência no Editor (Alt+→ para avançar)"
+                          >
+                            Editar em sequência ({selectedBatchEditQueue.length})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="editor-btn subtle danger"
+                          onClick={() => run(() => handleDeleteSelectedItems())}
+                          title="Remover os produtos selecionados desta pasta de ofertas (Delete)"
+                        >
+                          Remover (Del)
+                        </button>
+                        <button
+                          type="button"
+                          className="editor-btn subtle"
+                          onClick={() => handleSelectVisibleItems(false)}
+                          title="Limpar seleção"
+                        >
+                          Limpar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {marqueeRect && (
+                    <div
+                      className="sk-marquee-box"
+                      aria-hidden="true"
+                      style={{
+                        left: marqueeRect.left,
+                        top: marqueeRect.top,
+                        width: marqueeRect.width,
+                        height: marqueeRect.height,
+                      }}
+                    />
+                  )}
                 </>
               )}
             </>
@@ -3861,8 +4182,22 @@ export function OfferFolders({
                   <input
                     type="radio"
                     name="exportScope"
-                    checked={!exportOnlySelected}
-                    onChange={() => setExportOnlySelected(false)}
+                    checked={exportScope === 'checked-rows'}
+                    disabled={selectedItemIds.size === 0}
+                    onChange={() => setExportScope('checked-rows')}
+                  />
+                  <span>
+                    Apenas os produtos selecionados na lista (<strong className="sk-tabular">{selectedItemIds.size}</strong>{' '}
+                    {selectedItemIds.size === 1 ? 'item' : 'itens'} · <strong className="sk-tabular">{selectedLinkedPosterCount}</strong>{' '}
+                    {selectedLinkedPosterCount === 1 ? 'cartaz' : 'cartazes'})
+                  </span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name="exportScope"
+                    checked={exportScope === 'all'}
+                    onChange={() => setExportScope('all')}
                   />
                   <span>Todos os cartazes com arte vinculada da campanha</span>
                 </label>
@@ -3870,38 +4205,44 @@ export function OfferFolders({
                   <input
                     type="radio"
                     name="exportScope"
-                    checked={exportOnlySelected}
-                    onChange={() => setExportOnlySelected(true)}
+                    checked={exportScope === 'print-marked'}
+                    onChange={() => setExportScope('print-marked')}
                   />
-                  <span>Apenas os cartazes marcados na tabela (checkbox)</span>
+                  <span>Apenas os cartazes marcados para impressão na coluna de cartazes</span>
                 </label>
               </div>
             </fieldset>
 
-            <div style={{ margin: '12px 0' }}>
-              <label style={{ fontWeight: 'bold', fontSize: 13, display: 'block', marginBottom: 6 }}>
-                Pasta de Destino:
-              </label>
-              <div className="toolbar" style={{ marginTop: 0 }}>
-                <input
-                  readOnly
-                  placeholder="Selecione a pasta no computador..."
-                  value={exportFolder || ''}
-                  style={{ flex: 1, background: '#f8fafc' }}
-                />
-                <button onClick={() => run(handleChooseExportFolder)}>
-                  📁 Escolher Pasta
-                </button>
+            {isTauri() ? (
+              <div style={{ margin: '12px 0' }}>
+                <label style={{ fontWeight: 'bold', fontSize: 13, display: 'block', marginBottom: 6 }}>
+                  Pasta de Destino:
+                </label>
+                <div className="toolbar" style={{ marginTop: 0 }}>
+                  <input
+                    readOnly
+                    placeholder="Selecione a pasta no computador..."
+                    value={exportFolder || ''}
+                    style={{ flex: 1 }}
+                  />
+                  <button onClick={() => run(handleChooseExportFolder)}>
+                    Escolher Pasta
+                  </button>
+                </div>
+                {exportFolder && activeCampaign && (
+                  <small style={{ color: '#64748b', display: 'block', marginTop: 4 }}>
+                    Será organizada na subpasta: <code>{activeCampaign.name}_{activeCampaign.campaignDate}</code>
+                  </small>
+                )}
               </div>
-              {exportFolder && activeCampaign && (
-                <small style={{ color: '#475569', display: 'block', marginTop: 4 }}>
-                  Será organizada na subpasta: <code>{activeCampaign.name}_{activeCampaign.campaignDate}</code>
-                </small>
-              )}
-            </div>
+            ) : (
+              <p style={{ margin: '10px 0', fontSize: 12.5, color: '#64748b' }}>
+                No modo prévia web, os arquivos <code>.skcartaz</code> selecionados serão baixados diretamente pelo navegador.
+              </p>
+            )}
 
-            <div style={{ margin: '12px 0', padding: '10px 14px', background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, color: '#166534', margin: 0 }}>
+            <div style={{ margin: '12px 0', padding: '10px 14px', background: 'rgba(22, 163, 74, 0.08)', borderRadius: 8, border: '1px solid rgba(22, 163, 74, 0.25)' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontWeight: 700, margin: 0 }}>
                 <input
                   type="checkbox"
                   checked={exportOrganizeByFormat}
@@ -3909,22 +4250,22 @@ export function OfferFolders({
                 />
                 <span>Separar em pastas por tamanho (PEQUENOS, MÉDIOS, CARTAZ A4, etc.)</span>
               </label>
-              <div style={{ fontSize: 11.5, color: '#15803d', marginTop: 4, marginLeft: 24, lineHeight: 1.4 }}>
+              <div style={{ fontSize: 11.5, opacity: 0.85, marginTop: 4, marginLeft: 24, lineHeight: 1.4 }}>
                 Separa automaticamente os arquivos A6 na pasta <code>PEQUENOS</code>, A5 em <code>MÉDIOS</code>, A4 em <code>CARTAZ A4</code>, A3 em <code>CARTAZ AÇOUGUE A3</code> e externas em <code>CARTAZ EXTERNOS</code>.
               </div>
             </div>
 
             {exportProgress && (
-              <div style={{ margin: '14px 0', padding: 12, background: '#f1f5f9', borderRadius: 6 }}>
+              <div style={{ margin: '14px 0', padding: 12, background: 'rgba(148, 163, 184, 0.14)', borderRadius: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
                   <span>{exportProgress.message}</span>
-                  <span><strong>{exportProgress.current} / {exportProgress.total}</strong></span>
+                  <span className="sk-tabular"><strong>{exportProgress.current} / {exportProgress.total}</strong></span>
                 </div>
-                <div style={{ height: 8, background: '#cbd5e1', borderRadius: 4, overflow: 'hidden' }}>
+                <div style={{ height: 8, background: 'rgba(148, 163, 184, 0.28)', borderRadius: 4, overflow: 'hidden' }}>
                   <div
                     style={{
                       height: '100%',
-                      background: '#0284c7',
+                      background: '#2563eb',
                       width: `${exportProgress.total > 0 ? (exportProgress.current / exportProgress.total) * 100 : 0}%`,
                       transition: 'width 0.2s',
                     }}
@@ -3937,11 +4278,11 @@ export function OfferFolders({
               <div className="import-warning" style={{ margin: '14px 0', padding: 12 }}>
                 <strong>{exportResult.errors.length ? 'Exportação parcial' : 'Exportação concluída'}</strong>
                 <ul style={{ margin: '6px 0 0 16px', padding: 0, fontSize: 13 }}>
-                  {exportFormatPsd && <li><strong>{exportResult.psdCount} de {exportResult.candidateCount}</strong> arquivos .PSD gerados.</li>}
+                  {exportFormatPsd && isTauri() && <li><strong>{exportResult.psdCount} de {exportResult.candidateCount}</strong> arquivos .PSD gerados.</li>}
                   {exportFormatSk && <li><strong>{exportResult.skCount} de {exportResult.candidateCount}</strong> arquivos .skcartaz gerados.</li>}
                 </ul>
                 {exportResult.errors.length > 0 && (
-                  <div style={{ marginTop: 8, color: '#b91c1c' }}>
+                  <div style={{ marginTop: 8, color: '#ef4444' }}>
                     <small>Avisos / Detalhes:</small>
                     <ul style={{ margin: '4px 0 0 16px', fontSize: 11 }}>
                       {exportResult.errors.map(err => <li key={err}>{err}</li>)}
@@ -3953,10 +4294,15 @@ export function OfferFolders({
 
             <div className="toolbar" style={{ marginTop: 18, justifyContent: 'flex-end' }}>
               <button
-                disabled={exporting || !exportFolder || (!exportFormatPsd && !exportFormatSk)}
+                className="editor-btn primary"
+                disabled={exporting || (isTauri() && !exportFolder) || (!exportFormatPsd && !exportFormatSk)}
                 onClick={() => run(handleRunBatchExport)}
               >
-                {exporting ? 'Exportando…' : 'Iniciar Exportação em Lote'}
+                {exporting
+                  ? 'Exportando…'
+                  : exportScope === 'checked-rows'
+                  ? `Exportar Selecionados (${selectedLinkedPosterCount})`
+                  : 'Iniciar Exportação em Lote'}
               </button>
               <button
                 className="subtle"

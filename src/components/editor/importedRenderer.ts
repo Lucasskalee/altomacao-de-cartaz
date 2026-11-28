@@ -1,5 +1,6 @@
-import type { ImportedArtwork, ImportedPricePart } from '../../features/cartazes/types';
+import type { ImportedArtwork, ImportedPricePart, ImportedRole, PartAdjustment } from '../../features/cartazes/types';
 import { computeTextLayoutAdjustment, type TextLayoutAdjustment } from '../../features/psd/textAdjustment';
+import type { PreparedPosterRenderPlan } from './posterRenderPlan';
 
 export const MIN_SAFE_HORIZONTAL_SCALE = 0.35;
 
@@ -97,22 +98,224 @@ const sanitizePrice = (value: string) => {
   return { whole: whole || '0', fraction: (fraction + '00').slice(0, 2) };
 };
 
+const MAX_IMAGE_CACHE_ENTRIES = 40;
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
+let fontsPreloadPromise: Promise<unknown> | null = null;
+
 export function clearArtworkImageCache(): void {
   imageCache.clear();
 }
+
 function loadImage(source: string) {
   let pending = imageCache.get(source);
-  if (!pending) {
-    pending = new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Recurso visual incorporado inválido.'));
-      image.src = source;
-    });
+  if (pending) {
+    // Refresh LRU recency
+    imageCache.delete(source);
     imageCache.set(source, pending);
+    return pending;
   }
+  if (imageCache.size >= MAX_IMAGE_CACHE_ENTRIES) {
+    const oldestKey = imageCache.keys().next().value;
+    if (oldestKey !== undefined) imageCache.delete(oldestKey);
+  }
+  pending = new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => {
+      imageCache.delete(source);
+      reject(new Error('Recurso visual incorporado inválido.'));
+    };
+    image.src = source;
+  });
+  imageCache.set(source, pending);
   return pending;
+}
+
+function ensurePosterFontsLoaded(scale: number): Promise<unknown> {
+  if (typeof document === 'undefined' || !('fonts' in document)) {
+    return Promise.resolve();
+  }
+  if (!fontsPreloadPromise) {
+    fontsPreloadPromise = Promise.all([
+      document.fonts.load(`400 ${Math.max(12, Math.round(500 * scale))}px Zullia`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, Math.round(500 * scale))}px Zullia`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, Math.round(200 * scale))}px "Brush Hand New"`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, Math.round(200 * scale))}px BrushHandNew`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, Math.round(100 * scale))}px Arial`).catch(() => []),
+      document.fonts.load(`700 ${Math.max(12, Math.round(100 * scale))}px ArialMT`).catch(() => []),
+      document.fonts.load(`900 ${Math.max(12, Math.round(100 * scale))}px Impact`).catch(() => []),
+    ]);
+  }
+  return fontsPreloadPromise;
+}
+
+export const PART_ROLE_LABELS: Record<ImportedRole, string> = {
+  whole: 'Reais (Inteiro)',
+  fraction: 'Centavos',
+  decimal: 'Vírgula',
+  fractionRule: 'Traço',
+  validity: 'Validade',
+  category: 'Categoria',
+  title: 'Nome Principal',
+  complement: 'Complemento',
+  packaging: 'Unidade / Peso',
+};
+
+export function getPartKey(part: Pick<ImportedPricePart, 'role' | 'layerId'>): string {
+  return `${part.role}:${part.layerId}`;
+}
+
+export function clampPartAdjustment(adj?: PartAdjustment | null): { dx: number; dy: number; scale: number } {
+  const dx = Math.max(-600, Math.min(600, Math.round(adj?.dx ?? 0)));
+  const dy = Math.max(-800, Math.min(800, Math.round(adj?.dy ?? 0)));
+  const rawScale = typeof adj?.scale === 'number' && Number.isFinite(adj.scale) ? adj.scale : 1;
+  const scale = Number(Math.max(0.4, Math.min(2.5, rawScale)).toFixed(2));
+  return { dx, dy, scale };
+}
+
+export function getEditableParts(artwork: ImportedArtwork): ImportedPricePart[] {
+  const normalizedPrice = normalizePsdPriceParts(artwork);
+  const templateParts = artwork.templateParts ?? [];
+  return [...normalizedPrice, ...templateParts];
+}
+
+export const PRICE_GROUP_ROLES: ReadonlySet<ImportedRole> = new Set<ImportedRole>([
+  'whole',
+  'fraction',
+  'decimal',
+  'fractionRule',
+]);
+
+export function isPriceGroupRole(role: ImportedRole): boolean {
+  return PRICE_GROUP_ROLES.has(role);
+}
+
+export type SnapGuides = {
+  verticalX: number | null;
+  horizontalY: number | null;
+};
+
+export function getEffectivePartBounds(
+  part: ImportedPricePart
+): { left: number; top: number; right: number; bottom: number } {
+  const b = part.bounds;
+  const { dx, dy, scale } = clampPartAdjustment(part.adjustments);
+  const cx = (b.left + b.right) / 2 + dx;
+  const cy = (b.top + b.bottom) / 2 + dy;
+  const halfW = ((b.right - b.left) / 2) * scale;
+  const halfH = ((b.bottom - b.top) / 2) * scale;
+  return {
+    left: cx - halfW,
+    top: cy - halfH,
+    right: cx + halfW,
+    bottom: cy + halfH,
+  };
+}
+
+/**
+ * Computes exact horizontal `dx` to center a part (or a group of parts) on the canvas.
+ */
+export function computeHorizontalCenterDx(
+  part: ImportedPricePart,
+  artwork: ImportedArtwork
+): number {
+  const baseCenterX = (part.bounds.left + part.bounds.right) / 2;
+  const targetCenterX = artwork.canvas.width / 2;
+  return clampPartAdjustment({ dx: Math.round(targetCenterX - baseCenterX), dy: 0, scale: 1 }).dx;
+}
+
+/**
+ * Smart Photoshop-style snapping for direct layer movement:
+ * snaps to canvas center, sibling part edges/centers, and grid lines (when grid is visible).
+ */
+export function computeSnapAdjustment(
+  part: ImportedPricePart,
+  rawDx: number,
+  rawDy: number,
+  scale: number,
+  artwork: ImportedArtwork,
+  siblingParts: ImportedPricePart[],
+  snapToGrid: boolean
+): { dx: number; dy: number; guides: SnapGuides } {
+  const w = artwork.canvas.width;
+  const h = artwork.canvas.height;
+  const b = part.bounds;
+  const baseCx = (b.left + b.right) / 2;
+  const baseCy = (b.top + b.bottom) / 2;
+  const halfW = ((b.right - b.left) / 2) * scale;
+  const halfH = ((b.bottom - b.top) / 2) * scale;
+
+  const candCx = baseCx + rawDx;
+  const candCy = baseCy + rawDy;
+  const candLeft = candCx - halfW;
+  const candRight = candCx + halfW;
+  const candTop = candCy - halfH;
+  const candBottom = candCy + halfH;
+
+  let bestDx = rawDx;
+  let bestXDist = Infinity;
+  let verticalX: number | null = null;
+
+  const trySnapX = (currentCoord: number, targetCoord: number, threshold: number) => {
+    const dist = Math.abs(targetCoord - currentCoord);
+    if (dist <= threshold && dist < bestXDist) {
+      bestXDist = dist;
+      bestDx = Math.round(rawDx + (targetCoord - currentCoord));
+      verticalX = targetCoord;
+    }
+  };
+
+  let bestDy = rawDy;
+  let bestYDist = Infinity;
+  let horizontalY: number | null = null;
+
+  const trySnapY = (currentCoord: number, targetCoord: number, threshold: number) => {
+    const dist = Math.abs(targetCoord - currentCoord);
+    if (dist <= threshold && dist < bestYDist) {
+      bestYDist = dist;
+      bestDy = Math.round(rawDy + (targetCoord - currentCoord));
+      horizontalY = targetCoord;
+    }
+  };
+
+  // 1. Canvas center lines (highest priority)
+  const centerThreshold = Math.max(8, Math.round(w * 0.012));
+  trySnapX(candCx, w / 2, centerThreshold);
+  trySnapY(candCy, h / 2, centerThreshold);
+
+  // 2. Sibling parts alignment (top, center, bottom / left, center, right)
+  const siblingThreshold = Math.max(6, Math.round(w * 0.009));
+  for (const sib of siblingParts) {
+    const sb = getEffectivePartBounds(sib);
+    const sibCx = (sb.left + sb.right) / 2;
+    const sibCy = (sb.top + sb.bottom) / 2;
+
+    trySnapX(candCx, sibCx, siblingThreshold);
+    trySnapX(candLeft, sb.left, siblingThreshold);
+    trySnapX(candRight, sb.right, siblingThreshold);
+
+    trySnapY(candCy, sibCy, siblingThreshold);
+    trySnapY(candTop, sb.top, siblingThreshold);
+    trySnapY(candBottom, sb.bottom, siblingThreshold);
+  }
+
+  // 3. Alignment grid snapping when Grid (G) is visible
+  if (snapToGrid) {
+    const stepX = w / 12;
+    const stepY = h / 16;
+    const gridThreshold = Math.max(5, Math.round(w * 0.008));
+    const nearestColX = Math.round(candCx / stepX) * stepX;
+    const nearestRowY = Math.round(candCy / stepY) * stepY;
+    trySnapX(candCx, nearestColX, gridThreshold);
+    trySnapY(candCy, nearestRowY, gridThreshold);
+  }
+
+  const clamped = clampPartAdjustment({ dx: bestDx, dy: bestDy, scale });
+  return {
+    dx: clamped.dx,
+    dy: clamped.dy,
+    guides: { verticalX, horizontalY },
+  };
 }
 
 export function hasInvertedPsdPriceParts(artwork: ImportedArtwork): boolean {
@@ -357,6 +560,12 @@ export type DynamicPosterTexts = {
   unitBadgeMode?: 'auto' | 'un' | 'text';
   productImage?: { dataUrl: string; fileName?: string; bounds?: { left: number; top: number; right: number; bottom: number } };
   showSurgicalGuides?: boolean;
+  /** Preview-only Photoshop-style alignment grid (never set during print/PNG export). */
+  showGrid?: boolean;
+  /** Preview-only selected layer key (`role:layerId`) for interactive move/resize handles. */
+  selectedPartKey?: string | null;
+  /** Preview-only magnetic snap guide lines shown while dragging a layer. */
+  activeSnapGuides?: SnapGuides | null;
 };
 
 export async function drawImported(
@@ -366,33 +575,30 @@ export async function drawImported(
   outputWidth = 886,
   outputHeight = 1260,
   validityText?: string,
-  dynamicTexts?: DynamicPosterTexts
+  dynamicTexts?: DynamicPosterTexts,
+  preparedPlan?: PreparedPosterRenderPlan
 ) {
-  canvas.width = outputWidth;
-  canvas.height = outputHeight;
+  const finalWidth = preparedPlan?.outputWidth ?? outputWidth;
+  const finalHeight = preparedPlan?.outputHeight ?? outputHeight;
+  if (canvas.width !== finalWidth) canvas.width = finalWidth;
+  if (canvas.height !== finalHeight) canvas.height = finalHeight;
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Canvas indisponível.');
   context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, outputWidth, outputHeight);
-  const scale = Math.min(outputWidth / artwork.canvas.width, outputHeight / artwork.canvas.height);
-  const offsetX = (outputWidth - artwork.canvas.width * scale) / 2;
-  const offsetY = (outputHeight - artwork.canvas.height * scale) / 2;
+  context.fillRect(0, 0, finalWidth, finalHeight);
+  const scale =
+    preparedPlan?.scale ?? Math.min(finalWidth / artwork.canvas.width, finalHeight / artwork.canvas.height);
+  const offsetX = preparedPlan?.offsetX ?? (finalWidth - artwork.canvas.width * scale) / 2;
+  const offsetY = preparedPlan?.offsetY ?? (finalHeight - artwork.canvas.height * scale) / 2;
   const background = await loadImage(artwork.staticBackground);
   context.drawImage(background, offsetX, offsetY, artwork.canvas.width * scale, artwork.canvas.height * scale);
-  if ('fonts' in document) {
-    await Promise.all([
-      document.fonts.load(`400 ${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
-      document.fonts.load(`700 ${Math.max(12, 500 * scale)}px Zullia`).catch(() => []),
-      document.fonts.load(`400 ${Math.max(12, 200 * scale)}px "Brush Hand New"`).catch(() => []),
-      document.fonts.load(`400 ${Math.max(12, 200 * scale)}px BrushHandNew`).catch(() => []),
-      document.fonts.load(`700 ${Math.max(12, 100 * scale)}px Arial`).catch(() => []),
-      document.fonts.load(`700 ${Math.max(12, 100 * scale)}px ArialMT`).catch(() => []),
-      document.fonts.load(`900 ${Math.max(12, 100 * scale)}px Impact`).catch(() => []),
-    ]);
-  }
-  const { whole, fraction } = sanitizePrice(price);
-  const parts = normalizePsdPriceParts(artwork);
-  const wholeAdjustment = computeWholePriceAdjustment(artwork, whole);
+  await ensurePosterFontsLoaded(scale);
+  const { whole, fraction } = preparedPlan
+    ? { whole: preparedPlan.whole, fraction: preparedPlan.fraction }
+    : sanitizePrice(price);
+  const parts = preparedPlan?.normalizedPriceParts ?? normalizePsdPriceParts(artwork);
+  const templateParts = preparedPlan?.templateParts ?? artwork.templateParts ?? [];
+  const wholeAdjustment = preparedPlan?.wholeAdjustment ?? computeWholePriceAdjustment(artwork, whole);
   context.save();
   context.translate(offsetX, offsetY);
   context.scale(scale, scale);
@@ -409,15 +615,15 @@ export async function drawImported(
   for (const part of parts) {
     drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
   }
-  if (artwork.templateParts && artwork.templateParts.length > 0) {
-    for (const part of artwork.templateParts) {
+  if (templateParts.length > 0) {
+    for (const part of templateParts) {
       drawPart(context, part, whole, fraction, wholeAdjustment, validityText, dynamicTexts, artwork);
     }
   }
 
-  const hasNativeBoxLayers = Boolean(
-    artwork.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name))
-  );
+  const hasNativeBoxLayers =
+    preparedPlan?.hasNativeBoxLayers ??
+    Boolean(artwork.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name)));
   if (dynamicTexts?.hasBoxPrice && dynamicTexts?.boxPrice && !hasNativeBoxLayers) {
     drawBoxPriceSection(
       context,
@@ -429,9 +635,190 @@ export async function drawImported(
       dynamicTexts.boxPackageLabel
     );
   }
+  if (dynamicTexts?.showGrid) {
+    drawAlignmentGrid(context, artwork);
+  }
+  if (dynamicTexts?.activeSnapGuides) {
+    drawSnapGuides(context, artwork, dynamicTexts.activeSnapGuides);
+  }
+  if (dynamicTexts?.selectedPartKey) {
+    const selectedPart = [...parts, ...templateParts].find(
+      p => getPartKey(p) === dynamicTexts.selectedPartKey
+    );
+    if (selectedPart) {
+      drawSelectedPartOverlay(context, selectedPart, artwork, dynamicTexts);
+    }
+  }
   if (dynamicTexts?.showSurgicalGuides) {
     drawSurgicalGuides(context, artwork, dynamicTexts);
   }
+  context.restore();
+}
+
+function drawSnapGuides(
+  context: CanvasRenderingContext2D,
+  artwork: ImportedArtwork,
+  guides: SnapGuides
+) {
+  if (guides.verticalX === null && guides.horizontalY === null) return;
+  const w = artwork.canvas.width;
+  const h = artwork.canvas.height;
+  context.save();
+  context.strokeStyle = '#e11d48';
+  context.lineWidth = Math.max(2, w * 0.0022);
+  context.setLineDash([8, 5]);
+  if (guides.verticalX !== null) {
+    const x = Math.round(guides.verticalX) + 0.5;
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, h);
+    context.stroke();
+  }
+  if (guides.horizontalY !== null) {
+    const y = Math.round(guides.horizontalY) + 0.5;
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(w, y);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function drawAlignmentGrid(context: CanvasRenderingContext2D, artwork: ImportedArtwork) {
+  const w = artwork.canvas.width;
+  const h = artwork.canvas.height;
+  const cols = 12;
+  const rows = 16;
+  const stepX = w / cols;
+  const stepY = h / rows;
+
+  context.save();
+  context.strokeStyle = 'rgba(37, 99, 235, 0.24)';
+  context.lineWidth = Math.max(1, w * 0.0012);
+  context.setLineDash([]);
+
+  for (let i = 1; i < cols; i++) {
+    const x = Math.round(i * stepX) + 0.5;
+    context.beginPath();
+    context.moveTo(x, 0);
+    context.lineTo(x, h);
+    context.stroke();
+  }
+  for (let j = 1; j < rows; j++) {
+    const y = Math.round(j * stepY) + 0.5;
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(w, y);
+    context.stroke();
+  }
+
+  // Center crosshair lines for quick centering of prices and titles
+  context.strokeStyle = 'rgba(37, 99, 235, 0.52)';
+  context.lineWidth = Math.max(1.5, w * 0.0018);
+  context.setLineDash([8, 6]);
+  context.beginPath();
+  context.moveTo(w / 2, 0);
+  context.lineTo(w / 2, h);
+  context.moveTo(0, h / 2);
+  context.lineTo(w, h / 2);
+  context.stroke();
+  context.restore();
+}
+
+function drawSelectedPartOverlay(
+  context: CanvasRenderingContext2D,
+  part: ImportedPricePart,
+  artwork: ImportedArtwork,
+  dynamicTexts?: DynamicPosterTexts
+) {
+  const eff = getEffectivePartBounds(part);
+  const pad = Math.max(4, artwork.canvas.width * 0.006);
+  const left = eff.left - pad;
+  const top = eff.top - pad;
+  const width = Math.max(16, eff.right - eff.left + pad * 2);
+  const height = Math.max(16, eff.bottom - eff.top + pad * 2);
+  const handleSize = Math.max(14, Math.round(artwork.canvas.width * 0.018));
+
+  context.save();
+  const hasNativeBox = Boolean(
+    artwork.layers?.some(l => l.visible && /caixa\s+com|fardo\s+com/i.test(l.text ?? l.name))
+  );
+  const isCaixaAdapted = Boolean(dynamicTexts?.hasBoxPrice && !hasNativeBox);
+  const isPricePart =
+    part.role === 'whole' ||
+    part.role === 'fraction' ||
+    part.role === 'decimal' ||
+    part.role === 'fractionRule' ||
+    part.role === 'packaging';
+
+  if (isCaixaAdapted && isPricePart) {
+    const canvasW = artwork.canvas.width;
+    const canvasH = artwork.canvas.height;
+    const centerX = canvasW / 2;
+    const wholePart = artwork.priceParts?.find(p => p.role === 'whole');
+    const fracPart = artwork.priceParts?.find(p => p.role === 'fraction');
+    const origTop = wholePart ? Math.min(wholePart.bounds.top, fracPart?.bounds.top ?? wholePart.bounds.top) : canvasH * 0.5;
+    const origBottom = wholePart ? Math.max(wholePart.bounds.bottom, fracPart?.bounds.bottom ?? wholePart.bounds.bottom) : canvasH * 0.8;
+    const origCenterY = (origTop + origBottom) / 2;
+    const boxDividerY = Math.round(canvasH * 0.821);
+    const targetCenterY = canvasH * 0.63;
+    const s = 0.64;
+    const compPart = artwork.templateParts?.find(p => p.role === 'complement') || artwork.priceParts?.find(p => p.role === 'complement');
+    const titlePart = artwork.templateParts?.find(p => p.role === 'title') || artwork.priceParts?.find(p => p.role === 'title');
+    const maxTopObstacle = Math.max(compPart?.bounds.bottom ?? 0, titlePart?.bounds.bottom ?? 0);
+    const scaledHalfH = ((origBottom - origTop) * s) / 2;
+    const safeMinCenterY = maxTopObstacle > 0 ? maxTopObstacle + scaledHalfH + 15 : canvasH * 0.58;
+    const maxAllowedCenterY = boxDividerY - scaledHalfH - 12;
+    const effectiveCenterY = Math.min(maxAllowedCenterY, Math.max(targetCenterY, safeMinCenterY));
+    context.translate(centerX, effectiveCenterY);
+    context.scale(s, s);
+    context.translate(-centerX, -origCenterY);
+  }
+
+  // Selection outline
+  context.strokeStyle = '#2563eb';
+  context.lineWidth = Math.max(2.5, artwork.canvas.width * 0.003);
+  context.setLineDash([10, 6]);
+  context.strokeRect(left, top, width, height);
+  context.setLineDash([]);
+
+  // Subtle corner indicators
+  const corners = [
+    [left, top],
+    [left + width, top],
+    [left, top + height],
+  ];
+  for (const [cx, cy] of corners) {
+    context.fillStyle = '#ffffff';
+    context.fillRect(cx - handleSize * 0.35, cy - handleSize * 0.35, handleSize * 0.7, handleSize * 0.7);
+    context.strokeStyle = '#2563eb';
+    context.lineWidth = 2;
+    context.strokeRect(cx - handleSize * 0.35, cy - handleSize * 0.35, handleSize * 0.7, handleSize * 0.7);
+  }
+
+  // Interactive bottom-right resize handle
+  const rx = left + width;
+  const ry = top + height;
+  context.fillStyle = '#2563eb';
+  context.fillRect(rx - handleSize / 2, ry - handleSize / 2, handleSize, handleSize);
+  context.strokeStyle = '#ffffff';
+  context.lineWidth = 2.5;
+  context.strokeRect(rx - handleSize / 2, ry - handleSize / 2, handleSize, handleSize);
+
+  // Label tag above selection
+  const label = PART_ROLE_LABELS[part.role] ?? part.role;
+  const tagFontPx = Math.max(16, Math.round(artwork.canvas.width * 0.02));
+  context.font = `700 ${tagFontPx}px Arial, sans-serif`;
+  const tagTextW = context.measureText(label).width;
+  const tagH = tagFontPx + 10;
+  const tagY = Math.max(4, top - tagH - 4);
+  context.fillStyle = '#2563eb';
+  context.fillRect(left, tagY, tagTextW + 16, tagH);
+  context.fillStyle = '#ffffff';
+  context.textBaseline = 'middle';
+  context.textAlign = 'left';
+  context.fillText(label, left + 8, tagY + tagH / 2);
+
   context.restore();
 }
 
@@ -832,6 +1219,18 @@ function drawPart(
     context.translate(-centerX, -origCenterY);
   }
 
+  // Per-layer operator fine adjustments (move/resize directly in editor, persisted in .skcartaz)
+  if (part.adjustments) {
+    const { dx, dy, scale: adjScale } = clampPartAdjustment(part.adjustments);
+    if (dx !== 0 || dy !== 0 || adjScale !== 1) {
+      const cx = (b.left + b.right) / 2;
+      const cy = (b.top + b.bottom) / 2;
+      context.translate(cx + dx, cy + dy);
+      context.scale(adjScale, adjScale);
+      context.translate(-cx, -cy);
+    }
+  }
+
   context.fillStyle = part.color;
   if (part.role === 'category') {
     const text = (dynamicTexts?.category || part.originalText || '').trim();
@@ -1158,8 +1557,29 @@ function quoteFont(value: string) {
   return `"${value.replace(/["\\]/g, '')}"`;
 }
 
-export async function importedPng(artwork: ImportedArtwork, price: string): Promise<string> {
+export type ImportedPngOptions = {
+  width?: number;
+  height?: number;
+  validityText?: string;
+  dynamicTexts?: DynamicPosterTexts;
+};
+
+export async function importedPng(
+  artwork: ImportedArtwork,
+  price: string,
+  options?: ImportedPngOptions
+): Promise<string> {
   const canvas = document.createElement('canvas');
-  await drawImported(canvas, artwork, price, 1748, 2480);
+  const width = options?.width ?? 1748;
+  const height = options?.height ?? 2480;
+  await drawImported(
+    canvas,
+    artwork,
+    price,
+    width,
+    height,
+    options?.validityText,
+    options?.dynamicTexts
+  );
   return canvas.toDataURL('image/png');
 }

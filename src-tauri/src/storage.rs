@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::HashSet, fs, io::Write, path::{Component, Path, PathBuf}, sync::Mutex};
+use std::{collections::{HashMap, HashSet}, fs, io::Write, path::{Component, Path, PathBuf}, sync::Mutex};
 use tauri::Manager;
 pub(crate) const MAX_DOCUMENT_BYTES: usize = 12 * 1024 * 1024;
 
@@ -144,7 +144,15 @@ fn move_file(source: &Path, target: &Path) -> Result<(), String> {
     write(target, &content, false)?;
     fs::remove_file(source).map_err(err)
 }
-fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>) -> Result<(), String> {
+fn read_cached(p: &Path, cache: &mut HashMap<PathBuf, Result<String, String>>) -> Result<String, String> {
+    if let Some(cached) = cache.get(p) {
+        return cached.clone();
+    }
+    let result = read(p);
+    cache.insert(p.to_path_buf(), result.clone());
+    result
+}
+fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>, cache: &mut HashMap<PathBuf, Result<String, String>>) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(err)? {
         let entry = entry.map_err(err)?;
         let p = entry.path();
@@ -159,13 +167,14 @@ fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>) -> Result<(), String> {
         let p = inside(root, &p)?;
         if meta.is_dir() {
             rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":true}));
-            scan(root, &p, rows)?;
+            scan(root, &p, rows, cache)?;
         } else if extension(&p).is_ok() {
             let is_psd = p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("psd")).unwrap_or(false);
             if is_psd {
                 let companion = p.with_extension("skcartaz");
                 if companion.exists() {
-                    if let Ok(s) = read(&companion) {
+                    let comp_key = inside(root, &companion).unwrap_or(companion);
+                    if let Ok(s) = read_cached(&comp_key, cache) {
                         rows.push(json!({
                             "path": p,
                             "name": entry.file_name().to_string_lossy(),
@@ -185,7 +194,7 @@ fn scan(root: &Path, dir: &Path, rows: &mut Vec<Value>) -> Result<(), String> {
                     "modifiedAt": meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t| t.as_secs() * 1000)
                 }));
             } else {
-                match read(&p) {
+                match read_cached(&p, cache) {
                     Ok(s) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"content":s,"modifiedAt":meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|t|t.as_secs()*1000)})),
                     Err(e) => rows.push(json!({"path":p,"name":entry.file_name().to_string_lossy(),"folder":false,"error":e})),
                 }
@@ -210,7 +219,15 @@ pub async fn files(app: tauri::AppHandle, access: tauri::State<'_, Access>, requ
         return Ok(json!(result == rfd::MessageDialogResult::Yes));
     }
     if r.action == "list" {
-        let mut rows = vec![]; scan(&root, &root, &mut rows)?;
+        let scan_root = root.clone();
+        let rows = tauri::async_runtime::spawn_blocking(move || {
+            let mut rows = vec![];
+            let mut cache = HashMap::new();
+            scan(&scan_root, &scan_root, &mut rows, &mut cache)?;
+            Ok::<Vec<Value>, String>(rows)
+        })
+        .await
+        .map_err(err)??;
         return Ok(json!({"root":root,"entries":rows}));
     }
     if r.action == "openDialog" || r.action == "saveDialog" || r.action == "folderDialog" {
@@ -251,7 +268,15 @@ pub async fn files(app: tauri::AppHandle, access: tauri::State<'_, Access>, requ
                 Ok(json!(read(&p)?))
             }
         },
-        "save" => { write(&p, &r.content.ok_or("Documento ausente.")?, r.overwrite.unwrap_or(false))?; Ok(json!(p)) },
+        "save" => {
+            let content = r.content.ok_or("Documento ausente.")?;
+            let overwrite = r.overwrite.unwrap_or(false);
+            let save_path = p.clone();
+            tauri::async_runtime::spawn_blocking(move || write(&save_path, &content, overwrite))
+                .await
+                .map_err(err)??;
+            Ok(json!(p))
+        },
         "mkdir" => {
             inside(&root, &p)?;
             let n = r.name.ok_or("Nome ausente.")?; name(&n)?;
