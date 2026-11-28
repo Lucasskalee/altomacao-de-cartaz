@@ -22,6 +22,7 @@ import type { Poster } from '../src/components/editor/PosterView';
 import { partitionQueueIntoBatches } from '../src/features/condutor/batching';
 import { readFileSync, existsSync } from 'node:fs';
 import { initializeCanvas, writePsd } from 'ag-psd';
+import { analyzePsd, isCompositeSolidBlackOrEmpty } from '../src/features/psd/importer';
 
 const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const fakeCanvas = (w = 886, h = 1240): any => ({
@@ -1150,6 +1151,118 @@ test('Condutor de Impressão — Separação adequada de lotes por formato de pa
   assert.equal(batches[1].formatConfig?.paper, 'A4');
   assert.equal(batches[1].pageCount, 3);
 });
+
+test('Condutor de Impressão — PSD com composite preto sólido (exportado sem psd.canvas) recompõe prévia pelas camadas visíveis', async () => {
+  // Helper de canvas com buffer real de pixels para validar detecção de composite preto (R=0,G=0,B=0,A=255)
+  const drawCalls: Array<{ source: any; x: number; y: number }> = [];
+  const createPixelCanvas = (w = 148, h = 210): any => {
+    const buffer = new Uint8ClampedArray(w * h * 4);
+    return {
+      width: w,
+      height: h,
+      _buffer: buffer,
+      getContext: () => ({
+        fillStyle: '#000000',
+        globalAlpha: 1,
+        globalCompositeOperation: 'source-over',
+        shadowOffsetX: 0,
+        shadowOffsetY: 0,
+        shadowBlur: 0,
+        shadowColor: 'transparent',
+        clearRect() {
+          buffer.fill(0);
+        },
+        save() {},
+        restore() {},
+        fillRect() {},
+        drawImage(src: any, x = 0, y = 0) {
+          drawCalls.push({ source: src, x, y });
+        },
+        createImageData: (cw: number, ch: number) => ({
+          data: new Uint8ClampedArray(cw * ch * 4),
+          width: cw,
+          height: ch,
+        }),
+        putImageData(img: { data: Uint8ClampedArray; width: number; height: number }) {
+          buffer.set(img.data.subarray(0, buffer.length));
+        },
+        getImageData: (_x: number, _y: number, cw: number, ch: number) => ({
+          data: buffer.slice(0, cw * ch * 4),
+          width: cw,
+          height: ch,
+        }),
+      }),
+      toDataURL: () => pixel,
+    };
+  };
+
+  // 1. Verifica detecção direta do helper isCompositeSolidBlackOrEmpty
+  assert.equal(isCompositeSolidBlackOrEmpty(undefined), true);
+
+  const blackCanvas = createPixelCanvas(16, 16);
+  for (let i = 0; i < blackCanvas._buffer.length; i += 4) {
+    blackCanvas._buffer[i] = 0;
+    blackCanvas._buffer[i + 1] = 0;
+    blackCanvas._buffer[i + 2] = 0;
+    blackCanvas._buffer[i + 3] = 255;
+  }
+  assert.equal(isCompositeSolidBlackOrEmpty(blackCanvas), true);
+
+  const whiteCanvas = createPixelCanvas(16, 16);
+  whiteCanvas._buffer.fill(255);
+  assert.equal(isCompositeSolidBlackOrEmpty(whiteCanvas), false);
+
+  // 2. Cria um PSD válido sem psd.canvas (como gravado pelo directExport legado), forçando writePsd a gerar composite preto
+  const layerCanvas = createPixelCanvas(80, 40);
+  for (let i = 0; i < layerCanvas._buffer.length; i += 4) {
+    layerCanvas._buffer[i] = 199;
+    layerCanvas._buffer[i + 1] = 70;
+    layerCanvas._buffer[i + 2] = 36;
+    layerCanvas._buffer[i + 3] = 255;
+  }
+  const rawBuf = writePsd({
+    width: 148,
+    height: 210,
+    children: [
+      {
+        name: 'GIOPACK',
+        left: 20,
+        top: 30,
+        right: 100,
+        bottom: 70,
+        canvas: layerCanvas,
+      },
+    ],
+  } as any);
+  const psdArrayBuffer = (rawBuf as any).buffer
+    ? (rawBuf as any).buffer.slice((rawBuf as any).byteOffset, (rawBuf as any).byteOffset + (rawBuf as any).byteLength)
+    : rawBuf;
+
+  // Ativa temporariamente canvas com buffer real para ler os pixels do composite gravado pelo ag-psd
+  const prevCreateElement = (globalThis as any).document.createElement;
+  initializeCanvas(createPixelCanvas, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+  (globalThis as any).document.createElement = () => createPixelCanvas();
+
+  try {
+    drawCalls.length = 0;
+    const analysis = await analyzePsd(psdArrayBuffer, 'giopack-30cmx4m.psd', 'C:\\Desktop\\giopack-30cmx4m.psd');
+    assert.equal(isCompositeSolidBlackOrEmpty(analysis.psd.canvas), true, 'Composite gerado sem psd.canvas deve ser detectado como preto sólido');
+    assert.equal(analysis.compositeSynthesized, true, 'analyzePsd deve sintetizar a prévia a partir das camadas visíveis');
+    assert.ok(drawCalls.some(c => c.x === 20 && c.y === 30), 'Camada visível deve ter sido composta na posição (20, 30) sobre fundo branco');
+
+    const item = createQueueItemFromFilePath('C:\\Desktop\\giopack-30cmx4m.psd', 'external_file');
+    const loaded = await loadConductorItem(item, {
+      readPsd: async () => psdArrayBuffer.slice(0),
+    });
+    assert.equal(loaded.status, 'ready');
+    assert.ok(loaded.poster?.artwork?.staticBackground.startsWith('data:image/png;base64,'));
+    assert.ok(loaded.thumbnailUrl?.startsWith('data:image/png;base64,'));
+  } finally {
+    (globalThis as any).document.createElement = prevCreateElement;
+    initializeCanvas(fakeCanvas, (w, h) => ({ data: new Uint8ClampedArray(w * h * 4), width: w, height: h } as any));
+  }
+});
+
 
 
 

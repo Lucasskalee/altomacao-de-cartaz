@@ -1179,6 +1179,76 @@ export function buildOfferPsdCartazTargetPath(
   return `${rootDir ? rootDir + '\\' : ''}${cleanF7}${baseSlug || 'cartaz'}${sizeTag}.skcartaz`;
 }
 
+export type ExistingLibraryPathInfo = {
+  path: string;
+  productCode?: string | null;
+};
+
+/**
+ * Resolves the target .skcartaz path when linking a PSD to an offer item.
+ * When the PSD's canonical .skcartaz path is already occupied by a different F7/product,
+ * automatically generates an independent per-product path (F7 + description + format)
+ * so the same PSD reference can be freely reused across multiple products without overwriting.
+ */
+export function buildUniqueCartazPathForOfferItem(
+  libraryRoot: string,
+  psdFileNameOrPath: string,
+  item: Pick<CampaignItem, 'f7' | 'description'>,
+  paperSize: PaperFormat,
+  existingEntries: ExistingLibraryPathInfo[] = []
+): { path: string; reusedReference: boolean; existsForSameProduct: boolean } {
+  const canonicalPath = buildCartazPathFromPsd(libraryRoot, psdFileNameOrPath, paperSize);
+  const normCanonical = normalizedPath(canonicalPath);
+  const targetF7 = (item.f7 || '').trim();
+
+  const byNormPath = new Map<string, ExistingLibraryPathInfo>();
+  for (const entry of existingEntries) {
+    if (!entry?.path) continue;
+    byNormPath.set(normalizedPath(entry.path), entry);
+  }
+
+  const existingCanonical = byNormPath.get(normCanonical);
+  if (!existingCanonical) {
+    return { path: canonicalPath, reusedReference: false, existsForSameProduct: false };
+  }
+
+  const existingF7 = (existingCanonical.productCode || '').trim();
+  if (targetF7 && existingF7 && existingF7 === targetF7) {
+    return { path: canonicalPath, reusedReference: false, existsForSameProduct: true };
+  }
+
+  // Canonical path belongs to another product/F7 -> create an independent .skcartaz for this product
+  const rootDir = libraryRoot.trim().replace(/[\\/]+$/, '');
+  const baseSlug = (item.description || 'cartaz')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 50) || 'cartaz';
+  const sizeLabel = paperSize === 'expositor-a3-2x2' ? '2x2' : paperSize;
+  const f7Prefix = targetF7 ? `${targetF7} - ` : '';
+  const stem = `${f7Prefix}${baseSlug} [${sizeLabel}]`;
+
+  for (let suffix = 1; suffix <= 99; suffix++) {
+    const fileName = suffix === 1 ? `${stem}.skcartaz` : `${stem} (${suffix}).skcartaz`;
+    const candidate = rootDir ? `${rootDir}\\${fileName}` : fileName;
+    const hit = byNormPath.get(normalizedPath(candidate));
+    if (!hit) {
+      return { path: candidate, reusedReference: true, existsForSameProduct: false };
+    }
+    const hitF7 = (hit.productCode || '').trim();
+    if (targetF7 && hitF7 && hitF7 === targetF7) {
+      return { path: candidate, reusedReference: true, existsForSameProduct: true };
+    }
+  }
+
+  const fallback = rootDir
+    ? `${rootDir}\\${stem}-${Date.now()}.skcartaz`
+    : `${stem}-${Date.now()}.skcartaz`;
+  return { path: fallback, reusedReference: true, existsForSameProduct: false };
+}
+
 /**
  * Detecta inteligentemente o formato de papel adequado para um arquivo PSD
  * aproveitando as pastas de artes prontas (Médios A5, Açougue Balcão A3, FLV Feira, Pequenos A6, etc.)
@@ -1307,7 +1377,8 @@ export async function executePsdBatchLinking(
   itemsToLink: { item: CampaignItem; psd: ScannedPsdEntry }[],
   paperSize: PaperFormat | 'auto',
   libraryRoot: string,
-  io: PsdLinkingIo
+  io: PsdLinkingIo,
+  existingLibraryEntries: ExistingLibraryPathInfo[] = []
 ): Promise<PsdBatchLinkResult> {
   if (itemsToLink.length === 0) {
     return {
@@ -1316,12 +1387,15 @@ export async function executePsdBatchLinking(
       errors: [],
       success: false,
       message: 'Nenhum produto selecionado para vincular.',
+      linkedPaths: {},
     };
   }
 
   let currentCampaign = campaign;
   let linkedCount = 0;
   const errors: PsdBatchLinkError[] = [];
+  const linkedPaths: Record<string, string> = {};
+  const knownEntries: ExistingLibraryPathInfo[] = [...existingLibraryEntries];
 
   for (const { item, psd } of itemsToLink) {
     try {
@@ -1330,12 +1404,16 @@ export async function executePsdBatchLinking(
         : paperSize;
       const psdData = await io.readPsd(psd.path);
       const cartazDoc = await io.buildCartazFromPsd(psdData, item, resolvedFormat);
-      const targetPath = buildCartazPathFromPsd(
+      const { path: targetPath } = buildUniqueCartazPathForOfferItem(
         libraryRoot,
         psd.path || psd.name,
-        resolvedFormat
+        item,
+        resolvedFormat,
+        knownEntries
       );
       await io.saveCartazDocument(targetPath, cartazDoc);
+      knownEntries.push({ path: targetPath, productCode: item.f7 });
+      linkedPaths[item.id] = targetPath;
       currentCampaign = linkSavedPosterToCampaignItem(
         currentCampaign,
         item.id,
@@ -1381,6 +1459,7 @@ export async function executePsdBatchLinking(
     errors,
     success,
     message,
+    linkedPaths,
   };
 }
 

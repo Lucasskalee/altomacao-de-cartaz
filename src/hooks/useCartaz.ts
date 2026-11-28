@@ -4,7 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Cartaz, ImportedPricePart, PartAdjustment, PosterTemplateModel } from '../features/cartazes/types';
 import type { ConfirmDialogRequest } from '../components/common/ConfirmModal';
 import { type AsyncSaveProgress, yieldToMain } from '../features/cartazes/asyncSave';
-import { createDocument, duplicate } from '../features/cartazes/serialization';
+import { createDocument, deserialize, duplicate, serialize } from '../features/cartazes/serialization';
 import { formatCentsBr } from '../features/cartazes/presentation';
 import { priceToCents, fileName } from '../features/cartazes/validation';
 import * as storage from '../features/cartazes/storage';
@@ -17,7 +17,7 @@ import {
 import { readPsdByPath, selectPsd } from '../features/psd/service';
 import { analyzePsd, buildArtwork } from '../features/psd/importer';
 import { prepareLinkedArtworkAutomatically } from '../features/psd/editLinkedArtwork';
-import { exportDerivedPsdDirect } from '../features/scantech/directExport';
+import { exportDerivedPsdDirect, extractLayerAdjustmentsFromArtwork } from '../features/scantech/directExport';
 import { createOfficialDocument, fetchTemplateBuffer, getPosterModel, switchPosterModel } from '../features/psd/templateService';
 
 export type UseCartazOptions = {
@@ -351,13 +351,36 @@ export function useCartaz(options?: UseCartazOptions) {
       load(doc, null, true);
       return true;
     },
-    async open(p?: string, prepareTexts = false) {
+    async open(p?: string, prepareTexts = false, preloadedDoc?: Cartaz | null) {
       if (!await confirmDiscard()) return null;
       const selected = p ?? await storage.chooseOpen();
       if (!selected) return null;
       let document: Cartaz = null as any;
       let preparationError = '';
       let prepared = false;
+
+      if (preloadedDoc) {
+        const cloned = deserialize(serialize(preloadedDoc));
+        document = cloned;
+        if (
+          prepareTexts &&
+          cloned.layout.template === 'imported-psd' &&
+          !cloned.layout.artwork.templateParts?.length
+        ) {
+          try {
+            const sourcePath = cloned.layout.artwork.source.sourcePath;
+            if (!sourcePath) throw new Error('O caminho do PSD original não está registrado.');
+            const source = await readPsdByPath(sourcePath);
+            const analysis = await analyzePsd(source.buffer, source.name, source.path);
+            document = prepareLinkedArtworkAutomatically(cloned, analysis);
+            prepared = true;
+          } catch (ex) {
+            preparationError = ex instanceof Error ? ex.message : String(ex);
+          }
+        }
+        load(document, selected, prepared);
+        return { prepared, preparationError };
+      }
 
       if (selected.toLowerCase().endsWith('.psd')) {
         const companionPath = selected.replace(/\.psd$/i, '.skcartaz');
@@ -600,9 +623,12 @@ export function useCartaz(options?: UseCartazOptions) {
               boxPackageType: (d.product as any).boxPackageType,
               boxPackageLabel: (d.product as any).boxPackageLabel,
               unitBadgeMode: (d.product as any).unitBadgeMode,
+              layerAdjustments: extractLayerAdjustmentsFromArtwork(d.layout.artwork),
               roles: {
                 wholeLayerId: wholePart?.layerId,
                 fractionLayerId: fractionPart?.layerId,
+                decimalLayerId: d.layout.artwork.priceParts.find(p => p.role === 'decimal')?.layerId,
+                fractionRuleLayerId: d.layout.artwork.priceParts.find(p => p.role === 'fractionRule')?.layerId,
                 categoryLayerId: catPart?.layerId,
                 titleLayerId: titlePart?.layerId,
                 complementLayerId: compPart?.layerId,

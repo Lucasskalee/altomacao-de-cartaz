@@ -28,6 +28,7 @@ import {
   buildCartazPathFromPsd,
   buildOfferPsdCartazTargetPath,
   buildPsdBatchConfirmationSummary,
+  buildUniqueCartazPathForOfferItem,
   confirmBatchPrinted,
   createCampaign,
   deleteCampaign,
@@ -49,6 +50,7 @@ import {
   updateCampaignItemDescription,
   updatePosterSelection,
   updateScheduledPrice,
+  type ExistingLibraryPathInfo,
 } from '../../features/ofertas/service';
 import type {
   CampaignItem,
@@ -66,7 +68,7 @@ import {
   executeScantechDirectExportJob,
   scanScantechPsdFolder,
 } from '../../features/scantech/service';
-import { exportDerivedPsdDirect } from '../../features/scantech/directExport';
+import { exportDerivedPsdDirect, extractLayerAdjustmentsFromArtwork } from '../../features/scantech/directExport';
 import type { ScannedPsdEntry, ScantechExportJob } from '../../features/scantech/types';
 import { readPsdByPath } from '../../features/psd/service';
 import { analyzePsd, buildArtwork } from '../../features/psd/importer';
@@ -177,7 +179,7 @@ type Props = {
   libraryData: LibraryData | null;
   run: (action: () => Promise<void>) => void;
   onPrintBatch: (posters: Poster[], options?: any) => void;
-  onEditPoster?: (path: string, scheduledPriceCents?: number) => Promise<void>;
+  onEditPoster?: (path: string, scheduledPriceCents?: number, preloadedDoc?: Cartaz | null) => Promise<void>;
   onRefreshLibrary?: () => Promise<void>;
   isActive?: boolean;
   onAddToConductor?: (cartaz: Cartaz, path: string) => void;
@@ -348,6 +350,24 @@ export function OfferFolders({
   } | null>(null);
 
   const libraryIndex = useMemo(() => indexCartazes(libraryData?.entries ?? []), [libraryData]);
+
+  const existingLibraryPathInfos = useMemo<ExistingLibraryPathInfo[]>(() => {
+    const byNorm = new Map<string, ExistingLibraryPathInfo>();
+    for (const entry of libraryData?.entries ?? []) {
+      if (entry.folder) continue;
+      byNorm.set(entry.path.replace(/\//g, '\\').toLowerCase(), {
+        path: entry.path,
+        productCode: null,
+      });
+    }
+    for (const item of libraryIndex) {
+      byNorm.set(item.path.replace(/\//g, '\\').toLowerCase(), {
+        path: item.path,
+        productCode: item.document.product.productCode || null,
+      });
+    }
+    return Array.from(byNorm.values());
+  }, [libraryData, libraryIndex]);
 
   const reloadCampaigns = async () => {
     const res = await listCampaigns();
@@ -689,18 +709,24 @@ export function OfferFolders({
       ? detectPsdPaperFormat(psdEntry.path || psdEntry.name, item.description)
       : paperSize;
 
-    const targetPath = buildCartazPathFromPsd(
+    const resolvedTarget = buildUniqueCartazPathForOfferItem(
       libraryData?.root || '',
       psdEntry.path || psdEntry.name,
-      resolvedPaper
+      item,
+      resolvedPaper,
+      existingLibraryPathInfos
     );
+    const targetPath = resolvedTarget.path;
 
-    const alreadyExists = libraryData?.entries.some(
-      e => !e.folder && e.path.toLowerCase() === targetPath.toLowerCase()
-    );
-    if (alreadyExists && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    // Só solicita confirmação de substituição quando o arquivo existente pertence ao MESMO produto/F7.
+    // Ao reutilizar a mesma referência PSD para outro F7, gera automaticamente um .skcartaz independente.
+    if (
+      resolvedTarget.existsForSameProduct &&
+      typeof window !== 'undefined' &&
+      typeof window.confirm === 'function'
+    ) {
       const fileName = targetPath.split(/[\\/]/).pop();
-      if (!window.confirm(`O cartaz "${fileName}" já existe na biblioteca.\n\nDeseja substituir o arquivo existente pela nova referência PSD?`)) {
+      if (!window.confirm(`O cartaz "${fileName}" já existe para este produto (F7 ${item.f7}).\n\nDeseja atualizar o arquivo existente com esta referência PSD?`)) {
         return;
       }
     }
@@ -716,14 +742,16 @@ export function OfferFolders({
         {
           readPsd: readPsdByPath,
           buildCartazFromPsd,
-          saveCartazDocument: (targetPath, doc) => saveDocument(targetPath, doc, true),
+          saveCartazDocument: (saveTargetPath, doc) => saveDocument(saveTargetPath, doc, true),
           persistCampaign: persistUpdate,
           refreshLibrary: onRefreshLibrary,
-        }
+        },
+        existingLibraryPathInfos
       );
       setBatchLinkResult(res);
       if (res.success) {
-        setPreviewKey(`${item.id}::${targetPath}`);
+        const finalPath = res.linkedPaths?.[item.id] ?? targetPath;
+        setPreviewKey(`${item.id}::${finalPath}`);
       }
     } finally {
       setBatchLinking(false);
@@ -735,20 +763,27 @@ export function OfferFolders({
   ) => {
     if (!activeCampaign || itemsToLink.length === 0) return;
 
-    const existingCount = itemsToLink.filter(entry => {
+    const simulatedEntries: ExistingLibraryPathInfo[] = [...existingLibraryPathInfos];
+    let existingSameProductCount = 0;
+    for (const entry of itemsToLink) {
       const resolvedFormat = psdPaperSize === 'auto'
         ? detectPsdPaperFormat(entry.psd.path || entry.psd.name, entry.item.description)
         : psdPaperSize;
-      const tPath = buildCartazPathFromPsd(
+      const resolved = buildUniqueCartazPathForOfferItem(
         libraryData?.root || '',
         entry.psd.path || entry.psd.name,
-        resolvedFormat
+        entry.item,
+        resolvedFormat,
+        simulatedEntries
       );
-      return libraryData?.entries.some(e => !e.folder && e.path.toLowerCase() === tPath.toLowerCase());
-    }).length;
+      if (resolved.existsForSameProduct) {
+        existingSameProductCount++;
+      }
+      simulatedEntries.push({ path: resolved.path, productCode: entry.item.f7 });
+    }
 
-    if (existingCount > 0 && typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm(`Atenção: ${existingCount} arquivo(s) .skcartaz já existem na biblioteca e serão atualizados.\n\nDeseja prosseguir com a substituição?`)) {
+    if (existingSameProductCount > 0 && typeof window !== 'undefined' && typeof window.confirm === 'function') {
+      if (!window.confirm(`Atenção: ${existingSameProductCount} arquivo(s) .skcartaz deste(s) mesmo(s) F7 já existem na biblioteca e serão atualizados.\n\nDeseja prosseguir? (PSDs reutilizados em outros F7 criarão cópias independentes automaticamente.)`)) {
         return;
       }
     }
@@ -767,7 +802,8 @@ export function OfferFolders({
           saveCartazDocument: (targetPath, doc) => saveDocument(targetPath, doc, true),
           persistCampaign: persistUpdate,
           refreshLibrary: onRefreshLibrary,
-        }
+        },
+        existingLibraryPathInfos
       );
       setBatchLinkResult(res);
       setShowBatchConfirmStep(false);
@@ -893,9 +929,14 @@ export function OfferFolders({
 
             if (wholePart && fractionPart && artwork.source.sourcePath) {
               const parts = splitCentsToParts(item.scheduledPriceCents);
-              const psdFileName = artwork.source.fileName
+              const preferredPsdName = `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
+              const rawSourcePsdName = artwork.source.fileName
                 ? (artwork.source.fileName.endsWith('.psd') ? artwork.source.fileName : `${artwork.source.fileName}.psd`)
-                : `${f7Tag}${baseSlug}${paperTag}-oferta.psd`;
+                : preferredPsdName;
+              const psdFileName =
+                item.f7 && !rawSourcePsdName.includes(item.f7)
+                  ? preferredPsdName
+                  : rawSourcePsdName;
               const outputPsdPath = `${destFolder}\\${psdFileName}`;
 
               const campaignValidity = formatCampaignDateToValidity(
@@ -938,9 +979,11 @@ export function OfferFolders({
                   boxUnitLabel: ((doc.product as any).boxUnitLabel as string) || 'UND.',
                   boxWhole: boxWholeVal,
                   boxFraction: boxFractionVal,
+                  layerAdjustments: extractLayerAdjustmentsFromArtwork(artwork),
                   roles: {
                     wholeLayerId: wholePart.layerId,
                     fractionLayerId: fractionPart.layerId,
+                    decimalLayerId: artwork.priceParts?.find(p => p.role === 'decimal')?.layerId,
                     fractionRuleLayerId: artwork.priceParts?.find(p => p.role === 'fractionRule')?.layerId,
                     validityLayerId: validityPart?.layerId,
                     titleLayerId: titlePart?.layerId,
@@ -1467,6 +1510,25 @@ export function OfferFolders({
         return;
       }
 
+      if (
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'e' &&
+        onEditPoster &&
+        selectedPosterPreview
+      ) {
+        e.preventDefault();
+        run(() =>
+          onEditPoster(
+            selectedPosterPreview.posterState.cartazPath,
+            selectedPosterPreview.item.scheduledPriceCents,
+            selectedPosterPreview.doc
+          )
+        );
+        return;
+      }
+
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         if (navigablePosterKeys.length === 0) return;
         e.preventDefault();
@@ -1491,7 +1553,7 @@ export function OfferFolders({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isActive, navigablePosterKeys, previewKey, selectedItemIds, selectedViews, activeCampaign, formatTab]);
+  }, [isActive, navigablePosterKeys, previewKey, selectedItemIds, selectedViews, activeCampaign, formatTab, onEditPoster, selectedPosterPreview]);
 
   const campaignStats = useMemo(() => {
     let totalItems = matchViews.length;
@@ -1722,9 +1784,11 @@ export function OfferFolders({
       boxUnitLabel: ((doc.product as any).boxUnitLabel as string) || 'UND.',
       boxWhole: boxWholeVal,
       boxFraction: boxFractionVal,
+      layerAdjustments: extractLayerAdjustmentsFromArtwork(artwork),
       roles: {
         wholeLayerId: wholePart.layerId,
         fractionLayerId: fractionPart.layerId,
+        decimalLayerId: artwork.priceParts?.find(p => p.role === 'decimal')?.layerId,
         fractionRuleLayerId: artwork.priceParts?.find(p => p.role === 'fractionRule')?.layerId,
         validityLayerId: artwork.priceParts?.find(p => p.role === 'validity')?.layerId,
         titleLayerId: titlePart?.layerId,
@@ -2688,6 +2752,32 @@ export function OfferFolders({
                                               >
                                                 👁️ Prévia
                                               </button>
+                                              {onEditPoster && m.libraryCartaz && (
+                                                <button
+                                                  type="button"
+                                                  className="subtle sk-offer-row-btn"
+                                                  style={{
+                                                    background: '#2563eb',
+                                                    color: '#ffffff',
+                                                    borderColor: '#1d4ed8',
+                                                    fontWeight: 700,
+                                                  }}
+                                                  onClick={e => {
+                                                    e.stopPropagation();
+                                                    setPreviewKey(key);
+                                                    run(() =>
+                                                      onEditPoster(
+                                                        m.libraryCartaz!.path,
+                                                        v.item.scheduledPriceCents,
+                                                        m.libraryCartaz!.document
+                                                      )
+                                                    );
+                                                  }}
+                                                  title="Abrir imediatamente no Editor de Cartazes e Camadas (atalho: E)"
+                                                >
+                                                  ✏️ Editar
+                                                </button>
+                                              )}
                                               <button
                                                 type="button"
                                                 style={{
@@ -3060,7 +3150,13 @@ export function OfferFolders({
                                                       title="Abrir este cartaz no editor com o preço desta oferta"
                                                       onClick={e => {
                                                         e.stopPropagation();
-                                                        run(() => onEditPoster(m.libraryCartaz!.path, v.item.scheduledPriceCents));
+                                                        run(() =>
+                                                          onEditPoster(
+                                                            m.libraryCartaz!.path,
+                                                            v.item.scheduledPriceCents,
+                                                            m.libraryCartaz!.document
+                                                          )
+                                                        );
                                                       }}
                                                     >
                                                       Editar cartaz
@@ -3354,6 +3450,41 @@ export function OfferFolders({
                               📄 {selectedPosterPreview.posterState.cartazPath.split(/[\\/]/).pop()}
                             </div>
                           </div>
+                          {onEditPoster && (
+                            <button
+                              type="button"
+                              style={{
+                                width: '100%',
+                                marginBottom: 7,
+                                padding: '8px 10px',
+                                fontSize: 12,
+                                fontWeight: 700,
+                                background: '#2563eb',
+                                color: '#ffffff',
+                                borderRadius: 8,
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 6,
+                                border: 'none',
+                                boxShadow: '0 2px 4px rgba(37,99,235,0.32)',
+                                whiteSpace: 'nowrap',
+                              }}
+                              title="Abrir direto no Editor de Cartazes e Camadas (atalho: E ou duplo clique na prévia)"
+                              onClick={() => {
+                                run(() =>
+                                  onEditPoster(
+                                    selectedPosterPreview.posterState.cartazPath,
+                                    selectedPosterPreview.item.scheduledPriceCents,
+                                    selectedPosterPreview.doc
+                                  )
+                                );
+                              }}
+                            >
+                              ✏️ Editar Cartaz e Camadas (E)
+                            </button>
+                          )}
                           <button
                             type="button"
                             style={{
@@ -3419,7 +3550,21 @@ export function OfferFolders({
                           >
                             📦 Exportar PSD deste Cartaz
                           </button>
-                          <div className="paper-wrap">
+                          <div
+                            className="paper-wrap"
+                            style={onEditPoster ? { cursor: 'pointer' } : undefined}
+                            title={onEditPoster ? 'Duplo clique para abrir rapidamente no Editor de Camadas' : undefined}
+                            onDoubleClick={() => {
+                              if (!onEditPoster) return;
+                              run(() =>
+                                onEditPoster(
+                                  selectedPosterPreview.posterState.cartazPath,
+                                  selectedPosterPreview.item.scheduledPriceCents,
+                                  selectedPosterPreview.doc
+                                )
+                              );
+                            }}
+                          >
                             <PosterView poster={selectedPosterPreview.poster} />
                           </div>
                         </>
@@ -3688,6 +3833,7 @@ export function OfferFolders({
         >
           <PsdImport
             offerContext={psdOfferContext}
+            existingEntries={existingLibraryPathInfos}
             close={() => setPsdOfferContext(null)}
             saved={handlePsdSavedForOffer}
           />

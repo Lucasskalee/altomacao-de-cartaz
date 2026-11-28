@@ -8,14 +8,20 @@ import { fileName, priceToCents } from '../../features/cartazes/validation';
 import { PosterView } from '../editor/PosterView';
 import { importedPriceWarning } from '../editor/importedRenderer';
 import type { Cartaz, ImportedPriceRole, PaperFormat } from '../../features/cartazes/types';
-import { detectPsdPaperFormat } from '../../features/ofertas/service';
+import {
+  buildUniqueCartazPathForOfferItem,
+  detectPsdPaperFormat,
+  psdFileNameToCartazFileName,
+  suggestFromExcelDescription,
+  type ExistingLibraryPathInfo,
+} from '../../features/ofertas/service';
 import type { PsdImportOfferContext } from '../../features/ofertas/types';
-import { suggestFromExcelDescription, psdFileNameToCartazFileName } from '../../features/ofertas/service';
 
 type Props = {
   close: () => void;
   saved: (path: string, document: Cartaz) => Promise<void>;
   offerContext?: PsdImportOfferContext | null;
+  existingEntries?: ExistingLibraryPathInfo[];
 };
 
 const roleLabels: Record<ImportedPriceRole, string> = {
@@ -28,7 +34,7 @@ const roleLabels: Record<ImportedPriceRole, string> = {
 
 const centsToBr = (cents: number) => (cents / 100).toFixed(2).replace('.', ',');
 
-export function PsdImport({ close, saved, offerContext = null }: Props) {
+export function PsdImport({ close, saved, offerContext = null, existingEntries = [] }: Props) {
   const excelSuggestion = useMemo(
     () => (offerContext ? suggestFromExcelDescription(offerContext.description) : null),
     [offerContext]
@@ -72,6 +78,18 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
   const f7Missing = !f7.trim();
   const f7Divergent = Boolean(offerContext && f7.trim() && f7.trim() !== offerContext.productCode);
   const requiresF7Confirmation = f7Missing || f7Divergent;
+
+  const reusedReferenceInfo = useMemo(() => {
+    if (!analysis || !offerContext) return null;
+    const resolved = buildUniqueCartazPathForOfferItem(
+      '',
+      analysis.fileName,
+      { f7: f7.trim() || offerContext.productCode, description: offerContext.description || name },
+      paper,
+      existingEntries
+    );
+    return resolved;
+  }, [analysis, offerContext, f7, name, paper, existingEntries]);
 
   const select = async () => {
     setBusy(true);
@@ -168,16 +186,28 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
         ? psdFileNameToCartazFileName(analysis.fileName)
         : fileName(`${name}-${complement}`);
       let suggestedName = baseSuggestedName;
+      if (offerContext && analysis?.fileName) {
+        const uniqueResolved = buildUniqueCartazPathForOfferItem(
+          '',
+          analysis.fileName,
+          { f7: f7.trim() || offerContext.productCode, description: offerContext.description || name },
+          paper,
+          existingEntries
+        );
+        if (uniqueResolved.reusedReference) {
+          suggestedName = uniqueResolved.path.split(/[\\/]/).pop() || baseSuggestedName;
+        }
+      }
       if (offerContext?.mode === 'add') {
         const sizeLabel = paper === 'expositor-a3-2x2' ? '2x2' : paper;
         const sizeTagRegex = new RegExp(`(?:\\[|\\(|\\b)${sizeLabel}(?:\\]|\\)|\\b)`, 'i');
-        if (!sizeTagRegex.test(baseSuggestedName)) {
-          suggestedName = baseSuggestedName.replace(/\.skcartaz$/i, ` [${sizeLabel}].skcartaz`);
+        if (!sizeTagRegex.test(suggestedName)) {
+          suggestedName = suggestedName.replace(/\.skcartaz$/i, ` [${sizeLabel}].skcartaz`);
         }
       }
       const path = await chooseSave(suggestedName);
       if (!path) return;
-      await saveDocument(path, document);
+      await saveDocument(path, document, true);
       await saved(path, document);
       close();
     } finally {
@@ -245,6 +275,11 @@ export function PsdImport({ close, saved, offerContext = null }: Props) {
                 Usar descrição do Excel nos metadados
               </button>
             </div>
+            {reusedReferenceInfo?.reusedReference && (
+              <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: 'rgba(37, 99, 235, 0.12)', border: '1px solid rgba(59, 130, 246, 0.35)', fontSize: 12 }}>
+                ♻️ <strong>Referência PSD reutilizada:</strong> esta arte já é usada em outro produto. Será criado um arquivo independente (<code>{reusedReferenceInfo.path.split(/[\\/]/).pop()}</code>) para o F7 <strong>{offerContext.productCode}</strong> sem alterar o cartaz original.
+              </div>
+            )}
           </div>
         )}
 

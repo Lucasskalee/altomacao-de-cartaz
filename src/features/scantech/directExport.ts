@@ -1,7 +1,10 @@
 import { readPsd, writePsd, initializeCanvas, type Layer, type Psd } from 'ag-psd';
 import type { ScantechExportJob, ScantechExportJobResult, ScantechExportBatchResult } from './types';
+import type { ImportedArtwork } from '../cartazes/types';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { readPsdByPath } from '../psd/service';
+import { colorHex } from '../psd/importer';
+import { resolveFontFamily, resolveFontWeight } from '../../components/editor/importedRenderer';
 import { OFFICIAL_BOX_LAYERS, BOX_TEMPLATE_CANVAS, OFFICIAL_UN_LAYER_META, OFFICIAL_UN_LAYER_DEFLATED_BASE64 } from './boxModelTemplate';
 
 let canvasReady = false;
@@ -288,26 +291,12 @@ export function renderTextLayerToBitmap(
       ctx.clearRect?.(0, 0, width, height);
       ctx.save?.();
 
-      const style = layer.text?.style;
+      const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
       const fontName = style?.font?.name ?? 'Zullia';
-      const color: any = style?.fillColor;
-      let fillStyle = '#000000';
-      if (color && typeof color.r === 'number' && typeof color.g === 'number' && typeof color.b === 'number') {
-        const r = Math.min(255, Math.max(0, Math.round(color.r)));
-        const g = Math.min(255, Math.max(0, Math.round(color.g)));
-        const b = Math.min(255, Math.max(0, Math.round(color.b)));
-        fillStyle = `rgb(${r},${g},${b})`;
-      } else if (color && typeof color.c === 'number' && typeof color.m === 'number') {
-        const c = color.c / 255;
-        const m = color.m / 255;
-        const y = (color.y ?? 0) / 255;
-        const k = (color.k ?? 0) / 255;
-        const r = Math.round(255 * (1 - c) * (1 - k));
-        const g = Math.round(255 * (1 - m) * (1 - k));
-        const b = Math.round(255 * (1 - y) * (1 - k));
-        fillStyle = `rgb(${r},${g},${b})`;
-      }
-      ctx.fillStyle = fillStyle;
+      const fontFamily = resolveFontFamily(fontName, '"Brush Hand New", Arial, Impact, sans-serif');
+      const fontWeight = style?.fauxBold ? '700' : resolveFontWeight(fontName, '400');
+      const fontStyle = style?.fauxItalic ? 'italic ' : '';
+      ctx.fillStyle = colorHex(style?.fillColor as any, 'title');
 
       if (hasTransform) {
         const [a, b, c, d, tx, ty] = transform;
@@ -320,11 +309,11 @@ export function renderTextLayerToBitmap(
         ctx.textBaseline = 'alphabetic';
 
         const fontSize = typeof style?.fontSize === 'number' && style.fontSize > 0 ? style.fontSize : 50;
-        ctx.font = `${fontSize}px "${fontName}", "Brush Hand New", Arial, Impact, sans-serif`;
+        ctx.font = `${fontStyle}${fontWeight} ${fontSize}px ${fontFamily}`;
         ctx.fillText?.(newText.trim(), 0, 0);
       } else {
         const fontSize = Math.max(12, Math.round(height * 0.75));
-        ctx.font = `${fontSize}px "${fontName}", Arial, sans-serif`;
+        ctx.font = `${fontStyle}${fontWeight} ${fontSize}px ${fontFamily}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText?.(newText.trim(), width / 2, height / 2);
@@ -334,6 +323,129 @@ export function renderTextLayerToBitmap(
     }
   } catch {
     // mock / fallback
+  }
+}
+
+function mapBlendMode(mode: Layer['blendMode']): GlobalCompositeOperation {
+  const supported: Partial<Record<NonNullable<Layer['blendMode']>, GlobalCompositeOperation>> = {
+    normal: 'source-over',
+    multiply: 'multiply',
+    screen: 'screen',
+    overlay: 'overlay',
+    darken: 'darken',
+    lighten: 'lighten',
+    difference: 'difference',
+    exclusion: 'exclusion',
+    'color dodge': 'color-dodge',
+    'color burn': 'color-burn',
+    'hard light': 'hard-light',
+    'soft light': 'soft-light',
+    hue: 'hue',
+    saturation: 'saturation',
+    color: 'color',
+    luminosity: 'luminosity',
+  };
+  return supported[mode ?? 'normal'] ?? 'source-over';
+}
+
+function applyCompositeLayerShadow(ctx: CanvasRenderingContext2D, layer: Layer): void {
+  const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
+  if (!shadow) return;
+  const rawDist = typeof shadow.distance === 'number' ? shadow.distance : (shadow.distance?.value ?? 0);
+  const rawAngle = typeof shadow.angle === 'number' ? shadow.angle : 120;
+  const angle = (rawAngle * Math.PI) / 180;
+  const size = typeof shadow.size === 'number' ? shadow.size : (shadow.size?.value ?? 0);
+  if (rawDist === 0 && size === 0) return;
+  ctx.shadowOffsetX = -Math.cos(angle) * rawDist;
+  ctx.shadowOffsetY = Math.sin(angle) * rawDist;
+  ctx.shadowBlur = size;
+  ctx.shadowColor = colorHex(shadow.color as any, 'title');
+}
+
+/**
+ * Reconstrói a imagem achatada (composite) do PSD a partir das camadas visíveis com fundo branco.
+ * Evita que o ag-psd grave uma prévia global preta (R=0,G=0,B=0,A=255) quando psd.canvas foi removido,
+ * garantindo exibição fiel imediata no Condutor de Impressão e visualizadores de arquivos.
+ */
+export function buildCompositeCanvasFromLayers(psd: Psd): HTMLCanvasElement | null {
+  if (
+    typeof document === 'undefined' ||
+    typeof document.createElement !== 'function' ||
+    typeof HTMLCanvasElement === 'undefined' ||
+    !psd.width ||
+    !psd.height
+  ) {
+    return null;
+  }
+
+  try {
+    const composite = document.createElement('canvas');
+    composite.width = psd.width;
+    composite.height = psd.height;
+    const ctx = composite.getContext('2d');
+    if (!ctx) return null;
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, psd.width, psd.height);
+
+    const drawTree = (layers: Layer[], parentVisible: boolean) => {
+      for (const layer of layers) {
+        const visible = parentVisible && !layer.hidden;
+        if (!visible) continue;
+        if (layer.children) {
+          drawTree(layer.children, visible);
+          continue;
+        }
+
+        const left = layer.left ?? 0;
+        const top = layer.top ?? 0;
+        const alpha = typeof layer.opacity === 'number'
+          ? Math.min(1, layer.opacity > 1 ? layer.opacity / 255 : layer.opacity)
+          : 1;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.globalCompositeOperation = mapBlendMode(layer.blendMode);
+
+        if (layer.canvas) {
+          applyCompositeLayerShadow(ctx, layer);
+          ctx.drawImage(layer.canvas as CanvasImageSource, left, top);
+        } else if (layer.imageData && layer.imageData.width > 0 && layer.imageData.height > 0) {
+          const tmp = document.createElement('canvas');
+          tmp.width = layer.imageData.width;
+          tmp.height = layer.imageData.height;
+          const tmpCtx = tmp.getContext('2d');
+          if (tmpCtx) {
+            const imgData =
+              typeof ImageData !== 'undefined' && layer.imageData instanceof ImageData
+                ? layer.imageData
+                : new ImageData(
+                    new Uint8ClampedArray(layer.imageData.data),
+                    layer.imageData.width,
+                    layer.imageData.height
+                  );
+            tmpCtx.putImageData(imgData, 0, 0);
+            applyCompositeLayerShadow(ctx, layer);
+            ctx.drawImage(tmp, left, top);
+          }
+        } else if (layer.vectorFill?.type === 'color') {
+          const width = (layer.right ?? left) - left;
+          const height = (layer.bottom ?? top) - top;
+          if (width > 0 && height > 0) {
+            applyCompositeLayerShadow(ctx, layer);
+            ctx.fillStyle = colorHex(layer.vectorFill.color as any, 'title');
+            ctx.fillRect(left, top, width, height);
+          }
+        }
+
+        ctx.restore();
+      }
+    };
+
+    drawTree(psd.children ?? [], true);
+    return composite;
+  } catch {
+    return null;
   }
 }
 
@@ -635,6 +747,15 @@ export async function executeScantechDirectExportJob(
     }
   }
 
+  const rebuiltComposite = buildCompositeCanvasFromLayers(psd);
+  if (rebuiltComposite) {
+    psd.canvas = rebuiltComposite;
+    delete psd.imageData;
+  } else {
+    delete psd.canvas;
+    delete psd.imageData;
+  }
+
   let outBytes: ArrayBuffer;
   try {
     preparePsdForWriting(psd);
@@ -720,6 +841,190 @@ export async function exportScantechPsdsDirect(
   };
 }
 
+export type PsdLayerAdjustmentSpec = {
+  layerId: string;
+  dx: number;
+  dy: number;
+  scale: number;
+  origBounds?: { left: number; top: number; right: number; bottom: number };
+  origTransform?: [number, number, number, number, number, number];
+};
+
+/**
+ * Extracts non-identity per-layer visual adjustments (dx, dy, scale) from a Cartaz artwork
+ * so PSD exports preserve every manual layer move/resize done in the editor.
+ */
+export function extractLayerAdjustmentsFromArtwork(
+  artwork?: ImportedArtwork | null
+): Record<string, PsdLayerAdjustmentSpec> {
+  const result: Record<string, PsdLayerAdjustmentSpec> = {};
+  if (!artwork) return result;
+  const allParts = [...(artwork.priceParts ?? []), ...(artwork.templateParts ?? [])];
+  for (const part of allParts) {
+    if (!part?.layerId || !part.adjustments) continue;
+    const dx = Math.max(-600, Math.min(600, Math.round(part.adjustments.dx ?? 0)));
+    const dy = Math.max(-800, Math.min(800, Math.round(part.adjustments.dy ?? 0)));
+    const rawScale = typeof part.adjustments.scale === 'number' && Number.isFinite(part.adjustments.scale)
+      ? part.adjustments.scale
+      : 1;
+    const scale = Number(Math.max(0.4, Math.min(2.5, rawScale)).toFixed(2));
+    if (dx === 0 && dy === 0 && Math.abs(scale - 1) < 0.001) continue;
+    result[part.layerId] = {
+      layerId: part.layerId,
+      dx,
+      dy,
+      scale,
+      origBounds: part.bounds ? { ...part.bounds } : undefined,
+      origTransform:
+        Array.isArray(part.transform) && part.transform.length === 6
+          ? ([...part.transform] as [number, number, number, number, number, number])
+          : undefined,
+    };
+  }
+  return result;
+}
+
+/**
+ * Applies a user's manual layer adjustment (dx, dy, scale) to a Photoshop layer
+ * (text transform, fontSize fallback, bounds, and vectorMask knots) idempotently.
+ */
+export function applyPartAdjustmentToPsdLayer(
+  layer: Layer,
+  adj: PsdLayerAdjustmentSpec,
+  isAutoAdjustedWhole = false
+): boolean {
+  const dx = Math.max(-600, Math.min(600, Math.round(adj.dx ?? 0)));
+  const dy = Math.max(-800, Math.min(800, Math.round(adj.dy ?? 0)));
+  const scale = Number(Math.max(0.4, Math.min(2.5, adj.scale ?? 1)).toFixed(2));
+  if (dx === 0 && dy === 0 && Math.abs(scale - 1) < 0.001) return false;
+
+  const hasBounds =
+    typeof layer.left === 'number' &&
+    typeof layer.right === 'number' &&
+    typeof layer.top === 'number' &&
+    typeof layer.bottom === 'number' &&
+    layer.right > layer.left &&
+    layer.bottom > layer.top;
+
+  const origBounds = adj.origBounds;
+  const origCx = origBounds
+    ? (origBounds.left + origBounds.right) / 2
+    : hasBounds
+      ? (layer.left! + layer.right!) / 2
+      : layer.text?.transform?.[4] ?? 0;
+  const origCy = origBounds
+    ? (origBounds.top + origBounds.bottom) / 2
+    : hasBounds
+      ? (layer.top! + layer.bottom!) / 2
+      : layer.text?.transform?.[5] ?? 0;
+
+  let effectiveScale = scale;
+  let deltaDx = dx;
+  let deltaDy = dy;
+  let pivotX = origCx;
+  let pivotY = origCy;
+
+  if (layer.text?.transform && layer.text.transform.length === 6) {
+    const [a, b, c, d, tx, ty] = layer.text.transform;
+    if (adj.origTransform && adj.origTransform.length === 6) {
+      const origScaleY = Math.hypot(adj.origTransform[2], adj.origTransform[3]);
+      const curScaleY = Math.hypot(c, d);
+      if (origScaleY > 0.0001 && curScaleY > 0.0001) {
+        effectiveScale = (origScaleY * scale) / curScaleY;
+      }
+      if (!isAutoAdjustedWhole) {
+        const targetTx = origCx + (adj.origTransform[4] - origCx) * scale + dx;
+        const targetTy = origCy + (adj.origTransform[5] - origCy) * scale + dy;
+        deltaDx = targetTx - tx;
+        deltaDy = targetTy - ty;
+        pivotX = tx;
+        pivotY = ty;
+      } else {
+        // Whole layer may already have been shifted horizontally by computeAdjustedWholeTransform;
+        // apply user scale around current center and only shift by unbaked delta.
+        const curCx = hasBounds ? (layer.left! + layer.right!) / 2 : tx;
+        const curCy = hasBounds ? (layer.top! + layer.bottom!) / 2 : ty;
+        pivotX = curCx;
+        pivotY = curCy;
+        const expectedTy = origCy + (adj.origTransform[5] - origCy) * scale + dy;
+        deltaDy = expectedTy - ty;
+      }
+    } else if (hasBounds) {
+      pivotX = (layer.left! + layer.right!) / 2;
+      pivotY = (layer.top! + layer.bottom!) / 2;
+    }
+
+    const nextA = a * effectiveScale;
+    const nextB = b * effectiveScale;
+    const nextC = c * effectiveScale;
+    const nextD = d * effectiveScale;
+    const nextTx = isAutoAdjustedWhole
+      ? pivotX + (tx - pivotX) * effectiveScale + deltaDx
+      : tx + deltaDx;
+    const nextTy = isAutoAdjustedWhole
+      ? ty + deltaDy
+      : ty + deltaDy;
+    layer.text.transform = [nextA, nextB, nextC, nextD, nextTx, nextTy];
+  } else if (layer.text?.style?.fontSize) {
+    const nextSize = Math.max(4, Math.round(layer.text.style.fontSize * effectiveScale));
+    layer.text.style.fontSize = nextSize;
+    if (Array.isArray(layer.text.styleRuns)) {
+      for (const run of layer.text.styleRuns) {
+        if (run.style?.fontSize) {
+          run.style.fontSize = Math.max(4, Math.round(run.style.fontSize * effectiveScale));
+        }
+      }
+    }
+  } else if (hasBounds && origBounds) {
+    // Non-text vector/shape layer (e.g. fractionRule): compute exact idempotent delta vs original bounds
+    const curW = Math.max(1, layer.right! - layer.left!);
+    const origW = Math.max(1, origBounds.right - origBounds.left);
+    effectiveScale = (origW * scale) / curW;
+    const curCx = (layer.left! + layer.right!) / 2;
+    const curCy = (layer.top! + layer.bottom!) / 2;
+    pivotX = curCx;
+    pivotY = curCy;
+    deltaDx = origCx + dx - curCx;
+    deltaDy = origCy + dy - curCy;
+  }
+
+  if (hasBounds) {
+    const curCx = (layer.left! + layer.right!) / 2;
+    const curCy = (layer.top! + layer.bottom!) / 2;
+    const targetHalfW = origBounds && !isAutoAdjustedWhole
+      ? ((origBounds.right - origBounds.left) / 2) * scale
+      : ((layer.right! - layer.left!) / 2) * effectiveScale;
+    const targetHalfH = origBounds
+      ? ((origBounds.bottom - origBounds.top) / 2) * scale
+      : ((layer.bottom! - layer.top!) / 2) * effectiveScale;
+    const nextCx = origBounds && !isAutoAdjustedWhole ? origCx + dx : curCx + deltaDx;
+    const nextCy = origBounds ? origCy + dy : curCy + deltaDy;
+    layer.left = Math.round(nextCx - targetHalfW);
+    layer.right = Math.round(nextCx + targetHalfW);
+    layer.top = Math.round(nextCy - targetHalfH);
+    layer.bottom = Math.round(nextCy + targetHalfH);
+  }
+
+  if (layer.vectorMask?.paths) {
+    for (const path of layer.vectorMask.paths) {
+      if (path.knots) {
+        for (const knot of path.knots) {
+          if (Array.isArray(knot.points)) {
+            for (let i = 0; i < knot.points.length; i += 2) {
+              const px = knot.points[i];
+              const py = knot.points[i + 1];
+              knot.points[i] = pivotX + (px - pivotX) * effectiveScale + deltaDx;
+              knot.points[i + 1] = pivotY + (py - pivotY) * effectiveScale + deltaDy;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
 export type DerivedPsdPayload = {
   sourcePsdPath?: string | null;
   sourcePsdBuffer?: ArrayBuffer;
@@ -741,6 +1046,7 @@ export type DerivedPsdPayload = {
   boxPackageLabel?: string;
   unitBadgeMode?: 'auto' | 'un' | 'text';
   productImage?: { dataUrl: string; fileName?: string };
+  layerAdjustments?: Record<string, PsdLayerAdjustmentSpec>;
   roles: {
     categoryLayerId?: string;
     titleLayerId?: string;
@@ -748,6 +1054,7 @@ export type DerivedPsdPayload = {
     packagingLayerId?: string;
     wholeLayerId?: string;
     fractionLayerId?: string;
+    decimalLayerId?: string;
     fractionRuleLayerId?: string;
     validityLayerId?: string;
     boxQtyLayerId?: string;
@@ -795,6 +1102,16 @@ export async function exportDerivedPsdDirect(
   let updatedAnyText = false;
   let resolvedWholeLayer: Layer | null = null;
   let resolvedFractionLayer: Layer | null = null;
+  const appliedAdjustmentLayerIds = new Set<string>();
+  const layerAdjustments = payload.layerAdjustments ?? {};
+
+  const applySavedAdjustmentIfAny = (layer: Layer | null, layerId?: string, isAutoAdjustedWhole = false) => {
+    if (!layer || !layerId) return false;
+    const spec = layerAdjustments[layerId];
+    if (!spec) return false;
+    appliedAdjustmentLayerIds.add(layerId);
+    return applyPartAdjustmentToPsdLayer(layer, spec, isAutoAdjustedWhole);
+  };
 
   if (payload.roles.wholeLayerId) {
     resolvedWholeLayer = resolveLayerByPath(psd, payload.roles.wholeLayerId);
@@ -811,6 +1128,7 @@ export async function exportDerivedPsdDirect(
         }
       }
       resolvedWholeLayer.text.text = payload.whole.trim();
+      applySavedAdjustmentIfAny(resolvedWholeLayer, payload.roles.wholeLayerId, Boolean(adj));
       renderTextLayerToBitmap(resolvedWholeLayer, payload.whole, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -821,6 +1139,7 @@ export async function exportDerivedPsdDirect(
     resolvedFractionLayer = fractionLayer;
     if (fractionLayer && fractionLayer.text) {
       fractionLayer.text.text = payload.fraction.trim();
+      applySavedAdjustmentIfAny(fractionLayer, payload.roles.fractionLayerId);
       renderTextLayerToBitmap(fractionLayer, payload.fraction, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -830,6 +1149,7 @@ export async function exportDerivedPsdDirect(
     const catLayer = resolveLayerByPath(psd, payload.roles.categoryLayerId);
     if (catLayer && catLayer.text) {
       catLayer.text.text = payload.category.trim();
+      applySavedAdjustmentIfAny(catLayer, payload.roles.categoryLayerId);
       renderTextLayerToBitmap(catLayer, catLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -869,6 +1189,7 @@ export async function exportDerivedPsdDirect(
         }
       }
 
+      applySavedAdjustmentIfAny(titleLayer, payload.roles.titleLayerId);
       renderTextLayerToBitmap(titleLayer, titleLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -878,6 +1199,7 @@ export async function exportDerivedPsdDirect(
     const compLayer = resolveLayerByPath(psd, payload.roles.complementLayerId);
     if (compLayer && compLayer.text) {
       compLayer.text.text = payload.complement.trim();
+      applySavedAdjustmentIfAny(compLayer, payload.roles.complementLayerId);
       renderTextLayerToBitmap(compLayer, compLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -887,6 +1209,7 @@ export async function exportDerivedPsdDirect(
     const packLayer = resolveLayerByPath(psd, payload.roles.packagingLayerId);
     if (packLayer && packLayer.text) {
       packLayer.text.text = payload.packaging.trim();
+      applySavedAdjustmentIfAny(packLayer, payload.roles.packagingLayerId);
       renderTextLayerToBitmap(packLayer, packLayer.text.text, psd.width, psd.height);
       updatedAnyText = true;
     }
@@ -902,7 +1225,23 @@ export async function exportDerivedPsdDirect(
     }
     if (valLayer && valLayer.text) {
       valLayer.text.text = payload.validityText.trim();
+      applySavedAdjustmentIfAny(valLayer, payload.roles.validityLayerId);
       renderTextLayerToBitmap(valLayer, valLayer.text.text, psd.width, psd.height);
+      updatedAnyText = true;
+    }
+  }
+
+  // Aplica quaisquer ajustes manuais de posição/tamanho restantes (ex.: vírgula, traço dos centavos,
+  // ou camadas de texto que foram movidas/redimensionadas mesmo sem alteração de conteúdo).
+  for (const [layerId, spec] of Object.entries(layerAdjustments)) {
+    if (appliedAdjustmentLayerIds.has(layerId)) continue;
+    const layer = resolveLayerByPath(psd, layerId);
+    if (!layer) continue;
+    const changed = applyPartAdjustmentToPsdLayer(layer, spec, false);
+    if (changed) {
+      if (layer.text) {
+        renderTextLayerToBitmap(layer, layer.text.text || '', psd.width, psd.height);
+      }
       updatedAnyText = true;
     }
   }
@@ -1311,8 +1650,14 @@ function scaleAndCenterPriceLayer(
   }
 
   if (updatedAnyText) {
-    delete psd.canvas;
-    delete psd.imageData;
+    const rebuiltComposite = buildCompositeCanvasFromLayers(psd);
+    if (rebuiltComposite) {
+      psd.canvas = rebuiltComposite;
+      delete psd.imageData;
+    } else {
+      delete psd.canvas;
+      delete psd.imageData;
+    }
   }
 
   let outBytes: ArrayBuffer;

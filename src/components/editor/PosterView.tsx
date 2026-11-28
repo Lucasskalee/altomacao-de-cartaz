@@ -53,6 +53,25 @@ export const sanitizePrice = (value: string) => {
   return { whole: whole || '0', fraction: (fraction + '00').slice(0, 2) };
 };
 
+/**
+ * Calcula a nova escala de uma camada ao usar a rolagem do mouse (wheel).
+ * Rolagem para cima (deltaY < 0) aumenta; rolagem para baixo (deltaY > 0) diminui.
+ * Segurar Shift aplica passo fino (1% em vez de 4%).
+ */
+export function computeWheelScaledValue(
+  currentScale: number,
+  deltaY: number,
+  finePrecision = false
+): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0) {
+    return clampPartAdjustment({ dx: 0, dy: 0, scale: currentScale }).scale;
+  }
+  const step = finePrecision ? 0.01 : 0.04;
+  const direction = deltaY < 0 ? 1 : -1;
+  const rawNext = Number((currentScale + direction * step).toFixed(2));
+  return clampPartAdjustment({ dx: 0, dy: 0, scale: rawNext }).scale;
+}
+
 export function PosterView({
   poster,
   isPrint = false,
@@ -493,6 +512,73 @@ function ImportedPosterView({
       setDragCursor('grab');
     }
   };
+
+  // Mantém referência atualizada para rolagem rápida do mouse sem recriar o listener
+  const wheelStateRef = useRef({
+    interactive,
+    artwork: poster.artwork,
+    selectedPartKey,
+    lockPriceGroup,
+    onUpdatePartAdjustment,
+    onUpdateMultiplePartAdjustments,
+  });
+  wheelStateRef.current = {
+    interactive,
+    artwork: poster.artwork,
+    selectedPartKey,
+    lockPriceGroup,
+    onUpdatePartAdjustment,
+    onUpdateMultiplePartAdjustments,
+  };
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || isPrint) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      const state = wheelStateRef.current;
+      if (!state.interactive || !state.artwork || !state.selectedPartKey) return;
+      if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+
+      const parts = getEditableParts(state.artwork);
+      const activePart = parts.find(p => getPartKey(p) === state.selectedPartKey);
+      if (!activePart) return;
+
+      // Bloqueia a rolagem da página enquanto redimensiona a camada selecionada
+      event.preventDefault();
+
+      const currentAdj = clampPartAdjustment(activePart.adjustments);
+      const nextScale = computeWheelScaledValue(currentAdj.scale, event.deltaY, event.shiftKey);
+      if (nextScale === currentAdj.scale) return;
+
+      if (state.lockPriceGroup && state.onUpdateMultiplePartAdjustments && isPriceGroupRole(activePart.role)) {
+        const ratio = currentAdj.scale > 0 ? nextScale / currentAdj.scale : 1;
+        const batch: Record<string, PartAdjustment> = {};
+        for (const p of parts) {
+          if (isPriceGroupRole(p.role)) {
+            const cur = clampPartAdjustment(p.adjustments);
+            batch[getPartKey(p)] = clampPartAdjustment({
+              dx: cur.dx,
+              dy: cur.dy,
+              scale: Number((cur.scale * ratio).toFixed(2)),
+            });
+          }
+        }
+        state.onUpdateMultiplePartAdjustments(batch);
+      } else {
+        state.onUpdatePartAdjustment?.(state.selectedPartKey, {
+          dx: currentAdj.dx,
+          dy: currentAdj.dy,
+          scale: nextScale,
+        });
+      }
+    };
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+    };
+  }, [isPrint]);
 
   const isExpositorPanel = Boolean(poster.expositorPanel);
   const dims = getFormatDimensionsMm(formatConfig);

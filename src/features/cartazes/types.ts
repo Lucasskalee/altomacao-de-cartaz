@@ -15,6 +15,10 @@ export type ImportedPricePart = {
   role: ImportedRole; layerId: string;
   bounds: { left: number; top: number; right: number; bottom: number };
   fontFamily?: string; fontSize?: number; originalText?: string; transform?: [number,number,number,number,number,number];
+  fauxBold?: boolean;
+  fauxItalic?: boolean;
+  horizontalScale?: number;
+  verticalScale?: number;
   color: string; shadow?: { dx: number; dy: number; blur: number; color: string };
   stroke?: { size: number; color: string };
   adjustments?: PartAdjustment;

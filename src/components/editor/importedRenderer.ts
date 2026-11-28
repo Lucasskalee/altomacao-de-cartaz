@@ -25,9 +25,12 @@ export function resolveFontFamily(psdFont?: string, fallback = 'sans-serif'): st
 
 export function resolveFontWeight(psdFont?: string, defaultWeight = '400'): string {
   if (!psdFont) return defaultWeight;
-  if (/black|ariblk/i.test(psdFont)) return '900';
-  if (/bold|arialbd/i.test(psdFont)) return '700';
-  if (/brush/i.test(psdFont)) return '400';
+  const clean = psdFont.trim();
+  if (/black|ariblk|heavy|ultra/i.test(clean)) return '900';
+  if (/extrabold|extra[\s-_]*bold/i.test(clean)) return '800';
+  if (/bold|arialbd/i.test(clean)) return '700';
+  if (/semibold|demibold|medium/i.test(clean)) return '600';
+  if (/brush|zullia|regular|normal|arialmt|^arial$/i.test(clean)) return '400';
   return defaultWeight;
 }
 
@@ -141,6 +144,8 @@ function ensurePosterFontsLoaded(scale: number): Promise<unknown> {
       document.fonts.load(`700 ${Math.max(12, Math.round(500 * scale))}px Zullia`).catch(() => []),
       document.fonts.load(`400 ${Math.max(12, Math.round(200 * scale))}px "Brush Hand New"`).catch(() => []),
       document.fonts.load(`400 ${Math.max(12, Math.round(200 * scale))}px BrushHandNew`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, Math.round(100 * scale))}px Arial`).catch(() => []),
+      document.fonts.load(`400 ${Math.max(12, Math.round(100 * scale))}px ArialMT`).catch(() => []),
       document.fonts.load(`700 ${Math.max(12, Math.round(100 * scale))}px Arial`).catch(() => []),
       document.fonts.load(`700 ${Math.max(12, Math.round(100 * scale))}px ArialMT`).catch(() => []),
       document.fonts.load(`900 ${Math.max(12, Math.round(100 * scale))}px Impact`).catch(() => []),
@@ -1236,7 +1241,7 @@ function drawPart(
     const text = (dynamicTexts?.category || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
-    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
@@ -1252,7 +1257,7 @@ function drawPart(
     const text = (dynamicTexts?.complement || part.originalText || '').trim();
     if (!text) { context.restore(); return; }
     context.fillStyle = part.color || '#000000';
-    drawTextLayer(context, part, text, '"Arial Black", ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
+    drawTextLayer(context, part, text, 'ArialMT, Arial, Helvetica, sans-serif', Boolean(part.stroke && part.stroke.size > 0), artwork);
     context.restore();
     return;
   }
@@ -1471,13 +1476,16 @@ function drawTextLayer(
   const b = part.bounds;
   const height = Math.max(1, b.bottom - b.top);
   const resolvedFamily = resolveFontFamily(part.fontFamily, fallbackFont);
-  const fontWeight = resolveFontWeight(part.fontFamily, /brush/i.test(resolvedFamily) ? '400' : '900');
+  const fallbackWeight = /black|ariblk|impact/i.test(resolvedFamily) ? '900' : '400';
+  const baseWeight = resolveFontWeight(part.fontFamily, fallbackWeight);
+  const fontWeight = part.fauxBold && baseWeight === '400' ? '700' : baseWeight;
+  const fontStyle = part.fauxItalic ? 'italic ' : '';
   const fontName = resolvedFamily;
 
   // Medidor de largura contextualizado
   const measureTextWidth = (txt: string, fontPx: number): number => {
     context.save();
-    context.font = `${fontWeight} ${fontPx}px ${fontName}`;
+    context.font = `${fontStyle}${fontWeight} ${fontPx}px ${fontName}`;
     const m = context.measureText(txt);
     context.restore();
     return Math.max(1, m.width);
@@ -1492,34 +1500,71 @@ function drawTextLayer(
   const hasStroke = strokeOutline && Boolean(part.stroke && part.stroke.size > 0);
   const strokeSize = part.stroke?.size ?? 0;
 
-  if (part.transform && part.fontSize) {
+  const textScaleX =
+    typeof part.horizontalScale === 'number' && Number.isFinite(part.horizontalScale) && part.horizontalScale > 0
+      ? part.horizontalScale
+      : 1;
+  const textScaleY =
+    typeof part.verticalScale === 'number' && Number.isFinite(part.verticalScale) && part.verticalScale > 0
+      ? part.verticalScale
+      : 1;
+
+  if (part.transform) {
     const [a, bm, c, d, e, f] = part.transform;
-    const scaleY = Math.hypot(c, d);
+    const rawScaleY = Math.hypot(c, d);
+    // Se fontSize não foi salvo no .skcartaz legado, deriva a partir dos bounds reais do PSD
+    const effectiveFontSize = part.fontSize
+      ? finalFontSize
+      : Math.max(8, (height / 0.72) / Math.max(0.1, rawScaleY));
+
+    // Preserva proporção vertical nativa do PSD mesmo em .skcartaz legados onde verticalScale não foi persistido
+    let effScaleY = textScaleY;
+    if (
+      part.verticalScale == null &&
+      part.fontSize &&
+      lines.length === 1 &&
+      (part.role === 'category' || part.role === 'complement')
+    ) {
+      const predictedCapH = effectiveFontSize * rawScaleY * 0.72;
+      if (predictedCapH > 4 && height > predictedCapH * 1.15) {
+        effScaleY = Math.min(2.5, height / predictedCapH);
+      }
+    }
+    const effScaleX = textScaleX;
+
+    const scaledA = a * effScaleX;
+    const scaledB = bm * effScaleX;
+    const scaledC = c * effScaleY;
+    const scaledD = d * effScaleY;
+    const scaleY = Math.hypot(scaledC, scaledD);
     const localStrokeWidth = Math.max(1, (strokeSize / Math.max(1, scaleY)) * 2);
     const targetCenterX = (b.left + b.right) / 2;
-    const localTargetX = Math.abs(a) > 0.001 ? (targetCenterX - e) / a : 0;
+    const localTargetX = Math.abs(scaledA) > 0.001 ? (targetCenterX - e) / scaledA : 0;
 
     context.save();
-    context.transform(a, bm, c, d, e, f);
+    context.transform(scaledA, scaledB, scaledC, scaledD, e, f);
+    context.translate(localTargetX, 0);
     context.scale(hScale, 1);
-    context.font = `${fontWeight} ${finalFontSize}px ${fontName}`;
+    context.font = `${fontStyle}${fontWeight} ${effectiveFontSize}px ${fontName}`;
     context.textAlign = 'center';
     context.textBaseline = 'alphabetic';
 
     const numLines = lines.length;
+    const effLineHeight = part.fontSize ? lineHeight : effectiveFontSize * 1.1;
     // Quando multilinha, centraliza o bloco verticalmente em torno da baseline original
-    const startY = numLines > 1 ? -((numLines - 1) * lineHeight) / 2 : 0;
+    const startY = numLines > 1 ? -((numLines - 1) * effLineHeight) / 2 : 0;
 
     lines.forEach((lineText, idx) => {
-      const lineY = startY + idx * lineHeight;
+      const lineY = startY + idx * effLineHeight;
       if (hasStroke) {
         context.save();
+        context.lineJoin = 'round';
         context.lineWidth = localStrokeWidth;
         context.strokeStyle = part.stroke?.color ?? '#000000';
-        context.strokeText(lineText, localTargetX, lineY);
+        context.strokeText(lineText, 0, lineY);
         context.restore();
       }
-      context.fillText(lineText, localTargetX, lineY);
+      context.fillText(lineText, 0, lineY);
     });
 
     context.restore();
@@ -1529,19 +1574,34 @@ function drawTextLayer(
   const cx = (b.left + b.right) / 2;
   const cy = (b.top + b.bottom) / 2;
   const numLines = lines.length;
-  const startY = cy - ((numLines - 1) * lineHeight) / 2;
+  // Sem transform, garante que a altura de caixa de letras maiúsculas acompanhe os bounds reais do PSD
+  const fallbackFontSize =
+    !part.fontSize && numLines === 1 && (part.role === 'category' || part.role === 'complement')
+      ? Math.max(finalFontSize, Math.round(height / 0.74))
+      : finalFontSize;
+  const boundsW = Math.max(20, b.right - b.left);
+  let fallbackHScale = hScale * textScaleX;
+  if (!part.fontSize && numLines === 1 && (part.role === 'category' || part.role === 'complement')) {
+    const measuredW = measureTextWidth(lines[0], fallbackFontSize);
+    if (measuredW > boundsW * 1.05) {
+      fallbackHScale = Math.max(0.45, Math.min(1, boundsW / measuredW));
+    }
+  }
+  const effLineHeight = numLines > 1 ? lineHeight : fallbackFontSize * 1.1;
+  const startY = cy - ((numLines - 1) * effLineHeight) / 2;
 
   context.save();
   context.translate(cx, startY);
-  context.scale(hScale, 1);
-  context.font = `${fontWeight} ${finalFontSize}px ${fontName}`;
+  context.scale(fallbackHScale, textScaleY);
+  context.font = `${fontStyle}${fontWeight} ${fallbackFontSize}px ${fontName}`;
   context.textAlign = 'center';
   context.textBaseline = 'middle';
 
   lines.forEach((lineText, idx) => {
-    const lineY = idx * lineHeight;
+    const lineY = idx * effLineHeight;
     if (hasStroke) {
       context.save();
+      context.lineJoin = 'round';
       context.lineWidth = Math.max(1, strokeSize * 2);
       context.strokeStyle = part.stroke?.color ?? '#000000';
       context.strokeText(lineText, 0, lineY);

@@ -1387,11 +1387,24 @@ header:not(.sk-header){height:78px;padding:0 36px;background:#101b33;color:white
   color: #f9fafb !important;
 }
 
+.conductor-side-title {
+  color: #0f172a;
+}
+.conductor-side-detail {
+  color: #64748b;
+}
+.conductor-side-label {
+  font-weight: 700;
+  color: #475569;
+}
+
 [data-theme="dark"] .panel h2,
 [data-theme="dark"] .editor-preview-heading h2,
 [data-theme="dark"] .print-conductor .library-heading h2,
 [data-theme="dark"] .conductor-side-panel h3,
 [data-theme="dark"] .conductor-product-name,
+[data-theme="dark"] .conductor-price,
+[data-theme="dark"] .conductor-side-title,
 [data-theme="dark"] .sk-lib-title,
 [data-theme="dark"] .sk-lib-card-title,
 [data-theme="dark"] .sk-lib-modal h2 {
@@ -1402,6 +1415,8 @@ header:not(.sk-header){height:78px;padding:0 36px;background:#101b33;color:white
 [data-theme="dark"] .editor-preview-heading p,
 [data-theme="dark"] .print-conductor .library-heading p,
 [data-theme="dark"] .conductor-product-detail,
+[data-theme="dark"] .conductor-side-detail,
+[data-theme="dark"] .conductor-side-label,
 [data-theme="dark"] .card-info small,
 [data-theme="dark"] .library-path,
 [data-theme="dark"] .document-path,

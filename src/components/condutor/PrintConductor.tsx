@@ -1824,13 +1824,13 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
                 {selectedItem ? (
                   <>
                     <div style={{ marginBottom: 10, fontSize: 12 }}>
-                      <strong style={{ color: '#0f172a' }}>{selectedItem.name}</strong>
-                      {selectedItem.detail && <span style={{ color: '#64748b' }}> · {selectedItem.detail}</span>}
+                      <strong className="conductor-side-title">{selectedItem.name}</strong>
+                      {selectedItem.detail && <span className="conductor-side-detail"> · {selectedItem.detail}</span>}
                     </div>
 
                     {/* Controles de Formato do Cartaz Selecionado */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '8px 0', fontSize: 11 }}>
-                      <span style={{ fontWeight: 700, color: '#475569' }}>Formato:</span>
+                      <span className="conductor-side-label">Formato:</span>
                       <select
                         className="editor-select"
                         style={{ height: 26, fontSize: 11, padding: '0 6px', flex: 1 }}
@@ -1982,11 +1982,11 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
             role="dialog"
             aria-modal="true"
             aria-label="Prévia ampliada do cartaz"
-            style={{ maxWidth: 580, maxHeight: '92vh', overflowY: 'auto', background: '#ffffff' }}
+            style={{ maxWidth: 580, maxHeight: '92vh', overflowY: 'auto' }}
             onClick={e => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <h2 style={{ margin: 0, fontSize: 17, color: '#0f172a' }}>Prévia Ampliada — {enlargedItem.name}</h2>
+              <h2 className="conductor-side-title" style={{ margin: 0, fontSize: 17 }}>Prévia Ampliada — {enlargedItem.name}</h2>
               <button type="button" className="subtle" onClick={handleCloseEnlarged}>
                 ✕ Fechar
               </button>
@@ -2093,8 +2093,8 @@ export function PrintConductor({ queue, setQueue, libraryData, run, onPrintBatch
       {/* Modal: Adicionar da Biblioteca */}
       {showLibraryModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="lib-modal-title">
-          <div className="modal price-confirmation" style={{ width: 'min(760px, 94vw)', background: '#ffffff' }}>
-            <h3 id="lib-modal-title" style={{ color: '#0f172a' }}>Adicionar Cartazes de "Meus Cartazes"</h3>
+          <div className="modal price-confirmation" style={{ width: 'min(760px, 94vw)' }}>
+            <h3 id="lib-modal-title" className="conductor-side-title">Adicionar Cartazes de "Meus Cartazes"</h3>
             <p style={{ color: '#64748b', margin: '4px 0 16px' }}>
               Selecione os cartazes salvos na biblioteca local para incluir na fila de impressão.
             </p>

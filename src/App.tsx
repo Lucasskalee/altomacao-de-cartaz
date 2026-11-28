@@ -41,7 +41,7 @@ import { PrintHistoryModal } from './components/history/PrintHistoryModal';
 import { expandExpositorToA3Posters } from './features/formatos/expositor';
 import { priceToCents } from './features/cartazes/validation';
 import { isTauri } from '@tauri-apps/api/core';
-import { exportDerivedPsdDirect } from './features/scantech/directExport';
+import { exportDerivedPsdDirect, extractLayerAdjustmentsFromArtwork } from './features/scantech/directExport';
 import { fetchTemplateBuffer } from './features/psd/templateService';
 import { chooseSave } from './features/cartazes/storage';
 import { openInPhotoshop } from './features/psd/service';
@@ -635,9 +635,9 @@ export default function App() {
     asyncSaverRef.current?.reset();
     if (await editor.open(path)) { setSection('editor'); setMessage('Cartaz aberto.'); }
   };
-  const openOfferPoster = async (path: string, scheduledPriceCents?: number) => {
+  const openOfferPoster = async (path: string, scheduledPriceCents?: number, preloadedDoc?: Cartaz | null) => {
     asyncSaverRef.current?.reset();
-    const result = await editor.open(path, true);
+    const result = await editor.open(path, true, preloadedDoc);
     if (!result) return;
     if (typeof scheduledPriceCents === 'number' && scheduledPriceCents > 0) {
       editor.change('price', formatCentsBr(scheduledPriceCents));
@@ -975,9 +975,12 @@ export default function App() {
       boxPackageLabel: d.product.boxPackageLabel,
       unitBadgeMode: d.product.unitBadgeMode,
       productImage: d.product.productImage,
+      layerAdjustments: extractLayerAdjustmentsFromArtwork(artwork),
       roles: {
         wholeLayerId: wholePart?.layerId,
         fractionLayerId: fractionPart?.layerId,
+        decimalLayerId: artwork?.priceParts?.find(part => part.role === 'decimal')?.layerId,
+        fractionRuleLayerId: artwork?.priceParts?.find(part => part.role === 'fractionRule')?.layerId,
         categoryLayerId: catPart?.layerId,
         titleLayerId: titlePart?.layerId,
         complementLayerId: compPart?.layerId,
@@ -2091,7 +2094,7 @@ export default function App() {
                         }}
                       />
                     </label>
-                    <label className="sk-nudge-field" title="Tamanho relativo da camada (+ / -)">
+                    <label className="sk-nudge-field" title="Tamanho relativo da camada (rolagem do mouse, + / - ou Shift + rolagem para ajuste fino)">
                       <span>Tam</span>
                       <input
                         type="number"
@@ -2183,7 +2186,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="sk-canvas-hint">
-                    <span>Arraste na prévia (imã automático · Alt solta) · Alça azul redimensiona</span>
+                    <span>Arraste na prévia (imã automático · Alt solta) · Rolagem do mouse redimensiona (Shift = fino)</span>
                     {hasAnyPartAdjustment && (
                       <button
                         type="button"

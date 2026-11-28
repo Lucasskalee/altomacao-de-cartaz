@@ -1,5 +1,6 @@
 import { readPsd, type ColorMode, type Layer, type Psd, type RGB, type RGBA, type FRGB, type CMYK, type Grayscale } from 'ag-psd';
 import type { ImportedArtwork, ImportedLayerInfo, ImportedPricePart, ImportedPriceRole, ImportedRole, ImportedTextRole, PosterTemplateModel } from '../cartazes/types';
+import { resolveFontFamily, resolveFontWeight } from '../../components/editor/importedRenderer';
 
 export const PSD_COLOR_MODE = {
   Bitmap: 0,
@@ -22,6 +23,7 @@ export type PsdAnalysis = {
   psd: Psd; runtime: Map<string, Layer>;
   templateSuggested?: PsdTemplateRoleMap;
   detectedModel?: PosterTemplateModel;
+  compositeSynthesized?: boolean;
 };
 
 export function detectPosterModel(layers: ImportedLayerInfo[]): PosterTemplateModel {
@@ -34,6 +36,66 @@ export function detectPosterModel(layers: ImportedLayerInfo[]): PosterTemplateMo
   );
   if (hasCaixa) return 'caixa';
   return 'oferta';
+}
+
+export function isCompositeSolidBlackOrEmpty(canvas?: HTMLCanvasElement): boolean {
+  if (!canvas || !canvas.width || !canvas.height) return true;
+  const isDomCanvas = typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement;
+  try {
+    let data: Uint8ClampedArray | undefined;
+    if (isDomCanvas && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      const sample = document.createElement('canvas');
+      sample.width = 32;
+      sample.height = 32;
+      const sampleCtx = sample.getContext('2d');
+      if (sampleCtx && typeof sampleCtx.drawImage === 'function' && typeof sampleCtx.getImageData === 'function') {
+        sampleCtx.clearRect?.(0, 0, 32, 32);
+        sampleCtx.drawImage(canvas, 0, 0, 32, 32);
+        data = sampleCtx.getImageData(0, 0, 32, 32)?.data;
+      }
+    }
+    if (!data) {
+      const ctx = (canvas as any).getContext?.('2d');
+      if (ctx && typeof ctx.getImageData === 'function') {
+        const sw = Math.min(canvas.width, 64);
+        const sh = Math.min(canvas.height, 64);
+        data = ctx.getImageData(0, 0, sw, sh)?.data;
+      }
+    }
+    if (!data || data.length < 4) return false;
+    let allBlackOpaque = true;
+    let allTransparent = true;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      if (a > 2) allTransparent = false;
+      if (!(r <= 3 && g <= 3 && b <= 3 && a >= 250)) allBlackOpaque = false;
+      if (!allBlackOpaque && !allTransparent) return false;
+    }
+    if (allBlackOpaque) return true;
+    return isDomCanvas && allTransparent;
+  } catch {
+    return false;
+  }
+}
+
+function hasDrawableVisibleLayers(layers: Layer[], parentVisible = true): boolean {
+  for (const layer of layers) {
+    const visible = parentVisible && !layer.hidden;
+    if (!visible) continue;
+    if (layer.children) {
+      if (hasDrawableVisibleLayers(layer.children, visible)) return true;
+      continue;
+    }
+    if (layer.canvas || layer.imageData) return true;
+    if (layer.vectorFill?.type === 'color' && (layer.right ?? 0) > (layer.left ?? 0) && (layer.bottom ?? 0) > (layer.top ?? 0)) {
+      return true;
+    }
+    if (layer.text?.text?.trim()) return true;
+  }
+  return false;
 }
 
 function canvasWithWhiteBackground(sourceCanvas: HTMLCanvasElement): string {
@@ -53,6 +115,27 @@ function canvasWithWhiteBackground(sourceCanvas: HTMLCanvasElement): string {
     return canvas.toDataURL('image/png');
   }
   return sourceCanvas.toDataURL('image/png');
+}
+
+function composeFullPreviewFromLayers(psd: Psd): string {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    if (psd.canvas) return psd.canvas.toDataURL('image/png');
+    throw new Error('Canvas indisponível para compor a prévia do PSD.');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = psd.width;
+  canvas.height = psd.height;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    if (psd.canvas) return psd.canvas.toDataURL('image/png');
+    throw new Error('Canvas indisponível para compor a prévia do PSD.');
+  }
+  if (typeof context.fillRect === 'function') {
+    context.fillStyle = '#FFFFFF';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  drawLayers(context, psd.children ?? [], '', new Set(), true, true);
+  return canvas.toDataURL('image/png');
 }
 
 export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): Promise<PsdAnalysis> {
@@ -87,11 +170,18 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   if (psd.bitsPerChannel !== undefined && !supportedBits.includes(psd.bitsPerChannel)) {
     throw new Error(`Profundidade de cor (${psd.bitsPerChannel} bits por canal) não suportada. Utilize PSD com 8 ou 16 bits por canal.`);
   }
-  if (!psd.canvas) throw new Error('O PSD não contém uma composição visual utilizável.');
   const runtime = new Map<string, Layer>();
   const layers: ImportedLayerInfo[] = [];
   flatten(psd.children ?? [], 0, '', true, runtime, layers);
   if (layers.length > 300) throw new Error('O PSD excede o limite de 300 camadas.');
+  const hasDrawableLayers = hasDrawableVisibleLayers(psd.children ?? [], true);
+  if (!psd.canvas && !hasDrawableLayers) {
+    throw new Error('O PSD não contém uma composição visual utilizável.');
+  }
+  const compositeSynthesized = Boolean((!psd.canvas || isCompositeSolidBlackOrEmpty(psd.canvas)) && hasDrawableLayers);
+  const originalPreview = compositeSynthesized
+    ? composeFullPreviewFromLayers(psd)
+    : canvasWithWhiteBackground(psd.canvas!);
   const suggested = suggest(layers);
   const metadata = extractMetadata(layers, suggested);
   const warnings: string[] = [];
@@ -111,7 +201,7 @@ export async function analyzePsd(bytes: ArrayBuffer, fileName: string, sourcePat
   const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(value => value.toString(16).padStart(2,'0')).join('');
   const templateSuggested = suggestTemplateLayers(layers, suggested);
   const detectedModel = detectPosterModel(layers);
-  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview: canvasWithWhiteBackground(psd.canvas), layers, suggested, metadata, warnings, psd, runtime, templateSuggested, detectedModel };
+  return { fileName, sourcePath, hash, width: psd.width, height: psd.height, resolutionPpi, originalPreview, layers, suggested, metadata, warnings, psd, runtime, templateSuggested, detectedModel, compositeSynthesized };
 }
 
 function flatten(source: Layer[], depth: number, prefix: string, parentVisible: boolean, runtime: Map<string, Layer>, result: ImportedLayerInfo[]) {
@@ -121,8 +211,10 @@ function flatten(source: Layer[], depth: number, prefix: string, parentVisible: 
     runtime.set(id, layer);
     const bounds = { left: layer.left ?? 0, top: layer.top ?? 0, right: layer.right ?? 0, bottom: layer.bottom ?? 0 };
     const type = layer.children ? 'group' : layer.text ? 'text' : layer.vectorFill || layer.vectorStroke ? 'vector' : layer.canvas ? 'raster' : 'empty';
-    const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
-    result.push({ id, name: layer.name || `Camada ${index + 1}`, type, visible, depth, bounds, text: layer.text?.text?.trim() || undefined, font: style?.font?.name });
+    const baseStyle = layer.text?.style;
+    const runStyle = layer.text?.styleRuns?.[0]?.style;
+    const fontName = baseStyle?.font?.name ?? runStyle?.font?.name;
+    result.push({ id, name: layer.name || `Camada ${index + 1}`, type, visible, depth, bounds, text: layer.text?.text?.trim() || undefined, font: fontName });
     if (layer.children) flatten(layer.children, depth + 1, id, visible, runtime, result);
   });
 }
@@ -394,16 +486,82 @@ function composeStatic(analysis: PsdAnalysis, excluded: Set<string>): string {
   return canvas.toDataURL('image/png');
 }
 
-function drawLayers(context: CanvasRenderingContext2D, layers: Layer[], prefix: string, excluded: Set<string>, parentVisible: boolean) {
+function applyLayerDropShadow(context: CanvasRenderingContext2D, layer: Layer) {
+  const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
+  if (!shadow) return;
+  const rawDist = typeof shadow.distance === 'number' ? shadow.distance : (shadow.distance?.value ?? 0);
+  const rawAngle = typeof shadow.angle === 'number' ? shadow.angle : 120;
+  const angle = (rawAngle * Math.PI) / 180;
+  const size = typeof shadow.size === 'number' ? shadow.size : (shadow.size?.value ?? 0);
+  if (rawDist === 0 && size === 0) return;
+  context.shadowOffsetX = -Math.cos(angle) * rawDist;
+  context.shadowOffsetY = Math.sin(angle) * rawDist;
+  context.shadowBlur = size;
+  context.shadowColor = colorHex(shadow.color as any, 'title');
+}
+
+function drawFallbackTextLayer(context: CanvasRenderingContext2D, layer: Layer) {
+  const text = layer.text?.text?.trim();
+  if (!text) return;
+  const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
+  const fontName = style?.font?.name;
+  const fontFamily = resolveFontFamily(fontName, 'Arial, sans-serif');
+  const fontWeight = style?.fauxBold ? '700' : resolveFontWeight(fontName, '400');
+  const fontStyle = style?.fauxItalic ? 'italic ' : '';
+  const fontSize = typeof style?.fontSize === 'number' && style.fontSize > 0 ? style.fontSize : 50;
+  const fillColor = colorHex(style?.fillColor as any, 'title');
+  const transform = layer.text?.transform;
+  context.fillStyle = fillColor;
+  context.font = `${fontStyle}${fontWeight} ${fontSize}px ${fontFamily}`;
+  if (Array.isArray(transform) && transform.length === 6 && typeof context.transform === 'function') {
+    const [a, b, c, d, tx, ty] = transform;
+    context.transform(a, b, c, d, tx, ty);
+    context.textAlign = 'center';
+    context.textBaseline = 'alphabetic';
+    context.fillText?.(text, 0, 0);
+  } else {
+    const left = layer.left ?? 0;
+    const top = layer.top ?? 0;
+    const width = Math.max(1, (layer.right ?? left) - left);
+    const height = Math.max(1, (layer.bottom ?? top) - top);
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText?.(text, left + width / 2, top + height / 2);
+  }
+}
+
+function drawLayers(
+  context: CanvasRenderingContext2D,
+  layers: Layer[],
+  prefix: string,
+  excluded: Set<string>,
+  parentVisible: boolean,
+  applyEffects = false
+) {
   for (let index = 0; index < layers.length; index++) {
     const layer = layers[index], id = prefix ? `${prefix}.${index}` : String(index), visible = parentVisible && !layer.hidden;
     if (!visible || excluded.has(id)) continue;
-    if (layer.children) { drawLayers(context, layer.children, id, excluded, visible); continue; }
-    if (!layer.canvas) continue;
+    if (layer.children) { drawLayers(context, layer.children, id, excluded, visible, applyEffects); continue; }
     context.save();
     context.globalAlpha = typeof layer.opacity === 'number' ? Math.min(1, layer.opacity > 1 ? layer.opacity / 255 : layer.opacity) : 1;
     context.globalCompositeOperation = blend(layer.blendMode);
-    context.drawImage(layer.canvas, layer.left ?? 0, layer.top ?? 0);
+    if (layer.canvas) {
+      if (applyEffects) applyLayerDropShadow(context, layer);
+      context.drawImage(layer.canvas, layer.left ?? 0, layer.top ?? 0);
+    } else if (applyEffects && layer.vectorFill?.type === 'color') {
+      const left = layer.left ?? 0;
+      const top = layer.top ?? 0;
+      const width = (layer.right ?? left) - left;
+      const height = (layer.bottom ?? top) - top;
+      if (width > 0 && height > 0) {
+        applyLayerDropShadow(context, layer);
+        context.fillStyle = colorHex(layer.vectorFill.color as any, 'title');
+        context.fillRect?.(left, top, width, height);
+      }
+    } else if (applyEffects && layer.text?.text?.trim()) {
+      applyLayerDropShadow(context, layer);
+      drawFallbackTextLayer(context, layer);
+    }
     context.restore();
   }
 }
@@ -416,7 +574,21 @@ function blend(mode: Layer['blendMode']): GlobalCompositeOperation {
 function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): ImportedPricePart {
   const layer = analysis.runtime.get(id); if (!layer) throw new Error('Camada mapeada não encontrada.');
   const info = analysis.layers.find(item => item.id === id)!;
-  const style = layer.text?.style ?? layer.text?.styleRuns?.[0]?.style;
+  const baseStyle = layer.text?.style;
+  const runStyle = layer.text?.styleRuns?.[0]?.style;
+  const fontFamily = baseStyle?.font?.name ?? runStyle?.font?.name;
+  const fontSize = baseStyle?.fontSize ?? runStyle?.fontSize;
+  const fillColor = baseStyle?.fillColor ?? runStyle?.fillColor;
+  const fauxBold = Boolean(baseStyle?.fauxBold ?? runStyle?.fauxBold);
+  const fauxItalic = Boolean(baseStyle?.fauxItalic ?? runStyle?.fauxItalic);
+  const rawHScale = baseStyle?.horizontalScale ?? runStyle?.horizontalScale;
+  const rawVScale = baseStyle?.verticalScale ?? runStyle?.verticalScale;
+  const horizontalScale = typeof rawHScale === 'number' && Number.isFinite(rawHScale) && rawHScale > 0 && Math.abs(rawHScale - 1) > 0.005
+    ? rawHScale
+    : undefined;
+  const verticalScale = typeof rawVScale === 'number' && Number.isFinite(rawVScale) && rawVScale > 0 && Math.abs(rawVScale - 1) > 0.005
+    ? rawVScale
+    : undefined;
   const shadow = layer.effects?.dropShadow?.find(item => item.enabled !== false);
   const stroke = layer.effects?.stroke?.find(item => item.enabled !== false);
   const rawDist = typeof shadow?.distance === 'number' ? shadow.distance : (shadow?.distance?.value ?? 0);
@@ -427,9 +599,13 @@ function partFromLayer(role: ImportedRole, id: string, analysis: PsdAnalysis): I
   const size = typeof shadow?.size === 'number' ? shadow.size : (shadow?.size?.value ?? 0);
   const hasShadow = Boolean(shadow || isPrice);
   return {
-    role, layerId: id, bounds: info.bounds, fontFamily: style?.font?.name,
-    fontSize: style?.fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
-    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : style?.fillColor) as any, role),
+    role, layerId: id, bounds: info.bounds, fontFamily,
+    fontSize, originalText: layer.text?.text?.trim(), transform: layer.text?.transform as ImportedPricePart['transform'],
+    ...(fauxBold ? { fauxBold: true } : {}),
+    ...(fauxItalic ? { fauxItalic: true } : {}),
+    ...(horizontalScale !== undefined ? { horizontalScale } : {}),
+    ...(verticalScale !== undefined ? { verticalScale } : {}),
+    color: colorHex((role === 'fractionRule' && layer.vectorFill?.type === 'color' ? layer.vectorFill.color : fillColor) as any, role),
     shadow: hasShadow ? { dx: -Math.cos(angle) * distance, dy: Math.sin(angle) * distance, blur: size, color: '#000000' } : undefined,
     stroke: stroke ? { size: typeof stroke.size === 'number' ? stroke.size : (stroke.size?.value ?? 0), color: '#000000' } : undefined,
   };

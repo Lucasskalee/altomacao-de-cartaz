@@ -1199,6 +1199,363 @@ test('preparePosterRenderOffThread executa via Worker (mock) e cancela requisiç
   }
 });
 
+test('Reutilização de referência PSD entre produtos/F7 diferentes gera arquivos .skcartaz independentes sem sobrescrever', async () => {
+  const {
+    buildUniqueCartazPathForOfferItem,
+    executePsdBatchLinking,
+  } = await import('../src/features/ofertas/service');
+
+  const itemA = {
+    id: 'item-a',
+    f7: '31404',
+    description: 'PAPEL ALUMINIO GIOPACK 30CMX4M',
+    scheduledPriceCents: 498,
+    rowNumber: 2,
+    posters: [],
+  };
+  const itemB = {
+    id: 'item-b',
+    f7: '31405',
+    description: 'PAPEL ALUMINIO GIOPACK 45CMX7M',
+    scheduledPriceCents: 899,
+    rowNumber: 3,
+    posters: [],
+  };
+
+  // 1) Primeiro uso do PSD: usa o nome canônico do PSD
+  const first = buildUniqueCartazPathForOfferItem(
+    'C:\\Skalee\\Cartazes',
+    'papel aluminio GIOPACK 30CMX4M.psd',
+    itemA,
+    'A6',
+    []
+  );
+  assert.equal(first.reusedReference, false);
+  assert.equal(first.existsForSameProduct, false);
+  assert.equal(first.path, 'C:\\Skalee\\Cartazes\\papel aluminio GIOPACK 30CMX4M.skcartaz');
+
+  // 2) Re-vincular para o MESMO F7 reconhece o arquivo existente do mesmo produto
+  const existing = [{ path: first.path, productCode: itemA.f7 }];
+  const sameF7 = buildUniqueCartazPathForOfferItem(
+    'C:\\Skalee\\Cartazes',
+    'papel aluminio GIOPACK 30CMX4M.psd',
+    itemA,
+    'A6',
+    existing
+  );
+  assert.equal(sameF7.reusedReference, false);
+  assert.equal(sameF7.existsForSameProduct, true);
+  assert.equal(sameF7.path, first.path);
+
+  // 3) Reutilizar o MESMO PSD para OUTRO F7 gera caminho independente sem sobrescrever o itemA
+  const second = buildUniqueCartazPathForOfferItem(
+    'C:\\Skalee\\Cartazes',
+    'papel aluminio GIOPACK 30CMX4M.psd',
+    itemB,
+    'A6',
+    existing
+  );
+  assert.equal(second.reusedReference, true);
+  assert.equal(second.existsForSameProduct, false);
+  assert.notEqual(second.path.toLowerCase(), first.path.toLowerCase());
+  assert.ok(second.path.includes('31405'));
+
+  // 4) Vinculação em lote usando o mesmo PSD para dois F7 diferentes cria 2 arquivos distintos
+  const campaign = {
+    schemaVersion: 1 as const,
+    id: 'camp-reuse',
+    name: 'Ofertas',
+    campaignDate: '2026-11-28',
+    archived: false,
+    sourceExcel: null,
+    items: [itemA, itemB],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const savedPaths: string[] = [];
+  const sharedPsd = { name: 'modelo-aluminio.psd', path: 'C:\\PSDs\\modelo-aluminio.psd', size: 100 };
+  const result = await executePsdBatchLinking(
+    campaign,
+    [
+      { item: itemA, psd: sharedPsd },
+      { item: itemB, psd: sharedPsd },
+    ],
+    'A6',
+    'C:\\Skalee\\Cartazes',
+    {
+      readPsd: async p => ({ name: 'modelo-aluminio.psd', path: p, buffer: new ArrayBuffer(8) }),
+      buildCartazFromPsd: async (_psdData, item) => ({
+        schemaVersion: 1,
+        id: `doc-${item.f7}`,
+        product: { name: item.description, complement: '', unit: 'UN', priceCents: item.scheduledPriceCents, productCode: item.f7 },
+        layout: { template: 'oferta-classica', paper: 'A6', orientation: 'portrait' },
+        metadata: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      }),
+      saveCartazDocument: async targetPath => {
+        savedPaths.push(targetPath);
+      },
+      persistCampaign: async c => c,
+    },
+    []
+  );
+  assert.equal(result.success, true);
+  assert.equal(result.linkedCount, 2);
+  assert.equal(savedPaths.length, 2);
+  assert.notEqual(savedPaths[0].toLowerCase(), savedPaths[1].toLowerCase());
+});
+
+test('Exportação direta de PSD persiste ajustes de mover/redimensionar camadas (dx, dy, scale) de forma idempotente', async () => {
+  const {
+    extractLayerAdjustmentsFromArtwork,
+    applyPartAdjustmentToPsdLayer,
+    exportDerivedPsdDirect,
+  } = await import('../src/features/scantech/directExport');
+  const { readPsd, writePsd } = await import('ag-psd');
+
+  const artwork: ImportedArtwork = {
+    kind: 'imported-psd',
+    compatibility: 'ready',
+    source: { fileName: 'papel.psd', sha256: 'c'.repeat(64) },
+    canvas: { width: 1000, height: 1400, resolutionPpi: 300, fit: 'contain' },
+    staticBackground: pixel,
+    originalPreview: pixel,
+    warnings: [],
+    layers: [],
+    priceParts: [
+      {
+        role: 'whole',
+        layerId: '0',
+        originalText: '4',
+        bounds: { left: 120, top: 600, right: 420, bottom: 1000 },
+        fontFamily: 'Zullia',
+        fontSize: 50,
+        transform: [6, 0, 0, 8, 270, 980],
+        color: '#c74624',
+      },
+      {
+        role: 'fraction',
+        layerId: '1',
+        originalText: '98',
+        bounds: { left: 460, top: 620, right: 780, bottom: 860 },
+        fontFamily: 'Zullia',
+        fontSize: 50,
+        transform: [4, 0, 0, 5, 620, 840],
+        color: '#c74624',
+        adjustments: { dx: 14, dy: -11, scale: 1.2 },
+      },
+    ],
+  };
+
+  const extracted = extractLayerAdjustmentsFromArtwork(artwork);
+  assert.ok(extracted['1']);
+  assert.equal(extracted['1'].dx, 14);
+  assert.equal(extracted['1'].dy, -11);
+  assert.equal(extracted['1'].scale, 1.2);
+  assert.equal(extracted['0'], undefined);
+
+  // Testa idempotência ao aplicar duas vezes o mesmo ajuste
+  const syntheticLayer: any = {
+    name: '98',
+    left: 460,
+    top: 620,
+    right: 780,
+    bottom: 860,
+    text: {
+      text: '98',
+      transform: [4, 0, 0, 5, 620, 840],
+      style: { fontSize: 50 },
+    },
+  };
+  applyPartAdjustmentToPsdLayer(syntheticLayer, extracted['1']);
+  const afterFirst = [...syntheticLayer.text.transform];
+  assert.ok(Math.abs(afterFirst[0] - 4.8) < 0.01);
+  assert.ok(Math.abs(afterFirst[3] - 6.0) < 0.01);
+  assert.ok(Math.abs(afterFirst[4] - 634) < 0.5);
+  // Pivot Y = origCy (740): 740 + (840 - 740) * 1.2 - 11 = 849
+  assert.ok(Math.abs(afterFirst[5] - 849) < 0.5);
+
+  // Segunda aplicação no mesmo layer já ajustado NÃO deve dobrar deslocamento nem escala
+  applyPartAdjustmentToPsdLayer(syntheticLayer, extracted['1']);
+  const afterSecond = [...syntheticLayer.text.transform];
+  assert.ok(Math.abs(afterSecond[0] - afterFirst[0]) < 0.01);
+  assert.ok(Math.abs(afterSecond[3] - afterFirst[3]) < 0.01);
+  assert.ok(Math.abs(afterSecond[4] - afterFirst[4]) < 0.5);
+  assert.ok(Math.abs(afterSecond[5] - afterFirst[5]) < 0.5);
+
+  // Exportação completa via exportDerivedPsdDirect preserva os ajustes no PSD salvo
+  const rawPsd = {
+    width: 1000,
+    height: 1400,
+    channels: 3,
+    bitsPerChannel: 8,
+    colorMode: 3,
+    children: [
+      {
+        name: '4',
+        left: 120,
+        top: 600,
+        right: 420,
+        bottom: 1000,
+        text: { text: '4', transform: [6, 0, 0, 8, 270, 980], style: { fontSize: 50 } },
+      },
+      {
+        name: '98',
+        left: 460,
+        top: 620,
+        right: 780,
+        bottom: 860,
+        text: { text: '98', transform: [4, 0, 0, 5, 620, 840], style: { fontSize: 50 } },
+      },
+    ],
+  };
+  const srcBuffer = writePsd(rawPsd as any);
+  let exportedBytes: Uint8Array | null = null;
+  const exportRes = await exportDerivedPsdDirect(
+    {
+      sourcePsdBuffer: srcBuffer,
+      outputPsdPath: 'C:\\Saida\\papel-ajustado.psd',
+      title: 'GIOPACK',
+      whole: '4',
+      fraction: '98',
+      layerAdjustments: extracted,
+      roles: { wholeLayerId: '0', fractionLayerId: '1' },
+    },
+    {
+      readSourcePsd: async () => srcBuffer,
+      writeOutputPsd: async (_out, _src, bytes) => {
+        exportedBytes = bytes;
+        return { fileSize: bytes.byteLength };
+      },
+    }
+  );
+  assert.equal(exportRes.ok, true);
+  assert.ok(exportedBytes);
+  const reloaded = readPsd(exportedBytes!.buffer as any);
+  const fracLayer = reloaded.children![1];
+  assert.ok(fracLayer.text?.transform);
+  assert.ok(Math.abs(fracLayer.text!.transform![0] - 4.8) < 0.05);
+  assert.ok(Math.abs(fracLayer.text!.transform![3] - 6.0) < 0.05);
+  assert.ok(Math.abs(fracLayer.text!.transform![4] - 634) < 1);
+  assert.ok(Math.abs(fracLayer.text!.transform![5] - 849) < 1);
+});
+
+test('computeWheelScaledValue redimensiona camada via rolagem do mouse com suporte a Shift (fino) e limites seguros', async () => {
+  const { computeWheelScaledValue } = await import('../src/components/editor/PosterView');
+
+  // Rolar para cima (deltaY < 0) aumenta 4%
+  assert.equal(computeWheelScaledValue(1, -120, false), 1.04);
+  // Rolar para baixo (deltaY > 0) diminui 4%
+  assert.equal(computeWheelScaledValue(1, 120, false), 0.96);
+  // Shift + rolagem aplica ajuste fino de 1%
+  assert.equal(computeWheelScaledValue(1, -120, true), 1.01);
+  assert.equal(computeWheelScaledValue(1, 120, true), 0.99);
+  // Respeita limites mínimo (0.4) e máximo (2.5)
+  assert.equal(computeWheelScaledValue(0.4, 120, false), 0.4);
+  assert.equal(computeWheelScaledValue(2.5, -120, false), 2.5);
+  // deltaY === 0 mantém a escala atual
+  assert.equal(computeWheelScaledValue(1.15, 0, false), 1.15);
+});
+
+test('Fidelidade de fonte Arial Regular (ArialMT) em Complemento/Categoria: mantém peso 400 sem forçar negrito 900', async () => {
+  const { resolveFontWeight } = await import('../src/components/editor/importedRenderer');
+
+  assert.equal(resolveFontWeight('ArialMT', '900'), '400');
+  assert.equal(resolveFontWeight('Arial', '900'), '400');
+  assert.equal(resolveFontWeight('Arial-BoldMT', '400'), '700');
+  assert.equal(resolveFontWeight('Arial-Black', '400'), '900');
+
+  const usedFonts: string[] = [];
+  const fakeCanvas: any = {
+    width: 800,
+    height: 1131,
+    getContext: () => ({
+      fillStyle: '',
+      strokeStyle: '',
+      lineWidth: 1,
+      lineJoin: 'miter',
+      textAlign: 'left',
+      textBaseline: 'alphabetic',
+      set font(val: string) {
+        usedFonts.push(val);
+      },
+      get font() {
+        return usedFonts[usedFonts.length - 1] ?? '';
+      },
+      fillRect() {},
+      drawImage() {},
+      save() {},
+      restore() {},
+      translate() {},
+      scale() {},
+      transform() {},
+      measureText: (txt: string) => ({ width: txt.length * 14 }),
+      strokeText() {},
+      fillText() {},
+    }),
+  };
+
+  const imageDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Image');
+  Object.defineProperty(globalThis, 'Image', {
+    configurable: true,
+    value: class {
+      onload?: () => void;
+      set src(_v: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    },
+  });
+  try {
+    const artwork: ImportedArtwork = {
+      kind: 'imported-psd',
+      compatibility: 'ready',
+      source: { fileName: 'papel.psd', sha256: 'd'.repeat(64) },
+      canvas: { width: 1000, height: 1400, resolutionPpi: 300, fit: 'contain' },
+      staticBackground: pixel,
+      originalPreview: pixel,
+      warnings: [],
+      layers: [],
+      priceParts: [
+        {
+          role: 'whole',
+          layerId: '1',
+          originalText: '4',
+          bounds: { left: 100, top: 700, right: 400, bottom: 1200 },
+          fontFamily: 'Zullia',
+          fontSize: 50,
+          color: '#c74624',
+        },
+      ],
+      templateParts: [
+        {
+          role: 'complement',
+          layerId: '2',
+          originalText: '30CMX4M',
+          bounds: { left: 350, top: 560, right: 650, bottom: 640 },
+          fontFamily: 'ArialMT',
+          fontSize: 23.74,
+          transform: [2.2, 0, 0, 4.16, 500, 635],
+          color: '#000000',
+        },
+      ],
+    };
+
+    await drawImported(fakeCanvas, artwork, '4,98', 800, 1131, undefined, {
+      complement: '30CMX4M',
+    });
+
+    const arialFontUsed = usedFonts.find(f => f.includes('ArialMT'));
+    assert.ok(arialFontUsed, 'Deve usar fonte ArialMT na camada de complemento');
+    assert.ok(arialFontUsed!.startsWith('400 '), `Esperava peso 400 para ArialMT Regular, recebeu: ${arialFontUsed}`);
+  } finally {
+    if (imageDescriptor) {
+      Object.defineProperty(globalThis, 'Image', imageDescriptor);
+    } else {
+      delete (globalThis as Record<string, unknown>).Image;
+    }
+  }
+});
+
+
 
 
 

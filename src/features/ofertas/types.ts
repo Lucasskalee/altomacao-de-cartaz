@@ -128,5 +128,6 @@ export type PsdBatchLinkResult = {
   errors: PsdBatchLinkError[];
   success: boolean;
   message: string;
+  linkedPaths?: Record<string, string>;
 };
 
